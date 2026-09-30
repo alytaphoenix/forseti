@@ -1,0 +1,5 @@
+{
+  "defaultProvider": "opencode-go",
+  "defaultModel": "glm-5.3-flash",
+  "defaultThinkingLevel": "low"
+}

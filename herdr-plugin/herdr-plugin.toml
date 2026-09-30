@@ -1,0 +1,14 @@
+id = "forseti"
+name = "Forseti"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Forseti — ties ttt editor and the pi coding agent into one herdr workflow"
+platforms = ["linux", "macos"]
+
+# Phase 1: the bring-up action. Headless-safe: only spawns `herdr` CLI
+# subcommands (never a TUI — actions have no PTY, see docs/spikes.md S1).
+[[actions]]
+id = "open"
+title = "Open Forseti (ttt + pi)"
+contexts = ["workspace"]
+command = ["sh", "scripts/open.sh"]

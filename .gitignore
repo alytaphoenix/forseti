@@ -1,0 +1,10 @@
+# Secrets — never commit
+*.key
+.env
+.env.*
+
+# editor/OS noise
+.DS_Store
+
+# pi / tooling local state
+.pi/sessions/
