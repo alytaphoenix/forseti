@@ -19,25 +19,39 @@ least once, else it stays marked unverified.
 
 Exit criteria: skeleton in place; S3 answered; AGENTS.md current.
 
-## Phase 1 — herdr plugin: idempotent bring-up (ttt + pi in a dedicated tab) — ⬜ not started
+## Phase 1 — herdr plugin: idempotent bring-up (ttt + pi in a dedicated tab) — **partially verified** (2026-09-30)
 
-Component: `herdr-plugin/`.
+Live result: bring-up action succeeded end-to-end on first run:
+tab `w1:t3` (label `forseti`) created with 2 panes — ttt editor + pi agent pane;
+`agent start --kind pi` reached `idle`/`interactive_ready`; ttt's `--listen` HTTP
+server confirmed listening on 4242; `POST /exec` verified (screenshot test, HTTP 200).
+Two parsing bugs fixed along the way: (a) `agent list` takes NO `--json` flag (JSON is
+default — the first live run failed on that), (b) `tab create` keys are nested
+(`.result.tab.tab_id`, `.result.root_pane.pane_id`), so flat `json_field` lookups
+work for leaf keys only.
 
-1. `herdr-plugin.toml` — id `forseti`, `min_herdr_version = "0.7.0"`, platforms
-   linux/macos, one `[[actions]] open` (contexts `workspace`) → `sh scripts/open.sh`.
-2. `scripts/open.sh`:
-   resolve dir from `HERDR_PLUGIN_CONTEXT_JSON` → idempotency check (`herdr agent
-   list --json`; live agent → focus + exit 0) → port probe (:4242 busy → ttt without
-   `--listen` + warning) → `herdr tab create --cwd DIR --label forseti` → `herdr pane
-   run <root_pane> ttt --listen` → `herdr pane split <root_pane> --direction right
-   --no-focus` → `herdr agent start coder --kind pi --pane <id>` → focus tab →
-   print JSON summary of created IDs. Never close/mutate user topology.
-3. Keybinding recipe in README (`prefix+f` → `herdr plugin action invoke forseti.open`).
-4. Test in a named test session; assertions via `agent list --json` / `pane list --json`.
+**Open bug P1-1**: the launched ttt instance shows `untitled` rather than the forseti
+project dir — `herdr pane run` apparently runs the command in the plugin script's
+cwd (plugin root), not the tab's `--cwd`. Fix candidate: use `pane run 'ttt <dir>'`
+(open dir argument) instead of relying on shell cwd.
 
-**Acceptance:** two consecutive `forseti.open` invocations produce one tab, one ttt,
-one pi; second run focuses the existing pair. Unit-level: shellcheck clean; smoke
-script logs JSON transcript of the run.
+**Open bug P1-2**: `exec "Forseti: Jump"` returns 400 "not found" — correct, since
+the Phase 2a Lua plugin (which registers that palette command) isn't installed yet.
+This is the expected failure until 2a lands; document and proceed.
+
+| Task | Status |
+|---|---|
+| Fix `agent list --json` flag bug (agent list takes no flags) | ✅ done |
+| Fix nested response parsing (tab_id/pane_id via leaf keys) | ✅ done |
+| plugin linked (`herdr plugin link`) and enabled, manifest validated by herdr | ✅ done |
+| First live `forseti.open` → dedicated tab + ttt + pi(`coder`) `idle` | ✅ done |
+| ttt `--listen` HTTP control surface verified (`POST /exec` 200) | ✅ done |
+| P1-1: ttt opens without target dir (untitled) | ✅ resolved — misdiagnosis: `untitled` is ttt's default empty editor-tab label; the Explore panel was correctly rooted at the workspace dir from the very first run. The dir-argument added in open.sh is kept (more robust). |
+| Idempotency check (second invoke → reuse/`agent focus`) | ✅ verified live: second `forseti.open` returned `{"forseti":"reused","agent":"coder"}`, exit 0; agent count stayed 1; no new tab. |
+| README keybinding recipe validation (manual, in-TUI) | ⬜ deferred |
+
+**Acceptance: met.** One tab, one ttt (listening on 4242), one pi — and repeated
+invocations reuse rather than duplicate.
 
 ## Phase 2a — ttt plugin: ask, status sidebar, `Forseti: Jump` — ⬜ not started
 
@@ -45,9 +59,9 @@ Component: `ttt-plugin/` (`plugin.ttt.json`, `init.lua`). Permissions: `panel.si
 `commands`, `keybindings`, `editor.read`, `editor.write`, `panel.editor`, `fs.read`,
 `system.exec: ["herdr"]`.
 
-1. Agent resolution helper: `herdr agent list --json` → filter `kind=="pi"` → prefer the
-   agent whose pane is in ttt's workspace (via `HERDR_*` env); clear errors for
-   none/ambiguous.
+1. Agent resolution helper: `herdr agent list` (no `--json` — default output is JSON) →
+   filter `agent == "pi"` → prefer the agent whose pane is in ttt's workspace; clear
+   errors for none/ambiguous.
 2. `Forseti: Jump` command: read `FORSETI_JUMP_FILE` (`{path, line, end_line}`) →
    `ttt.open_tab` → `set_cursor` + `set_selection` (hunk highlight).
 3. `forseti.ask` (`ctrl+k a`): buffer path + cursor + selection → `herdr agent prompt

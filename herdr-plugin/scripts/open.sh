@@ -22,8 +22,9 @@ json_field() {
     | sed 's/"$//'
 }
 
-# herdr prints JSON on stdout, errors as JSON on stderr (exit 1).
-# Capture both; on failure emit the server error verbatim and die.
+# herdr CLI params: agent list takes no flags (JSON is the default output).
+# Server errors: JSON on stderr, exit 1. Capture both; on failure emit the
+# server error verbatim and die.
 herdr_json() {
   _out=$("$_HERDR" "$@" 2>"$_FORSETI_ERR") || {
     printf 'forseti: herdr %s failed:\n%s\n' "$1" "$(cat "$_FORSETI_ERR")" >&2
@@ -48,7 +49,7 @@ dir="${TTT_TARGET_DIR:-${dir:-.}}"
 
 # --- 2. idempotency: reuse a live pi agent instead of double-spawning ----
 
-agents=$(herdr_json agent list --json)
+agents=$(herdr_json agent list)
 live=$(printf '%s' "$agents" \
   | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"$AGENT_NAME\"" | head -1 || true)
 if [ -n "$live" ]; then
@@ -83,7 +84,9 @@ fi
 }
 
 # `pane run` types "ttt --listen" + Enter into the fresh shell pane.
-herdr_json pane run "$root_pane" "ttt $listen_args" >/dev/null
+# ttt gets the target dir as an explicit PATH argument (P1-1: pane run's shell
+# may not inherit the tab's --cwd; a bare ttt opened 'untitled').
+herdr_json pane run "$root_pane" "ttt $listen_args $dir" >/dev/null
 
 # --- 5. pi pane: split right, then let herdr launch+ready pi itself ------
 
