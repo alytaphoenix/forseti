@@ -264,49 +264,58 @@ ttt is **not** required — crew needs herdr + pi only. Crew members are ordinar
 agents; each may independently carry the forseti pi extension (jump/review/follow
 keep working inside crew runs).
 
-### crew.yaml schema v1 (sketch)
+### crew.yaml schema v1 (as built)
 
 ```yaml
-entry: planner
+name: demo-planner-coder
 agents:
-  planner:
-    kind: pi
-    args: [--model, glm-5.3-flash]      # per-node model; args pass verbatim (S3)
+  - name: planner                      # herdr rule [a-z][a-z0-9_-]{0,31}
+    kind: pi                           # v1: pi only (default)
+    model: opencode-go/glm-5.3-flash   # per-node model → pi --model (S9 verified)
+    args: []                           # extra pi argv appended after --model
     prompt: |
-      You are the planner. Produce a task breakdown...
-  coder:
-    kind: pi
+      You are the planner. ... End with PLAN_READY.
+  - name: builder
+    model: opencode-go/glm-5.3-flash
     prompt: |
-      Implement the plan below.
-      {{ nodes.planner.output }}
+      Execute this plan exactly:
+      {{ .planner }}                   # upstream output templated by node name
 edges:
-  - { from: planner, to: coder, when: done }
-  - { from: coder, to: coder, when: "done && output =~ /TESTS FAILED/",
-      note: "self-loop retry, bounded by max_visits" }
+  - { from: planner, to: builder, when: "re:PLAN_READY" }   # gate on output
+  # when: idle (default) | re:<regex>; self-loops/cycles rejected unless an
+  # edge in the cycle carries max_visits (validator enforces)
 ```
 
-- `when`: status (`done|blocked|error`) + optional regex on captured output.
-- Output flow: `{{ nodes.<id>.output }}` templating. Large payloads go through a
-  bus file (`.forseti/bus/<node>.md`, path templated into the prompt) — pi reads
-  files natively; big outputs never go through paste.
-- Validation: agent names `[a-z][a-z0-9_-]{0,31}` (herdr rule), edge endpoints
-  exist, entry exists, loops require `max_visits`.
+- Entry nodes are **derived** (no incoming edges) — no explicit `entry:` key.
+- Output flow: `{{ .<upstream> }}` templating; every captured output is also
+  written to a bus file (`.forseti/bus/<node>.md`) — pi reads files natively;
+  big outputs never go through paste.
+- Validation (all enforced in `internal/schema`): name rule, duplicate names,
+  edge endpoints exist, `when` is a status or compilable `re:`, cycles require
+  a `max_visits`-bounded edge.
 
-### Runner semantics
+### Runner semantics (as built, live-verified 2026-09-30)
 
-- **Bring-up**: dedicated crew tab; one pane per agent; `agent.start --kind pi`
-  per node (readiness ≈ 30 s each — start concurrently, per-agent timeout within
-  the schema's 300 s cap). Never touch user topology; teardown closes only what
-  the run created.
-- **Dispatch**: `agent.prompt` with `wait {until, timeout_ms}`; on timeout,
-  re-read `agent.get` before any resubmit (same policy as Phases 1–4).
-- **Capture**: `agent.read` (text, strip_ansi) at node settle → stored as the
-  node's `output`, appended to the run log.
-- **Events**: `events.subscribe` drives `pane_agent_status_changed` (runner state)
-  and `pane_output_changed` (monitor tail; **debounced** — rate measured in S7,
-  refresh only the visible monitor target).
-- **Human-in-the-loop**: `blocked` surfaces in the TUI (highlight + event log)
-  and is never auto-answered; `focus pane` keybinding jumps to the real pane.
+- **Bring-up**: dedicated crew tab via one `layout.apply` BSP call (S8);
+  one pane per node; `agent.start --kind pi` concurrently per node
+  (readiness ≈ 30 s each). Never touches user topology; teardown closes only
+  the crew tab it created (verified — tab auto-closed after run).
+- **Dispatch**: `agent.prompt` **with `wait {until: [idle,done,blocked],
+  timeout_ms}`** — one request, race-free. (Live catch 2026-09-30: a separate
+  `wait idle` after a prompt matches the *pre-prompt* idle and captures the
+  startup screen instead of the answer; and an unfocused agent settles to
+  `done`, not `idle` — both statuses must be in `until`.)
+- **Capture**: `agent.read recent_unwrapped` at node settle → node `output`
+  + bus file + run log.
+- **Events**: `pane.agent_status_changed` subscription drives runner/TUI state.
+  **No output push exists in 0.9.3** (S7: `events.wait` is status-only;
+  `pane_output_changed` unsubscribable) — the monitor tail is a debounced
+  `agent.read` (700 ms) against the visible target only.
+- **Human-in-the-loop**: `blocked` surfaces in the TUI + event log and is
+  never auto-answered.
+- **E2E proof**: `crew/examples/crew.yaml` planner→builder run created
+  `HELLO_CREW.md` ("crew pipeline works") through the `re:PLAN_READY` edge;
+  gate: `scripts/crew-smoke.sh`.
 
 ### TUI layout
 

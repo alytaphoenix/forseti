@@ -31,11 +31,30 @@ herdr plugin action invoke forseti.open
 | Component | Surface | Implements |
 |---|---|---|
 | [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi` |
-| [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review` |
-| [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`), prompt context injection |
+| [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
+| [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
+| [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges), Bubble Tea builder + live monitor, bus-file handoff, JSONL run log |
 
 Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-plan.md) ·
 [`spike log (verified facts)`](docs/spikes.md) · [`AGENTS.md`](AGENTS.md)
+
+## Crew — multi-agent pipelines
+
+`crew.yaml` describes a deterministic graph (no LLM routing — LLMs do node
+work only). `forseti-crew run` builds a dedicated herdr tab with one pane per
+node, dispatches prompts with race-free settle waits, gates edges on agent
+status or output regex (`re:PLAN_READY`), and templates upstream outputs into
+downstream prompts (`{{ .planner }}`).
+
+```sh
+cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew
+bin/forseti-crew run -f examples/crew.yaml            # TUI: builder + live monitor
+bin/forseti-crew run --headless -f examples/crew.yaml # CI path
+```
+
+`blocked` agents surface in the TUI and are never auto-answered; teardown
+closes only the tab the run created. Example: planner → coder pipeline that
+actually ships a file end-to-end (`examples/crew.yaml`).
 
 ## Install (all three, from this public repo)
 
@@ -56,9 +75,11 @@ herdr's `config.toml` — recipe in [`herdr-plugin/README.md`](herdr-plugin/READ
 
 ## Status
 
-All phases implemented and **verified live** (bring-up, ask, follow, review, tools,
-context injection) — see the [plan](docs/implementation-plan.md) for the test matrix.
-`scripts/smoke.sh` is the round-trip gate (currently green).
+All phases (0–5) implemented and **verified live** — bring-up, ask, follow,
+review, tools, context injection, the evergreen vault, and the crew
+multi-agent runner. See the [plan](docs/implementation-plan.md) for the test
+matrix. Gates: `scripts/smoke.sh` (IDE loop) + `scripts/crew-smoke.sh`
+(2-agent crew E2E), both green.
 
 ## Model setup
 

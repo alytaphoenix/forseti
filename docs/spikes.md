@@ -114,10 +114,83 @@ exists** — verified live 2026-09-30 by enumerating `herdr api schema --json`
 - `PaneOutputMatchedEvent` carries `matched_line` + a `PaneReadResult` →
   output-match subscriptions exist at schema level.
 
-Unverified (Phase 5 spikes S6–S10): socket framing/handshake, subscribe semantics
-(one-shot vs stream), `agent.read` behavior, `pane_output_changed` event rate,
-`layout.apply` payload shape, `agent.view.set` purpose.
+**Resolved live 2026-09-30 by S6–S10 (see below).** Driver:
+`scripts/spike-socket.py` (kept; re-runnable; transcript `/tmp/forseti-socket-spike.jsonl`).
 Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
+
+## S6 — socket framing + handshake ✅ resolved (live, 2026-09-30)
+
+- **Framing: NDJSON over the Unix socket, NO handshake for the JSON API.**
+  Request `{"id":"...","method":"...","params":{}}` → response echoes `id`.
+  (The `id` field is tolerated but absent from the bundled JSON Schema's request
+  envelope — schema covers method/params only.)
+- **One-shot requests close the connection after the response.** Pipelining two
+  requests on one socket yields exactly one response line, then EOF. So a client
+  must open a fresh connection per request — or use a subscription connection.
+- **`events.subscribe` is the only persistent connection**: ack line
+  `{"id":...,"result":{"type":"subscription_started"}}`, then pushed lines
+  shaped `{"event":"<name>","data":{...}}` **with no `id`**. Verified pushes:
+  `pane.agent_status_changed` (`data: {agent, agent_status, pane_id, workspace_id}`)
+  and `tab.created` (`data: {tab: {...}, type: "tab_created"}`).
+- Multi-type subscriptions in one request work (`pane.agent_status_changed` +
+  `tab.created` + `tab.closed` on one connection).
+- The TUI uses a different **bincode endpoint protocol** (`endpoint.hello.v1` /
+  `endpoint.welcome.v1`, `TerminalHello`/`ClientShellHello`, 2 MiB frame cap —
+  server log: `oversized handshake from client claimed=… max=2097152`).
+  Irrelevant to crew: the JSON API path is independent and needs none of it.
+- Error shape confirmed: `{"id":...,"error":{"code":"...","message":"..."}}`.
+
+## S7 — agent.read + output-event reality ✅ resolved (live, 2026-09-30)
+
+- `agent.read` response nests under **`result.read`**:
+  `{type:"pane_read", read:{pane_id, workspace_id, tab_id, source, format, text}}`.
+  All four `source` values work: `visible`, `recent`, `recent_unwrapped`,
+  `detection` (444/444/443/444 chars on the live coder pane).
+- **`events.wait` supports ONLY `pane_agent_status_changed`** in 0.9.3.
+  `pane_output_changed` match → `{"code":"unsupported_event_wait_match",
+  "message":"events.wait currently supports pane agent status matches"}` —
+  despite being present in the EventMatch schema.
+- **`pane_output_changed` is not subscribable either** (not in the Subscription
+  oneOf). Proxy test: a global `pane.updated` subscription saw **0 events in 20 s**
+  while the coder agent streamed a 40-line answer → `pane.updated` is
+  metadata-only (title/agent), NOT output-driven.
+- **Consequence for the crew monitor (5-4):** no push surface for output.
+  Design = persistent `pane.agent_status_changed` subscription (drives
+  working/idle/blocked) + debounced `agent.read recent` polling while working
+  (500 ms–1 s cadence is cheap: read latency measured <50 ms).
+- Status transitions observed with sub-second accuracy on the stream:
+  `working` at +1.17 s, `idle` at +2.45 s after prompt.
+
+## S8 — layout.apply / layout.export ✅ resolved (live, 2026-09-30)
+
+- `layout.apply` with a BSP tree (`split{direction,ratio,first,second}` /
+  `pane{label,cwd,command,env}`) **creates a fresh tab** — response
+  `{type:"layout_apply", layout:{workspace_id, tab_id, zoomed,
+  focused_pane_id, root}}`; pane ids are assigned in the returned tree
+  (read them by walking `root`, not from a flat list).
+- `layout.export` round-trips the same BSP shape (split direction/ratio +
+  pane labels/cwd preserved, `pane_id` added).
+- **Declarative N-pane crew tabs are fully viable**: build tree → apply →
+  walk tree for pane ids → `agent.start` each.
+
+## S9 — two concurrent pi agents, different models ✅ resolved (live, 2026-09-30)
+
+- Two `agent start --kind pi` in one crew tab with different `--` args:
+  `spike-a --model opencode-go/glm-5.3-flash`,
+  `spike-b --model halogen/halogen-qwen3.8-flash-next`. Both started, both
+  answered their prompts, pi status lines showed **their own model** per agent.
+- Per-node models work. Caveat learned the hard way: **wait for `idle` before
+  first prompt** (agent readiness) — a prompt fired during startup got lost;
+  `agent wait <name> --until idle` first, then prompt, then wait again.
+
+## S10 — agent.view.set/clear semantics ✅ resolved (live, 2026-09-30)
+
+- `agent.view.set` → `{type:"agent_view", active:true, source, label}`;
+  ownership enforced (re-set by owner works; `agent.view.clear` by owner →
+  `active:false`).
+- Confirmed **UI-only projection**: `agent.list` is unaffected by an active
+  view. crew must NOT use it for control flow — it exists to steer the built-in
+  Agents sidebar. Optional nicety for crew: project its run's agents into the view.
 
 ## Supporting findings
 

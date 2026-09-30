@@ -8,3 +8,5 @@
 
 # pi / tooling local state
 .pi/sessions/
+crew/bin/
+.forseti/

@@ -1,0 +1,29 @@
+# forseti crew v1 — deterministic planner → coder pipeline.
+# Run: forseti-crew run -f crew.yaml [--headless]
+name: demo-planner-coder
+
+agents:
+  - name: planner
+    kind: pi
+    model: opencode-go/glm-5.3-flash
+    prompt: |
+      You are the planner in a two-agent crew. Do NOT edit any files.
+      Produce a numbered plan (max 5 steps, one line each) to add a file
+      named HELLO_CREW.md to the repo root containing the line
+      "crew pipeline works". End your reply with the single word PLAN_READY.
+
+  - name: builder
+    kind: pi
+    model: opencode-go/glm-5.3-flash
+    prompt: |
+      You are the coder in a two-agent crew. Execute this plan exactly,
+      touching only what it names:
+
+      {{ .planner }}
+
+      When done, reply with the single word DONE.
+
+edges:
+  - from: planner
+    to: builder
+    when: re:PLAN_READY

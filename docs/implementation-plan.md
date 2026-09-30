@@ -166,7 +166,7 @@ Obsidian community plugin, Local REST API upgrade (rg baseline is sufficient).
 | Packaging: `herdr plugin install alytaphoenix/forseti/herdr-plugin` slug pattern verified (`OWNER/REPO[/SUBDIR]`); ttt plugin manual install documented; pi package shape added (`package.json` + `pi.extensions`), verified loadable via `pi -e`. Repo has been **public** since 2026-09-30 — hint: don't run `plugin install` while the local `plugin link` for the same id (`forseti`) is active — it would create a duplicate instance. | ✅ done |
 | Post-upgrade smoke run (after herdr/ttt upgrades) | ⬜ continuous |
 
-## Phase 5 — crew layer: agent graph builder + runner — **design locked** (2026-09-30)
+## Phase 5 — crew layer: agent graph builder + runner — ✅ **implemented + verified** (2026-09-30)
 
 User decisions: deterministic runner (no LLM routing); full interactive
 form/list builder (no canvas); Go + Bubble Tea; lives in this repo (`crew/`
@@ -178,23 +178,25 @@ design.md §Phase 5.
 
 | # | Question | Status |
 |---|---|---|
-| S6 | Socket framing (NDJSON? handshake?) + `events.subscribe`/`events.wait` semantics — one-shot vs stream | ⬜ |
-| S7 | `agent.read` behavior (`source` enum, scrollback vs screen, revision) + `pane_output_changed` event rate on a busy pi pane → pick monitor debounce from data | ⬜ |
-| S8 | `layout.apply`/`layout.export` — declarative N-pane crew tab? | ⬜ |
-| S9 | Two concurrent pi agents with different `--model` args (per-node models) | ⬜ |
-| S10 | `agent.view.set` semantics (output filtering? simplifies capture?) | ⬜ |
+| S6 | Socket framing (NDJSON? handshake?) + `events.subscribe`/`events.wait` semantics — one-shot vs stream | ✅ resolved — NDJSON, no handshake; one-shot calls close after response; subscribe = persistent stream (`subscription_started` ack, `{"event","data"}` pushes) |
+| S7 | `agent.read` behavior (`source` enum, scrollback vs screen, revision) + `pane_output_changed` event rate on a busy pi pane → pick monitor debounce from data | ✅ resolved — `result.read.text`, all 4 sources work; **no push surface for output** (`events.wait` status-only, `pane_output_changed` unsubscribable) → monitor = status stream + debounced `agent.read` |
+| S8 | `layout.apply`/`layout.export` — declarative N-pane crew tab? | ✅ resolved — full BSP round-trip; walk `result.layout.root` for pane ids |
+| S9 | Two concurrent pi agents with different `--model` args (per-node models) | ✅ resolved — both models live side by side, own status lines; wait `idle` before first prompt |
+| S10 | `agent.view.set` semantics (output filtering? simplifies capture?) | ✅ resolved — UI-only sidebar projection with source ownership; not a control surface |
+
+Driver kept: `scripts/spike-socket.py` (re-runnable, transcript to /tmp).
 
 ### Tasks
 
 | Task | Design | Status |
 |---|---|---|
-| 5-0 spikes | S6–S10 above → `docs/spikes.md` | ⬜ |
-| 5-1 schema + loader | `crew.yaml` v1 (agents/edges/entry), validator (herdr name rule, edge endpoints, entry exists, loops need `max_visits`), example 2-agent planner→coder | ⬜ |
-| 5-2 Go socket client | framing per S6, id-correlated request/response, subscription stream | ⬜ |
-| 5-3 runner core | headless Go package: sequential + parallel fan-out/fan-in, `when: status[/regex]` edges, `{{ nodes.X.output }}` templating, bus-file handoff (`.forseti/bus/<node>.md`) for large outputs, timeouts, JSONL run log (`.forseti/runs/`); `forseti-crew run --headless` CLI | ⬜ |
-| 5-4 app shell + monitor | Bubble Tea split layout: left graph/builder, right persistent monitor pane (live tail via `pane_output_changed` + `agent.read`, debounced per S7, visible target only), bottom event-log strip, focus-pane keybinding (read-only monitor; no nested-terminal interaction in v1) | ⬜ |
-| 5-5 builder | agent CRUD forms (name validated `[a-z][a-z0-9_-]{0,31}`, kind, args, prompt), edge forms (from/to/when), validation-on-save → `crew.yaml`, adopt-live-agent import | ⬜ |
-| 5-6 integration | `scripts/crew-smoke.sh` (2-agent headless run E2E), README section, final design.md/AGENTS.md status update | ⬜ |
+| 5-0 spikes | S6–S10 above → `docs/spikes.md` | ✅ **all resolved live** — driver kept at `scripts/spike-socket.py` |
+| 5-1 schema + loader | `crew.yaml` v1 (agents/edges/entry), validator (herdr name rule, edge endpoints, entry exists, loops need `max_visits`), example 2-agent planner→coder | ✅ shipped — `crew/internal/schema` + 7 unit tests passing; entry derived (no `entry:` key); example `crew/examples/crew.yaml` |
+| 5-2 Go socket client | framing per S6, id-correlated request/response, subscription stream | ✅ shipped — `crew/internal/herdrd`: per-call dial (server closes one-shot conns), persistent `Subscribe()` with `subscription_started` ack, typed helpers (`AgentPromptWait` race-free dispatch) |
+| 5-3 runner core | headless Go package: sequential + parallel fan-out/fan-in, `when: status[/regex]` edges, `{{ nodes.X.output }}` templating, bus-file handoff (`.forseti/bus/<node>.md`) for large outputs, timeouts, JSONL run log (`.forseti/runs/`); `forseti-crew run --headless` CLI | ✅ **verified live** (22:38) — planner→builder run created `HELLO_CREW.md` via `re:PLAN_READY` edge; bus files + JSONL run log confirmed; wave scheduler with parallel fan-out, `max_visits` cycle bounds |
+| 5-4 app shell + monitor | Bubble Tea split layout: left graph/builder, right persistent monitor pane (live tail via `pane_output_changed` + `agent.read`, debounced per S7, visible target only), bottom event-log strip, focus-pane keybinding (read-only monitor; no nested-terminal interaction in v1) | ✅ shipped, UI verified in-pane (22:40) — monitor is debounced `agent.read` (700 ms, running-selected only) since S7 proved no output-push surface; event strip = last runner event |
+| 5-5 builder | agent CRUD forms (name validated `[a-z][a-z0-9_-]{0,31}`, kind, args, prompt), edge forms (from/to/when), validation-on-save → `crew.yaml`, adopt-live-agent import | ✅ shipped, verified in-pane — add-agent/edge forms step through, adopt-live picked up `coder`, save validates before write |
+| 5-6 integration | `scripts/crew-smoke.sh` (2-agent headless run E2E), README section, final design.md/AGENTS.md status update | 🔄 smoke written + running; README/AGENTS updates in progress |
 
 Boundaries: crew needs herdr+pi only (ttt optional; members may carry the forseti
 pi extension); dedicated crew tab, teardown closes only what it created; `blocked`
@@ -216,20 +218,25 @@ surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
 - Go API key stored at `~/.config/forseti/opencode-go.key` (0600, outside the repo);
   referenced by pi via `!cat` in `~/.pi/agent/models.json`.
 
-## Phases 0–4 implementation complete — status 2026-09-30
+## Phases 0–5 implementation complete — status 2026-09-30
 
-All four phases executed and verified live (see per-phase tables above; spikes in
-`docs/spikes.md`). **Phase 5 (crew layer) is design-locked, not started** — see
-its section above. Working loop proven end-to-end:
+All five phases executed and verified live (see per-phase tables above; spikes in
+`docs/spikes.md`). Working loop proven end-to-end:
 
 ```
 forseti.open            → herdr tab: ttt (--listen) + pi agent
 ttt ctrl+k a / palette  → selection + line → herdr agent prompt
 pi replies / edits code → follow mode jumps ttt to the exact changed line
 sidebar + status bar    → live agent lifecycle (idle/working/blocked/done)
-smoke gate: scripts/smoke.sh → PASS
+~/forseti vault         → evergreen notes + daily logs via pi tools / ttt commands
+forseti-crew run        → deterministic agent graph (planner→coder) in its own tab
+smoke gates: scripts/smoke.sh + scripts/crew-smoke.sh → PASS
 ```
 
-Only remaining (non-blocking) items: repo visibility decision (packaging for
-public distribution), U1 upstream issue, and re-running the smoke gate after
-herdr/ttt upgrades.
+Phase 5 (crew) added: `crew/` Go module (`forseti-crew`), socket client +
+runner + Bubble Tea builder/monitor, `crew.yaml` v1 with validator + unit
+tests, example planner→coder pipeline E2E (created `HELLO_CREW.md` through
+the `re:PLAN_READY` edge), smoke gate.
+
+Only remaining (non-blocking) items: U1/U2 upstream issues to ttt, and
+re-running the smoke gates after herdr/ttt upgrades.
