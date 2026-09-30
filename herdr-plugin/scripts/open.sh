@@ -70,12 +70,17 @@ fi
 
 created=$(herdr_json tab create --cwd "$dir" --label "$EDITOR_LABEL" --no-focus)
 tab_id=$(json_field "$created" tab_id)
-# tab create returns tab + root pane; fall back to pane list if needed.
-root_pane=$(json_field "$created" root_pane)
+root_pane=$(json_field "$created" pane_id)
 if [ -z "$root_pane" ]; then
-  root_pane=$(herdr_json pane list --workspace "$(json_field "$created" workspace_id)" \
-    | sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  # Fallback: list panes in the new tab and take the last pane_id on the line
+  # (tab create's root pane is the only pane at this point).
+  root_pane=$(herdr_json pane list --workspace "$(json_field "$created" workspace_id)" 2>/dev/null \
+    | sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -1)
 fi
+[ -n "$tab_id" ] && [ -n "$root_pane" ] || {
+  printf 'forseti: could not parse tab create response: %s\n' "$created" >&2
+  exit 1
+}
 
 # `pane run` types "ttt --listen" + Enter into the fresh shell pane.
 herdr_json pane run "$root_pane" "ttt $listen_args" >/dev/null
@@ -84,9 +89,18 @@ herdr_json pane run "$root_pane" "ttt $listen_args" >/dev/null
 
 split=$(herdr_json pane split --pane "$root_pane" --direction right --no-focus)
 pi_pane=$(json_field "$split" pane_id)
+if [ -n "$pi_pane" ] && [ "$pi_pane" = "$root_pane" ]; then
+  # grep-style fallback can latch onto the wrong pane; disambiguate by taking
+  # the LAST pane_id seen, or bail loudly with the raw response.
+  pi_pane=$(printf '%s' "$split" | sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | tail -1)
+fi
+[ -n "$pi_pane" ] || {
+  printf 'forseti: could not parse pane split response: %s\n' "$split" >&2
+  exit 1
+}
 
 # agent start returns only after herdr detects pi ready in that pane
-# (~30 s default). Use -- for pi-specific args once spike S3 confirms.
+# (~30 s default). Pi args may follow -- (S3: passed verbatim).
 herdr_json agent start "$AGENT_NAME" --kind pi --pane "$pi_pane" >/dev/null
 
 # --- 6. summarize --------------------------------------------------------
