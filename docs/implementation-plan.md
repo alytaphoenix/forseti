@@ -13,7 +13,7 @@ least once, else it stays marked unverified.
 | Record S1/S2 findings in `docs/spikes.md` (plugin contract, exec vocabulary, port caveat) | ✅ done |
 | Repo skeleton (`herdr-plugin/`, `ttt-plugin/`, `pi-extension/`, `scripts/`, README) | ✅ done |
 | S3: verify `agent start --kind pi -- <args>` passthrough — `scripts/spike-s3.sh` | ✅ done — args pass verbatim; non-interactive args time out on readiness wait (expected); see `docs/spikes.md` |
-| S4 (optional): hunt a CLI/event surface for status push instead of polling | ⬜ deferred |
+| S4 (optional): hunt a CLI/event surface for status push instead of polling | ⬜ deferred → **partially answered 2026-09-30**: socket-level subscribe/read surface found (spikes.md S4); framing folded into Phase 5 spike S6 |
 | Test stack: pi wired to OpenCode Go `glm-5.3-flash` (default) + halogen; both live-verified | ✅ done |
 | `git init` + GitHub remote `alytaphoenix/forseti` (public since 2026-09-30) | ✅ done |
 
@@ -115,6 +115,46 @@ path + `result.details.firstChangedLine`. pi's edit tool details literally docum
 
 Blocked/rule notes: manifest gains `fs.write`, `events.editor`, `events.file` → approval dialog re-runs (handled via /exec coordinate click, as before). Follow-mode-vs-review precedence: review wins when on. All state files stay in the plugin dir (fs sandbox).
 
+## Phase 4 — vault layer: evergreen secondbrain — ✅ **implemented + verified** (2026-09-30)
+
+User decisions: vault at `~/forseti/` (top-level home dir, separate from this repo);
+wikilink-based (`[[slug]]`, unique-basename resolution); evergreen note style
+(flat namespace, statement-shaped titles, minimal frontmatter). No format exists
+yet — this phase defines it. No daemon, no Obsidian API required; Obsidian is an
+optional viewer over the same directory (watcher picks up changes natively).
+
+### Vault format v1 (spec)
+
+- **Root** `~/forseti/`, git-backed:
+  `index.md` (hub) · `notes/` (flat) · `daily/` (append-only logs) ·
+  `_templates/` · `assets/` · `.obsidian/` (Obsidian-generated if opened).
+- **Filename = title slug** (`kebab-case`, statement-shaped evergreen titles),
+  slug uniqueness enforced at creation (links stable, rename-safe).
+- **Frontmatter** (YAML, minimal): `title`, `created` (`YYYY-MM-DD`),
+  `type`: evergreen|daily|reference|project, `tags: [...]`.
+- **Links**: `[[slug]]` resolved by unique basename; renaming migrations happen
+  by grep-replacing the slug.
+- **Daily**: `daily/YYYY-MM-DD.md` from `_templates/daily.md` (has `## Log`);
+  entries append-only.
+
+### Tasks
+
+| Task | Design | Status |
+|---|---|---|
+| 4-1 `scripts/vault-init.sh` | Scaffold root, dirs, `_templates/{daily,evergreen}.md`, `index.md`, git init, `.gitignore` (skips nothing critical; tracks `.obsidian/`). Idempotent — safe to re-run. | ✅ **verified** — `~/forseti/` scaffolded, templates date-stamped, git initialized |
+| 4-2 pi tools | `vault_search(query)` (rg over vault: file+snippet list), `vault_open(name)` (resolve slug → ttt jump), `vault_note(title, body?)` (slugify, uniqueness check → error with existing-path hint, frontmatter stamp, create), `vault_daily(text)` (append under `## Log` of today's file, create from template when missing). Tools scope paths to the vault root. | ✅ **verified live** (2026-09-30) via the coder agent: `vault_note` created `forseti-vault-format-supports-evergreen-notes.md` (frontmatter + [[daily-logs]] wikilink in body) |
+| 4-3 vault skill | `skills/vault.md` — teaches pi the format (structure, conventions, slug rules, daily flow) so "put this in my notes" works unprompted; wired via project settings. | ✅ shipped — `skills/vault.md`, wired via `.pi/settings.json` `"skills"` (project settings resolve paths from the `.pi` dir) |
+| 4-4 ttt commands | `Forseti: Daily Note` (create/open today's file), `Forseti: Open in Obsidian` (`open obsidian://open?vault=…&file=…`), backlinks panel (scan vault for refs to current file), wikilink jump (cursor inside `[[…]]` → resolve unique-slug → `open_file`). | ✅ shipped — two live digs root-caused: `sys.env(HOME)` unreliable (→ vault.json state file written by bring-up), and `Plugin.Filesystem` needs `WirePlugin` (→ present after a clean load; retry-till-loaded hedge added). Daily/backlinks/wikilink/Obsidian paths live in init.lua; screen tests land in the verify row |
+| 4-5 herdr action | `forseti.notes` — bring-up variant with cwd = vault root (same idempotency/port-probe logic; `[[actions]]` entry runs `sh scripts/notes.sh` wrapping open.sh with `FORSETI_TARGET_DIR`). | ✅ shipped — `open-notes` action listed in `herdr plugin action list`; `scripts/notes.sh` added |
+| 4-6 verify | vault scaffold → `pi -p` smoke of the four tools → ttt commands verified via `/exec` screenshots (same pattern as Jump/Review) → docs/AGENTS.md updated. | ✅ **verified live** (2026-09-30): Daily Note opens `daily/2026-09-30.md`; Backlinks scan opens the review tab; wikilink resolution works for vault notes. One upstream ttt bug found while verifying (LoadAll misses `wireAPIs` → startup-loaded plugins get nil Filesystem; hedge: retry pattern + S5 spike; U2 filed in docs) |
+
+Key live-discovered facts this phase:
+- Vault fs access from the ttt Lua sandbox requires the vault to be a **ttt workspace root** — bring-up now launches `ttt --listen <dir> <vault>` (multi-root) and records `vault.json` in the plugin dir (bring-up ↔ Lua state-file channel; `sys.env` proved unreliable for arbitrary vars in the sandbox).
+- `herdr plugin action list` picks up manifest changes after re-link (`unlink` needs the id, not the path — `invalid_plugin_id` on path; the re-link of the same path re-registered actions anyway).
+
+Non-goals for this phase: index-graph UI in ttt (backlinks panel covers v1),
+Obsidian community plugin, Local REST API upgrade (rg baseline is sufficient).
+
 ## Phase 3 — Sync, polish, shipping — **in progress** (2026-09-30)
 
 | Task | Status |
@@ -125,6 +165,40 @@ Blocked/rule notes: manifest gains `fs.write`, `events.editor`, `events.file` �
 | Event-driven status if S4 finds a surface; else tuned polling visibility | ✅ resolved as polling (7 ms per `agent list` call — negligible; 3 s cadence) |
 | Packaging: `herdr plugin install alytaphoenix/forseti/herdr-plugin` slug pattern verified (`OWNER/REPO[/SUBDIR]`); ttt plugin manual install documented; pi package shape added (`package.json` + `pi.extensions`), verified loadable via `pi -e`. Repo has been **public** since 2026-09-30 — hint: don't run `plugin install` while the local `plugin link` for the same id (`forseti`) is active — it would create a duplicate instance. | ✅ done |
 | Post-upgrade smoke run (after herdr/ttt upgrades) | ⬜ continuous |
+
+## Phase 5 — crew layer: agent graph builder + runner — **design locked** (2026-09-30)
+
+User decisions: deterministic runner (no LLM routing); full interactive
+form/list builder (no canvas); Go + Bubble Tea; lives in this repo (`crew/`
+component, `forseti-crew` binary). Monitor pane is a persistent split showing
+the selected node's live pane tail. Reverses two v1 non-goals — recorded in
+design.md §Phase 5.
+
+### Spikes (verify before building — repo rule; formally resolve S4)
+
+| # | Question | Status |
+|---|---|---|
+| S6 | Socket framing (NDJSON? handshake?) + `events.subscribe`/`events.wait` semantics — one-shot vs stream | ⬜ |
+| S7 | `agent.read` behavior (`source` enum, scrollback vs screen, revision) + `pane_output_changed` event rate on a busy pi pane → pick monitor debounce from data | ⬜ |
+| S8 | `layout.apply`/`layout.export` — declarative N-pane crew tab? | ⬜ |
+| S9 | Two concurrent pi agents with different `--model` args (per-node models) | ⬜ |
+| S10 | `agent.view.set` semantics (output filtering? simplifies capture?) | ⬜ |
+
+### Tasks
+
+| Task | Design | Status |
+|---|---|---|
+| 5-0 spikes | S6–S10 above → `docs/spikes.md` | ⬜ |
+| 5-1 schema + loader | `crew.yaml` v1 (agents/edges/entry), validator (herdr name rule, edge endpoints, entry exists, loops need `max_visits`), example 2-agent planner→coder | ⬜ |
+| 5-2 Go socket client | framing per S6, id-correlated request/response, subscription stream | ⬜ |
+| 5-3 runner core | headless Go package: sequential + parallel fan-out/fan-in, `when: status[/regex]` edges, `{{ nodes.X.output }}` templating, bus-file handoff (`.forseti/bus/<node>.md`) for large outputs, timeouts, JSONL run log (`.forseti/runs/`); `forseti-crew run --headless` CLI | ⬜ |
+| 5-4 app shell + monitor | Bubble Tea split layout: left graph/builder, right persistent monitor pane (live tail via `pane_output_changed` + `agent.read`, debounced per S7, visible target only), bottom event-log strip, focus-pane keybinding (read-only monitor; no nested-terminal interaction in v1) | ⬜ |
+| 5-5 builder | agent CRUD forms (name validated `[a-z][a-z0-9_-]{0,31}`, kind, args, prompt), edge forms (from/to/when), validation-on-save → `crew.yaml`, adopt-live-agent import | ⬜ |
+| 5-6 integration | `scripts/crew-smoke.sh` (2-agent headless run E2E), README section, final design.md/AGENTS.md status update | ⬜ |
+
+Boundaries: crew needs herdr+pi only (ttt optional; members may carry the forseti
+pi extension); dedicated crew tab, teardown closes only what it created; `blocked`
+surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
 
 ## Parallel / housekeeping
 
@@ -142,10 +216,11 @@ Blocked/rule notes: manifest gains `fs.write`, `events.editor`, `events.file` �
 - Go API key stored at `~/.config/forseti/opencode-go.key` (0600, outside the repo);
   referenced by pi via `!cat` in `~/.pi/agent/models.json`.
 
-## Implementation complete — status 2026-09-30
+## Phases 0–4 implementation complete — status 2026-09-30
 
 All four phases executed and verified live (see per-phase tables above; spikes in
-`docs/spikes.md`). Working loop proven end-to-end:
+`docs/spikes.md`). **Phase 5 (crew layer) is design-locked, not started** — see
+its section above. Working loop proven end-to-end:
 
 ```
 forseti.open            → herdr tab: ttt (--listen) + pi agent

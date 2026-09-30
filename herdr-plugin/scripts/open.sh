@@ -69,7 +69,19 @@ fi
 
 # --- 4. dedicated tab: ttt in the root pane ------------------------------
 
-created=$(herdr_json tab create --cwd "$dir" --label "$EDITOR_LABEL" --no-focus)
+# vault root rides along as a second workspace root + env var; a state file in
+# the plugin dir makes it readable by the Lua side (sys.env proved unreliable
+# for arbitrary vars inside the sandbox).
+VAULT_ROOT="${FORSETI_VAULT:-$HOME/forseti}"
+extra_roots=""
+[ -d "$VAULT_ROOT" ] && extra_roots="$VAULT_ROOT"
+if [ -d "$VAULT_ROOT" ]; then
+  printf '{"vault":"%s"}\n' "$VAULT_ROOT" \
+    > "$HOME/.config/ttt/plugins/forseti/vault.json" 2>/dev/null || true
+fi
+
+created=$(herdr_json tab create --cwd "$dir" --label "$EDITOR_LABEL" \
+  --env "FORSETI_VAULT=$VAULT_ROOT" --no-focus)
 tab_id=$(json_field "$created" tab_id)
 root_pane=$(json_field "$created" pane_id)
 if [ -z "$root_pane" ]; then
@@ -85,8 +97,9 @@ fi
 
 # `pane run` types "ttt --listen" + Enter into the fresh shell pane.
 # ttt gets the target dir as an explicit PATH argument (P1-1: pane run's shell
-# may not inherit the tab's --cwd; a bare ttt opened 'untitled').
-herdr_json pane run "$root_pane" "ttt $listen_args $dir" >/dev/null
+# may not inherit the tab's --cwd; a bare ttt opened 'untitled'), plus the
+# vault as a second workspace root when present.
+herdr_json pane run "$root_pane" "ttt $listen_args $dir $extra_roots" >/dev/null
 
 # --- 5. pi pane: split right, then let herdr launch+ready pi itself ------
 

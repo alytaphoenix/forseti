@@ -36,6 +36,39 @@ Full command list:
 - Quick Open palette (file mode) exists (`selectdialog` `paletteFileMode`); `keybindings.md`
   confirms `Ctrl+K P` = `file.quickOpen`, `Ctrl+G` = `editor.goToLine`.
 
+## S5 — ttt fs sandbox + `sys.env` quirks (Phase 4 debug, 2026-09-30) — ✅ resolved
+
+Root-caused two Phase 4 ttt-plugin failures via actual invocations + partial
+`ttt@v1.6.0` sources:
+
+1. **`sys.env(HOME)`/`sys.env(FORSETI_VAULT)` return `""` inside the Lua sandbox** —
+   environment-tag reads cannot be trusted for arbitrary keys. Fix: deploy-time
+   state file. Bring-up writes `vault.json` into the plugin dir (shell side has
+   full env); the Lua side reads it at init. This is the third state-file hand-off
+   besides `jump.json`/`review.json`.
+2. **`fs.read` said "filesystem API not available"** even though
+   `ttt.plugin_dir()` returned the right path. Root cause: `Plugin.Filesystem`
+   is wired **per plugin**, and two distinct call sites exist:
+   - startup: `cmd/ttt/main.go` — `pluginManager.SetFilesystemAPI(...)` was only
+     reachable for plugin panels loaded *after* the sidebar widget exists; but
+     actually `LoadAll()`-loaded startup plugins get `p.Filesystem` set only
+     via `RegisterStartupPluginCommands()` → `WirePlugin()` → `NewPluginFilesystemAPI(
+     workspace paths + p.Dir)`.
+   - Later plugins (installed from the panel) get it via `SetFilesystemAPI`.
+   `p.Dir` is populated from `manager.go` scanning the plugins dir, so the plugin
+   dir *is* in the allowed roots list. The failure mode must therefore be in
+   ordering: if a plugin initialized before WirePlugin runs, its Lua `fs` module
+   has `nil` Filesystem. When the plugin panel reloads (Plugins: Reload All), the
+   stale runtime is replaced and `fs.read` begins working (observed: after a
+   clean restart + reload, `vault.json read` succeeded).
+   Lesson: order the load → any ttt API call that depends on `FilesystemAPI`
+   behind `pcall`-gated availability.
+
+Practical hedge (implemented): the Lua plugin treats "vault undefined" as a
+soft error — it shows the vault as unavailable in the Forseti sidebar and
+re-invokes `ttt` reload each time Daily Note / Open Obsidian is used, so
+restarting ttt is not required, just retry the command after ~1s.
+
 ## S3 — `herdr agent start --kind pi -- <args>` passthrough ✅ resolved (2026-09-30)
 
 Live result, per run (fresh scratch workspace per run, cleaned up after):
@@ -59,11 +92,32 @@ from **outside** herdr has no implicit workspace — create one explicitly first
 (`workspace create --cwd …`); responses are nested JSON (e.g. agent-id in pane objects,
 `.result.root_pane.pane_id`), and flat leaf keys are reliably greppable.
 
-## S4 — herdr event subscriptions
+## S4 — herdr event subscriptions — **partially resolved** (2026-09-30)
 
-`herdr api schema --json` (protocol 22) defines subscription/event schemas
-(`AgentStatus` enum present). No CLI subcommand exposing subscribe/unsubscribe was
-found. Status: optional — Lua polling via `set_interval` is sufficient for v1 status.
+No CLI subcommand exposes subscribe/unsubscribe, but the **socket API surface
+exists** — verified live 2026-09-30 by enumerating `herdr api schema --json`
+(protocol 22) against the running server:
+
+- Request methods include `events.subscribe`, `events.wait`, `agent.read`,
+  `agent.prompt`, `agent.wait`, `agent.view.set/clear`, `agent.send_keys`,
+  `layout.apply`, `layout.export`, `pane.edit_scrollback`, `pane.copy_search`.
+- `AgentReadParams`: `target`, `source` (enum TBD), `format` (default `text`),
+  `lines`, `strip_ansi` (default true) → pane/agent output capture at API level.
+- `AgentPromptParams.wait`: `{until: [...AgentStatus], timeout_ms}` → synchronous
+  dispatch-with-settle semantics without polling.
+- `AgentStartParams`: `name`, `kind`, `pane_id`, `args[]`, `timeout_ms`
+  (3000–300000 ms).
+- Event vocabulary: workspace/worktree/tab/pane lifecycle events plus
+  `pane_output_changed`, `pane_agent_status_changed` (carries `pane_id`,
+  `workspace_id`, `agent_status`, `state_labels`), `pane_agent_detected`,
+  `pane_exited`, `layout_updated`.
+- `PaneOutputMatchedEvent` carries `matched_line` + a `PaneReadResult` →
+  output-match subscriptions exist at schema level.
+
+Unverified (Phase 5 spikes S6–S10): socket framing/handshake, subscribe semantics
+(one-shot vs stream), `agent.read` behavior, `pane_output_changed` event rate,
+`layout.apply` payload shape, `agent.view.set` purpose.
+Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
 
 ## Supporting findings
 

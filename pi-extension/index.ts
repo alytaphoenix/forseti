@@ -27,6 +27,7 @@ const JUMP_FILE = path.join(FORSETI_DIR, "jump.json");
 const CONTEXT_FILE = path.join(FORSETI_DIR, "context.json");
 const REVIEW_FILE = path.join(FORSETI_DIR, "review.json");
 const MIN_GAP_MS = 1200;
+const VAULT = process.env.FORSETI_VAULT ?? path.join(homedir(), "forseti");
 
 interface ForsetiContext {
 	path?: string;
@@ -276,5 +277,125 @@ export default function forseti(pi: ExtensionAPI) {
 		} catch (e) {
 			ctx?.ui?.notify?.("forseti: review sync failed: " + String(e), "warning");
 		}
+	});
+
+	// ---- Phase 4-2: vault (evergreen secondbrain) tools ----------------------
+	function slugify(title: string): string {
+		return title
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "")
+			.slice(0, 80);
+	}
+
+	function inVault(abs: string): boolean {
+		return abs.startsWith(path.join(VAULT, path.sep));
+	}
+
+	pi.registerTool({
+		name: "vault_search",
+		label: "vault_search",
+		description:
+			`Full-text search over the user's evergreen notes vault (${VAULT}). Use to recall the user's own notes, past decisions, and links (wikilinks [[slug]]).`,
+		promptSnippet: "Search the second-brain vault for notes matching a query.",
+		parameters: Type.Object({
+			query: Type.String({ description: "Text to find in notes" }),
+		}),
+		async execute(_toolCallId, params) {
+			const { stdout } = await pi.exec("rg", [
+				"-i", "-n", "--glob", "*.md", "-m", "5", "-e", params.query, VAULT,
+			]);
+			const hits = (stdout ?? "").trim().split("\n").filter((l: string) => l.startsWith(VAULT)).slice(0, 20);
+			if (hits.length === 0) return { content: [{ type: "text", text: `no vault matches for: ${params.query}` }] };
+			return { content: [{ type: "text", text: hits.join("\n") }], details: { count: hits.length } };
+		},
+	});
+
+	pi.registerTool({
+		name: "vault_note",
+		label: "vault_note",
+		description:
+			"Create an evergreen note in the vault. Title becomes the filename slug; uniqueness is enforced. Prefer statement-shaped titles.",
+		promptSnippet: "Create a new evergreen note with [[wikilinks]] support.",
+		parameters: Type.Object({
+			title: Type.String({ description: "Note title (statement-shaped encouraged)" }),
+			body: Type.Optional(Type.String({ description: "Initial note body" })),
+		}),
+		async execute(_toolCallId, params) {
+			const slug = slugify(params.title);
+			if (!slug) return { content: [{ type: "text", text: "vault_note error: title produced an empty slug" }], isError: true };
+			const file = path.join(VAULT, "notes", `${slug}.md`);
+			try {
+				await readFile(file, "utf8");
+				return { content: [{ type: "text", text: `note already exists: ${file}` }], details: { ok: false, exists: true } };
+			} catch { /* fresh */ }
+			const front = [
+				"---",
+				`title: ${params.title}`,
+				`created: ${new Date().toISOString().slice(0, 10)}`,
+				"type: evergreen",
+				"tags: []",
+				"---",
+				"",
+				`# ${params.title}`,
+				"",
+			].join("\n");
+			await writeFile(file, front + (params.body ? params.body + "\n" : ""), "utf8");
+			await writeJump(file);
+			await tttExec('exec "Forseti: Jump"');
+			return { content: [{ type: "text", text: `created [[${slug}]] → ${file} (opened in ttt)` }], details: { ok: true } };
+		},
+	});
+
+	pi.registerTool({
+		name: "vault_daily",
+		label: "vault_daily",
+		description: "Append a log line to today's daily note (daily/YYYY-MM-DD.md, creates it from the template).",
+		promptSnippet: "Append to today's daily note in the vault.",
+		parameters: Type.Object({
+			text: Type.String({ description: "One log line to append under '## Log'" }),
+		}),
+		async execute(_toolCallId, params) {
+			const today = new Date().toISOString().slice(0, 10);
+			const file = path.join(VAULT, "daily", `${today}.md`);
+			let content: string;
+			try { content = await readFile(file, "utf8"); } catch {
+				content = [
+					"---", `title: ${today}`, `created: ${today}`, "type: daily", "---", "", "## Log", "",
+				].join("\n");
+			}
+			if (!content.includes("## Log")) content += "\n## Log\n";
+			content = content.trimEnd() + "\n" + `- ${params.text}\n`;
+			await writeFile(file, content, "utf8");
+			return { content: [{ type: "text", text: `logged to ${file}` }], details: { ok: true } };
+		},
+	});
+
+	pi.registerTool({
+		name: "vault_open",
+		label: "vault_open",
+		description:
+			"Resolve a note by slug/title and open it in the ttt editor pane (Forseti jump). Use for 'show me my notes about X'.",
+		promptSnippet: "Open a vault note in the ttt editor.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Note slug or filename, with or without .md" }),
+		}),
+		async execute(_toolCallId, params) {
+			const base = params.name.replace(/\.md$/, "");
+			const candidates = [
+				path.join(VAULT, "notes", `${base}.md`),
+				path.join(VAULT, "daily", `${base}.md`),
+				path.join(VAULT, `${base}.md`),
+			];
+			for (const c of candidates) {
+				try { await readFile(c, "utf8"); await pushJump({ ui: { notify: () => {} } } as never, c); return { content: [{ type: "text", text: `opened ${c}` }], details: { ok: true } }; } catch { /* next */ }
+			}
+			const { stdout } = await pi.exec("rg", ["--files", VAULT, "-g", `*${base}*`]);
+			const near = (stdout ?? "").trim().split("\n").slice(0, 5);
+			return {
+				content: [{ type: "text", text: `no note '${base}'. ${near.length ? `close matches:\n${near.join("\n")}` : "vault search found nothing"}` }],
+				details: { ok: false },
+			};
+		},
 	});
 }

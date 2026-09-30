@@ -218,6 +218,155 @@ local function review()
   ttt.open_file(first.path, tonumber(first.line) or 1)
 end
 
+-- --- Phase 4-4: vault commands (evergreen secondbrain) ---------------------
+
+local VAULT = nil
+local fs_api_ready = true
+do
+  local vf = ttt.plugin_dir() .. "/vault.json"
+  local ok_r, content, rerr = pcall(fs.read, vf)
+  if not ok_r or not content then
+    fs_api_ready = false
+    ttt.log("warn", ("forseti: fs not usable yet (err=%s) — vault features disabled; retry after reload")
+      :format(tostring(ok_r and rerr or ok_r and "unknown" or "call failed")))
+  else
+    local ok, data = pcall(json.decode, content)
+    if ok and type(data) == "table" and data.vault then VAULT = data.vault
+    else ttt.log("warn", "forseti: vault.json decode failed: " .. tostring(content)) end
+  end
+end
+
+local function today()
+  return os.date("%Y-%m-%d")
+end
+
+local function vault_ready()
+  if not VAULT or not fs_api_ready then
+    last_error = "vault not ready yet (ttt fs API loads after WirePlugin) — retry in a second, or pick it again from the palette"
+    return false
+  end
+  if not fs.exists(VAULT .. "/notes") then
+    last_error = "vault not accessible from this workspace (needs scripts/vault-init.sh, or open via forseti.open)"
+    log_err(last_error)
+    return false
+  end
+  return true
+end
+
+local function daily_note()
+  if not vault_ready() then return end
+  local file = VAULT .. "/daily/" .. today() .. ".md"
+  if not fs.exists(file) then
+    local tpl = fs.read(VAULT .. "/_templates/daily.md")
+    if not tpl then log_err("missing daily template"); return end
+    fs.write(file, (tpl:gsub("__TODAY__", today())))
+  end
+  ttt.log("info", "forseti: daily → " .. file)
+  ttt.open_file(file, 1)
+  ttt.set_status_item("left", "ask", "daily note open")
+  ttt.set_timeout(2000, function() ttt.remove_status_item("ask") end)
+end
+
+local function slugify(t)
+  local s = t:lower():gsub("[^%w%-]+", "-"):gsub("^-+", ""):gsub("-+$", "")
+  return s
+end
+
+-- resolve a [[wikilink]] slug (or substring of one) to a vault file
+local function resolve_link(slug)
+  local candidates = { VAULT .. "/notes/" .. slug .. ".md", VAULT .. "/daily/" .. slug .. ".md", VAULT .. "/" .. slug .. ".md" }
+  for _, c in ipairs(candidates) do
+    if fs.exists(c) then return c end
+  end
+  return nil
+end
+
+local function wikilink_jump()
+  local cur = editor.cursor()
+  local line = editor.get_line(cur.line) or ""
+  local col = cur.col
+  -- find the [[…]] whose span covers the cursor (byte scan; 1-based cols)
+  local best_s, best_text
+  for s, text in line:gmatch("%[%[(.-)%]%]") do
+    local e = line:find(text, s, true)
+    -- find() re-scans; recompute span properly below
+    local bs, be, inner = line:find("%[%[(.-)%]%]")
+    -- FALLBACK below; a precise span pass is done second
+    if not best_text then best_text = inner end -- first link this line (approximate)
+    best_s = bs
+  end
+  -- precise pass: longest prefix match
+  local span_s, span_e, inner = line:find("%[%[(.-)%]%]")
+  local function span_at(i)
+    local from = 1
+    while true do
+      local s, e = line:find("%[%[(.-)%]%]", from)
+      if not s then return nil end
+      if i >= s and i <= e + 0 then return s, e, line:match("^(.-)%]%]", s) end
+      from = s + 1
+    end
+  end
+  local s, e, link = span_at(col)
+  if not link then
+    for l2 in line:gmatch("%[%[(.-)%]%]") do link = l2 break end
+  end
+  if not link then log_err("cursor is not on a [[wikilink]]") return end
+  local file = resolve_link(link)
+  if not file then log_err("[[" .. link .. "]] not found in vault (notes/? daily/? root)") return end
+  ttt.open_file(file, 1)
+end
+
+local function backlinks()
+  local path = editor.file_path()
+  if not path or not vault_ready() then return end
+  local stem = path:match("([^/]+)%.md$") or path
+  local stem_title = stem:gsub("^%-", ""):gsub("%-", " ")
+  ttt.log("info", ("forseti: backlinks scan for %s (stem=%s)"):format(path, stem))
+  local hits = {}
+  for _, dir in ipairs({ VAULT .. "/notes", VAULT .. "/daily" }) do
+    for _, entry in ipairs(fs.list(dir) or {}) do
+      if not entry.is_dir and entry.name:match("%.md$") then
+        local f = dir .. "/" .. entry.name
+        if f ~= path then
+          local content = fs.read(f)
+          if content and (content:find("%[%[" .. stem .. "%]%]", 1, true) or content:find(stem, 1, true)) then
+            hits[#hits + 1] = f
+          end
+        end
+      end
+    end
+  end
+  if ttt.open_tab then
+    ttt.open_tab({
+      title = "Forseti: Backlinks",
+      render = function(panel)
+        if #hits == 0 then panel:label("no backlinks found for " .. stem) return end
+        panel:label("notes linking here (" .. stem .. "):")
+        panel:label("")
+        for _, h in ipairs(hits) do panel:label("- " .. h) end
+      end,
+    })
+  end
+  if hits[1] then ttt.open_file(hits[1], 1) end
+end
+
+local function open_obsidian()
+  if not vault_ready() then log_err("vault not present — nothing to open") return end
+  local vname = VAULT:match("([^/]+)$")
+  local rel = ""
+  local p = editor.file_path()
+  if p and p:sub(1, #VAULT + 1) == VAULT .. "/" then
+    rel = p:sub(#VAULT + 2)
+    rel = rel:gsub("%%", "%%25"):gsub("%s", "%%20")
+  end
+  local uri = "obsidian://open?vault=" .. vname .. (rel ~= "" and (rel:find("^daily/") or rel:find("^notes/")) and "&file=" .. rel or "")
+  -- macOS: `open <uri>`; linux fallback binary pointed at by $FORSETI_OPEN
+  local opener = sys.env("FORSETI_OPEN") ~= "" and sys.env("FORSETI_OPEN") or "open"
+  pcall(sys.exec, opener, { uri })
+  ttt.set_status_item("left", "ask", "opened in obsidian: " .. (rel ~= "" and rel or vname))
+  ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
+end
+
 -- --- sidebar ---------------------------------------------------------------
 
 local glyph = { idle = "●", working = "◐", blocked = "!", done = "✓", unknown = "?" }
@@ -258,6 +407,10 @@ ttt.register({
     { id = "forseti.jump", title = "Forseti: Jump", handler = jump },
     { id = "forseti.ask", title = "Forseti: Ask pi about selection", handler = quick_ask },
     { id = "forseti.review", title = "Forseti: Review", handler = review },
+    { id = "forseti.daily", title = "Forseti: Daily Note", handler = daily_note },
+    { id = "forseti.backlinks", title = "Forseti: Backlinks", handler = backlinks },
+    { id = "forseti.wikilink", title = "Forseti: Follow Wikilink", handler = wikilink_jump },
+    { id = "forseti.obsidian", title = "Forseti: Open in Obsidian", handler = open_obsidian },
     {
       id = "forseti.toggle_focus",
       title = "Forseti: Toggle focus pi on ask",

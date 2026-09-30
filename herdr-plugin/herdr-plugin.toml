@@ -12,3 +12,9 @@ id = "open"
 title = "Open Forseti (ttt + pi)"
 contexts = ["workspace"]
 command = ["sh", "scripts/open.sh"]
+
+[[actions]]
+id = "open-notes"
+title = "Open Forseti notes workspace"
+contexts = ["workspace"]
+command = ["sh", "scripts/notes.sh"]

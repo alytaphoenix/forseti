@@ -25,8 +25,12 @@ this doc records design decisions only.
 
 ## Non-goals (v1)
 
-- No new long-running daemon or orchestrator process.
-- No custom UI outside host surfaces (no separate forseti TUI/web).
+- ~~No new long-running daemon or orchestrator process.~~ **Reversed for Phase 5**
+  (2026-09-30): the crew runner is a user-invoked process that lives for a
+  build/run session — still no always-on daemon.
+- ~~No custom UI outside host surfaces (no separate forseti TUI/web).~~ **Reversed
+  for Phase 5** (2026-09-30): the crew TUI is a custom UI, but it runs inside a
+  herdr pane — herdr remains the host surface.
 - No LLM/provider work: pi's providers, auth, and models stay pi's own.
 - No remote/SSH (`herdr --machine`) support — local single-machine only.
 - No reimplementation of herdr's agent tracking (pi is a native herdr agent kind).
@@ -219,4 +223,114 @@ event subscription, switch to events.
 
 See [`implementation-plan.md`](implementation-plan.md). Summary: Phase 0 spikes +
 skeleton → Phase 1 bring-up → 2a ttt plugin → 2b pi extension → Phase 3 sync/polish
-+ shipping.
++ shipping → **Phase 4: vault layer** (evergreen secondbrain in `~/forseti/`:
+wikilinks `[[slug]]`, flat title-slug notes, daily logs; vault tools for pi, ttt
+vault commands, `forseti.notes` bring-up — spec + task table in the plan) →
+**Phase 5: crew layer** (below).
+
+## Phase 5 — crew layer: agent graph builder + runner (design locked 2026-09-30)
+
+A LangGraph/CrewAI-style layer over herdr's native agent surface. Decisions
+(2026-09-30, user-confirmed):
+
+1. **Orchestration: deterministic runner.** Fixed edges with explicit `when`
+   conditions (agent status + optional output regex). LLMs do node work only —
+   no LLM routing decisions.
+2. **Builder: full interactive, form/list-based.** No drag canvas (terminal-
+   inappropriate). `crew.yaml` is the source of truth; the builder reads/writes
+   it with validation-on-save.
+3. **Stack: Go + Bubble Tea.** Single binary `forseti-crew`; component dir
+   `crew/`. Runner core is a headless Go package; the TUI is a view over it
+   (`forseti-crew run --headless crew.yaml` is the smoke/CI path).
+4. **Monitor pane is persistent** — split layout, live tail of the selected
+   node's pane. Read-only: takeover happens in the real herdr pane via a
+   focus keybinding, not by embedding an interactive terminal.
+5. Lives in this repo as Phase 5; reverses two v1 non-goals (see above).
+
+### Architecture
+
+```
+crew.yaml ──source of truth──▶ forseti-crew (Go binary, runs in its own herdr tab)
+                                ├─ herdr socket client (protocol 22, id-correlated)
+                                │    · agent.start / agent.prompt(wait) / agent.read
+                                │    · events.subscribe → status + output events
+                                ├─ runner core (pure state machine, no TUI deps)
+                                │    · graph walk, conditions, templating, timeouts
+                                │    · JSONL run log → .forseti/runs/<ts>.jsonl
+                                └─ Bubble Tea front-end (builder + monitor)
+```
+
+ttt is **not** required — crew needs herdr + pi only. Crew members are ordinary pi
+agents; each may independently carry the forseti pi extension (jump/review/follow
+keep working inside crew runs).
+
+### crew.yaml schema v1 (sketch)
+
+```yaml
+entry: planner
+agents:
+  planner:
+    kind: pi
+    args: [--model, glm-5.3-flash]      # per-node model; args pass verbatim (S3)
+    prompt: |
+      You are the planner. Produce a task breakdown...
+  coder:
+    kind: pi
+    prompt: |
+      Implement the plan below.
+      {{ nodes.planner.output }}
+edges:
+  - { from: planner, to: coder, when: done }
+  - { from: coder, to: coder, when: "done && output =~ /TESTS FAILED/",
+      note: "self-loop retry, bounded by max_visits" }
+```
+
+- `when`: status (`done|blocked|error`) + optional regex on captured output.
+- Output flow: `{{ nodes.<id>.output }}` templating. Large payloads go through a
+  bus file (`.forseti/bus/<node>.md`, path templated into the prompt) — pi reads
+  files natively; big outputs never go through paste.
+- Validation: agent names `[a-z][a-z0-9_-]{0,31}` (herdr rule), edge endpoints
+  exist, entry exists, loops require `max_visits`.
+
+### Runner semantics
+
+- **Bring-up**: dedicated crew tab; one pane per agent; `agent.start --kind pi`
+  per node (readiness ≈ 30 s each — start concurrently, per-agent timeout within
+  the schema's 300 s cap). Never touch user topology; teardown closes only what
+  the run created.
+- **Dispatch**: `agent.prompt` with `wait {until, timeout_ms}`; on timeout,
+  re-read `agent.get` before any resubmit (same policy as Phases 1–4).
+- **Capture**: `agent.read` (text, strip_ansi) at node settle → stored as the
+  node's `output`, appended to the run log.
+- **Events**: `events.subscribe` drives `pane_agent_status_changed` (runner state)
+  and `pane_output_changed` (monitor tail; **debounced** — rate measured in S7,
+  refresh only the visible monitor target).
+- **Human-in-the-loop**: `blocked` surfaces in the TUI (highlight + event log)
+  and is never auto-answered; `focus pane` keybinding jumps to the real pane.
+
+### TUI layout
+
+```
+┌─────────────────────────────────┬──────────────────────────────┐
+│ GRAPH / BUILDER                 │ MONITOR PANE (persistent)    │
+│  ● planner   done               │ tabs: output │ status        │
+│  └──▶ ● coder working ░░        │ live tail of selected node   │
+│         └▶ ● reviewer idle      │ node meta: model, state,     │
+│ [a]dd agent  [e]dge  [r]un      │ elapsed, dispatch history    │
+├─────────────────────────────────┴──────────────────────────────┤
+│ EVENT LOG  12:04:31 prompt→coder   12:04:02 planner settled    │
+└────────────────────────────────────────────────────────────────┘
+```
+
+Builder screens (left side): graph view, agent CRUD forms (name/kind/args/
+prompt), edge forms (from/to/when), adopt-live-agent import (turn an already
+running herdr agent into a node). Save validates and writes `crew.yaml`.
+
+### Boundaries (Phase 5)
+
+- One active run per machine in v1 (herdr socket is per-user anyway).
+- Deterministic routing only — an LLM-routed conditional node type is an
+  explicit future item, not v1.
+- ttt optional; no ttt plugin changes required for crew v1.
+- Per-agent model/provider config goes through pi's own args (S3 passthrough) —
+  forseti still implements no provider logic.

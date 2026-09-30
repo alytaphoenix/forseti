@@ -36,7 +36,7 @@ facts from source-level investigation.
 - `agent start <name> --kind KIND --pane <id> [-- <agent-args>]` — kinds include **pi** (native recognition). Readiness ~30 s default. Names `[a-z][a-z0-9_-]{0,31}`, unique among live agents.
 - Server errors: JSON on stderr, exit 1; syntax errors exit 2. Parse IDs from JSON, never from examples.
 - Server may be not running (`herdr status`; socket `~/.config/herdr/herdr.sock`) — CLI control needs it. Isolate experiments in a named test session; never `herdr server stop` from a session.
-- Protocol 22 (`herdr api schema --json`) exposes event subscriptions (incl. `AgentStatus` enum `idle|working|blocked|done|unknown`), but no CLI surface for them was found yet — Phase 3 topic.
+- Protocol 22 (`herdr api schema --json`): the **socket API** exposes `events.subscribe`/`events.wait`, `agent.read` (format/lines/strip_ansi), `agent.prompt` with `wait {until, timeout_ms}`, `layout.apply/export`, and events incl. `pane_agent_status_changed` (`AgentStatus` enum `idle|working|blocked|done|unknown`) + `pane_output_changed`. Still **no CLI subscribe surface** — a direct socket client is the Phase 5 path; framing/handshake unverified (spikes S6–S10).
 
 ## herdr plugin contract (from ttt's shipped plugin source, spike S1)
 
@@ -74,5 +74,5 @@ facts from source-level investigation.
 
 ## Repo conventions
 
-- Components: `herdr-plugin/` (TOML + sh), `ttt-plugin/` (JSON manifest + Lua), `pi-extension/` (TypeScript), `scripts/` (spikes and dev helpers), `docs/` (design, plan, spikes).
+- Components: `herdr-plugin/` (TOML + sh), `ttt-plugin/` (JSON manifest + Lua), `pi-extension/` (TypeScript), `scripts/` (spikes and dev helpers), `docs/` (design, plan, spikes), `crew/` (Go + Bubble Tea — **planned**, Phase 5).
 - Only claims you verified; when investigating, record new findings in `docs/spikes.md` and update `docs/implementation-plan.md` statuses.
