@@ -96,6 +96,25 @@ Fix along the way: `ToolExecutionEndEvent` carries **no `args`** — follow mode
 path + `result.details.firstChangedLine`. pi's edit tool details literally document
 `firstChangedLine` as "for editor navigation".
 
+## Phase 2c — real ask + IDE-awareness — **planned → implementing** (2026-09-30)
+
+| Task | Design |
+|---|---|
+| 2c-1 `forseti.ask` takes a real question | Sidebar panel gains an input widget (`panel:input{on_submit}`); submit sends `path + loc + selection + user question`. `ctrl+k a` remains the quick-ask with the fixed template. |
+| 2c-2 auto-focus round trip | After ask submits, `herdr agent focus <name>` so the answer streams in the pi pane (toggle command "Forseti: Toggle focus pi on ask", default ON). |
+| 2c-3 editor context into every pi prompt | Lua writes `context.json` (plugin dir) on `cursor.change`/`file.save`/`file.open` (throttled): path/line/col/selection. pi ext transforms `pi.on("input")` (`{action:"transform"}`) to prepend `[Forseti editor context] …`; slash commands exempt; `/ttt context on|off` (default ON). |
+
+## Phase 2d — model-driven editor + review mode — **planned → implementing**
+
+| Task | Design |
+|---|---|
+| 2d-1 pi tools | `pi.registerTool`: `ttt_open(path, line?, end_line?)` and `ttt_diff()` — the model navigates ttt itself (same jump hand-off). Plus `ttt_read_context` (reads context.json). | ✅ **verified live** (2026-09-30): `ttt_open` by the model opened `README.md:5` |
+| 2d-2 review mode | `/ttt review on|off` — collect edits across a turn (`tool_execution_*` pairing), on `turn_end` write `review.json` + `exec "Forseti: Review"` → Lua renders a review tab (custom `open_tab` listing files+hunks, opening the first change). Replaces per-edit jumping when both enabled. | ✅ **verified live** (2026-09-30): review.json listed both files; "Forseti: Review" palette cmd opened the summary tab (registered in `forseti.review`). Root cause of the break: command registration omitted from register table on first write (caught via `exec` 400 + screen check). NOTE: ttt caches registered commands at load — init.lua changes need restart/reload, and a plugin reload after a *failed* one latches stale state (verified 18:05); fresh ttt start is the clean dial. |
+| 2d-3 `/ttt diff` E2E | Visual verify Changes view. | ✅ **verified live** (2026-09-30): `exec "Git: Open Changes"` → Changes view screenshot-verified. |
+| 2d-4 `parse_agents` hardening | Single-pattern kind-first parse (removes the known `raw:match` over-selection wart); reversed-order fallback kept. |
+
+Blocked/rule notes: manifest gains `fs.write`, `events.editor`, `events.file` → approval dialog re-runs (handled via /exec coordinate click, as before). Follow-mode-vs-review precedence: review wins when on. All state files stay in the plugin dir (fs sandbox).
+
 ## Phase 3 — Sync, polish, shipping — **in progress** (2026-09-30)
 
 | Task | Status |

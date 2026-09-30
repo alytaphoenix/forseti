@@ -2,17 +2,21 @@
   "name": "forseti",
   "displayName": "Forseti",
   "description": "Tie ttt into herdr + pi: ask the pi agent about your selection, watch its status, jump to code pi changed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "alytaphoenix",
   "entry": "init.lua",
   "api": 1,
   "permissions": {
     "panel.sidebar": true,
+    "panel.editor": true,
     "commands": true,
     "keybindings": true,
     "editor.read": true,
     "editor.write": true,
     "fs.read": true,
+    "fs.write": true,
+    "events.editor": true,
+    "events.file": true,
     "system.env": true,
     "system.exec": ["herdr"]
   }

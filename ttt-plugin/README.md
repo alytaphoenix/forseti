@@ -35,4 +35,4 @@ dialog (persisted in `~/.config/ttt/plugins.ttt.json`).
   else a single live pi agent is used; ambiguous → error in the panel.
 - `system.exec` is scoped to `herdr` only. No network permissions requested.
 - fs reads (jump.json) are sandboxed to workspace + this plugin dir — the pi
-  side writes exactly there.
+  side writes exactly there. REVIEW-TEST-LINE-1
