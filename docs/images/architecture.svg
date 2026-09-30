@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 560" width="920" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <defs>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7ee787"/>
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#79c0ff"/>
+    </marker>
+    <marker id="arr-yellow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#e3b341"/>
+    </marker>
+  </defs>
+
+  <rect width="920" height="560" fill="#0d1117"/>
+  <text x="460" y="34" text-anchor="middle" fill="#e6edf3" font-size="19" font-weight="bold">forseti — three hosts, one loop</text>
+  <text x="460" y="56" text-anchor="middle" fill="#8b949e" font-size="12">herdr (workspaces + agent registry) · ttt (terminal IDE) · pi (coding agent)</text>
+
+  <!-- herdr server -->
+  <rect x="290" y="76" width="340" height="118" rx="10" fill="#161b22" stroke="#f78166" stroke-width="1.5"/>
+  <text x="460" y="100" text-anchor="middle" fill="#f78166" font-size="14" font-weight="bold">herdr server</text>
+  <text x="460" y="120" text-anchor="middle" fill="#c9d1d9" font-size="11">workspace w1 · dedicated "forseti" tab</text>
+  <rect x="310" y="132" width="140" height="30" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="380" y="151" text-anchor="middle" fill="#7ee787" font-size="11">pane: ttt --listen</text>
+  <rect x="470" y="132" width="140" height="30" rx="6" fill="#0d1117" stroke="#30363d"/>
+  <text x="540" y="151" text-anchor="middle" fill="#79c0ff" font-size="11">pane: pi</text>
+  <text x="460" y="182" text-anchor="middle" fill="#8b949e" font-size="10.5">native agent kind "pi": idle → working → blocked → done</text>
+
+  <!-- live here footer -->
+  <text x="460" y="211" text-anchor="middle" fill="#8b949e" font-size="10">bring-up: herdr plugin action invoke forseti.open (idempotent)</text>
+
+  <!-- ttt box -->
+  <rect x="40" y="268" width="380" height="240" rx="10" fill="#161b22" stroke="#7ee787" stroke-width="1.5"/>
+  <text x="230" y="292" text-anchor="middle" fill="#7ee787" font-size="14" font-weight="bold">ttt editor (Go TUI, --listen)</text>
+  <text x="60" y="318" fill="#c9d1d9" font-size="11">Lua plugin "forseti":</text>
+  <text x="76" y="340" fill="#c9d1d9" font-size="11">• sidebar panel: input row + agent status</text>
+  <text x="76" y="362" fill="#c9d1d9" font-size="11">• ctrl+k a → quick ask (fixed template)</text>
+  <text x="76" y="384" fill="#c9d1d9" font-size="11">• Forseti: Jump / Review (palette cmds)</text>
+  <text x="76" y="384" fill="#c9d1d9" font-size="11">• status-bar badges on settled turns</text>
+  <text x="76" y="412" fill="#8b949e" font-size="10.5">stdio sandbox → speaks via sys.exec("herdr", …)</text>
+  <text x="76" y="430" fill="#8b949e" font-size="10.5">POST http://127.0.0.1:4242/exec (own listener)</text>
+  <text x="76" y="448" fill="#8b949e" font-size="10.5">fs sandbox → plugin dir (state files)</text>
+  <text x="76" y="472" fill="#8b949e" font-size="10.5">model driver: ttt_open · ttt_diff · ttt_read_context</text>
+
+  <!-- pi box -->
+  <rect x="500" y="268" width="380" height="240" rx="10" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
+  <text x="690" y="292" text-anchor="middle" fill="#79c0ff" font-size="14" font-weight="bold">pi agent (@earendil-works/pi-coding-agent)</text>
+  <text x="520" y="318" fill="#c9d1d9" font-size="11">TypeScript extension:</text>
+  <text x="536" y="340" fill="#c9d1d9" font-size="11">• /ttt jump · open · follow · review · context · diff</text>
+  <text x="536" y="362" fill="#c9d1d9" font-size="11">• tools: ttt_open · ttt_diff · ttt_read_context</text>
+  <text x="536" y="384" fill="#c9d1d9" font-size="11">• input hook: injects [Forseti editor context]</text>
+  <text x="520" y="412" fill="#8b949e" font-size="10.5">default model: OpenCode Go glm-5.3-flash</text>
+  <text x="520" y="430" fill="#8b949e" font-size="10.5">fallback: halogen /v1 (keyless, LAN)</text>
+  <text x="520" y="454" fill="#8b949e" font-size="10.5">edit tool carries firstChangedLine → exact jumps</text>
+  <text x="520" y="472" fill="#8b949e" font-size="10.5">x-opencode-session header (Go validated client)</text>
+
+  <!-- arrows: ttt <-> herdr -->
+  <path d="M 230 268 C 230 220 300 210 356 198" fill="none" stroke="#7ee787" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="196" y="232" fill="#7ee787" font-size="10" text-anchor="end">sys.exec herdr:</text>
+  <text x="196" y="246" fill="#7ee787" font-size="10" text-anchor="end">agent list · prompt · focus</text>
+
+  <!-- herdr -> pi (native lifecycle) -->
+  <path d="M 560 194 C 620 220 650 240 672 264" fill="none" stroke="#79c0ff" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="612" y="228" fill="#79c0ff" font-size="10">agent start --kind pi</text>
+
+  <!-- pi -> ttt via exec + state files -->
+  <path d="M 500 400 C 452 420 476 396 424 400" fill="none" stroke="#e3b341" stroke-width="1.5" marker-end="url(#arr-yellow)"/>
+  <text x="462" y="422" fill="#e3b341" font-size="10" text-anchor="middle">state files + POST /exec:</text>
+  <text x="462" y="437" fill="#e3b341" font-size="10" text-anchor="middle">jump.json · review.json · context.json</text>
+
+  <!-- loop badge -->
+  <circle cx="460" cy="390" r="0"/>
+  <text x="460" y="535" text-anchor="middle" fill="#8b949e" font-size="10.5">tui pane keeps herdr env (HERDR_*): both sides target the current session</text>
+</svg>

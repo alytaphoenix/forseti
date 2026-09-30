@@ -62,6 +62,15 @@ facts from source-level investigation.
 - Command handler shape: `pi.registerCommand(name, {description, handler: async (args, ctx) => ...})`; feedback via `ctx.ui.notify(msg, "info"|"warning"|"error")`; `pi.exec(program, args)` for subprocesses.
 - Slash commands arrive fine through `herdr agent prompt` (bracketed paste → pi parses leading `/` commands).
 - pi natively emits `x-opencode-session` headers (`provider-attribution.js` in dist) — OpenCode Go validated-client requirement is satisfied.
+- Tools & prompt hooks (verified live 2026-09-30): `pi.registerTool({name, label, description, promptSnippet, parameters: Type.Object(...), async execute(_toolCallId, params) -> {content:[{type:"text",text}], details}})` — `Type` comes from `typebox` (bundled dependency, resolvable from user-dir extensions); `pi.on("input", h)` can `{action:"transform", text}` to prepend context (skip leading-`/` inputs); `turn_start`/`turn_end` bracket a turn for per-turn edit collection.
+
+## ttt Lua plugin facts — 2c/2d additions (verified 2026-09-30)
+
+- `ttt.events` module: `events.on("cursor.change"|"file.open"|"file.save", cb)` — needs `events.editor` / `events.file` manifest permissions; `require` it inside pcall and degrade if missing.
+- Sidebar input widget: `panel:input({placeholder, prefix, on_submit = function(text) end})` inside `render` — widget state (typed text) survives re-renders.
+- Command registration is cached per plugin load: adding a palette command in init.lua needs "Plugins: Reload All" or a fresh ttt start; **a reload following a failed reload latches stale state** (verified — restart ttt via bring-up instead).
+- `exec "X"` over /exec returns a non-2xx "command N …: command "X" not found" when a palette title isn't registered — cheap probe for command availability.
+- Keep plugin state files in `ttt.plugin_dir()` (fs sandbox): `jump.json`, `review.json`, `context.json` are the three hand-offs (pi ⇄ Lua).
 
 ## Repo conventions
 

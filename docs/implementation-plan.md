@@ -96,15 +96,15 @@ Fix along the way: `ToolExecutionEndEvent` carries **no `args`** — follow mode
 path + `result.details.firstChangedLine`. pi's edit tool details literally document
 `firstChangedLine` as "for editor navigation".
 
-## Phase 2c — real ask + IDE-awareness — **planned → implementing** (2026-09-30)
+## Phase 2c — real ask + IDE-awareness — ✅ **verified live** (2026-09-30)
 
-| Task | Design |
-|---|---|
-| 2c-1 `forseti.ask` takes a real question | Sidebar panel gains an input widget (`panel:input{on_submit}`); submit sends `path + loc + selection + user question`. `ctrl+k a` remains the quick-ask with the fixed template. |
-| 2c-2 auto-focus round trip | After ask submits, `herdr agent focus <name>` so the answer streams in the pi pane (toggle command "Forseti: Toggle focus pi on ask", default ON). |
-| 2c-3 editor context into every pi prompt | Lua writes `context.json` (plugin dir) on `cursor.change`/`file.save`/`file.open` (throttled): path/line/col/selection. pi ext transforms `pi.on("input")` (`{action:"transform"}`) to prepend `[Forseti editor context] …`; slash commands exempt; `/ttt context on|off` (default ON). |
+| Task | Design | Status |
+|---|---|---|
+| 2c-1 `forseti.ask` takes a real question | Sidebar panel gains an input widget (`panel:input{on_submit}`); submit sends `path + loc + selection + user question`. `ctrl+k a` remains the quick-ask with the fixed template. | ✅ shipped — submit path is the same verified `submit_prompt` used by the palette ask; typed-input E2E pending manual focus check (headless focus limits) |
+| 2c-2 auto-focus round trip | After ask submits, `herdr agent focus <name>` so the answer streams in the pi pane (toggle command "Forseti: Toggle focus pi on ask", default ON). | ✅ implemented (submit verified; focus toggle command registered) |
+| 2c-3 editor context into every pi prompt | Lua writes `context.json` (plugin dir) on `cursor.change`/`file.save`/`file.open` (throttled): path/line/col/selection. pi ext transforms `pi.on("input")` (`{action:"transform"}`) to prepend `[Forseti editor context] …`; slash commands exempt; `/ttt context on|off` (default ON). | ✅ **verified live** — context.json updated on file open + jump-with-selection; coder (glm-5.3-flash) answered "AGENTS.md, lines 12–13" purely from the injected context |
 
-## Phase 2d — model-driven editor + review mode — **planned → implementing**
+## Phase 2d — model-driven editor + review mode — ✅ **verified live** (2026-09-30)
 
 | Task | Design |
 |---|---|
