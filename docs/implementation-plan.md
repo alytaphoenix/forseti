@@ -96,14 +96,16 @@ Fix along the way: `ToolExecutionEndEvent` carries **no `args`** — follow mode
 path + `result.details.firstChangedLine`. pi's edit tool details literally document
 `firstChangedLine` as "for editor navigation".
 
-## Phase 3 — Sync, polish, shipping — ⬜ not started
+## Phase 3 — Sync, polish, shipping — **in progress** (2026-09-30)
 
-- Event-driven status if S4 finds a surface; else tuned polling visibility rules.
-- Notifications on `done`/`blocked` transitions (herdr notification surface).
-- Jump accuracy: exact hunk from pi edit payloads; optional diagnostics follow.
-- Packaging: `herdr plugin install` slug, ttt plugin zip/dir install, `pi install`
-  package; per-component READMEs documenting trust + single-ttt constraint.
-- Post-upgrade smoke script covering bring-up → ask → jump roundtrip.
+| Task | Status |
+|---|---|
+| Round-trip smoke test (`scripts/smoke.sh`): agent live + ttt reachable + jump hand-off | ✅ done & passing |
+| Jump accuracy: exact changed line via pi's `firstChangedLine` | ✅ done (Phase 2b) |
+| Notifications on `done`/`blocked` transitions | ⬜ |
+| Event-driven status if S4 finds a surface; else tuned polling visibility | ⬜ (polling works) |
+| Packaging: `herdr plugin install` slug / ttt plugin publish / `pi install` package | ⬜ |
+| Post-upgrade smoke run (after herdr/ttt upgrades) | ⬜ continuous |
 
 ## Parallel / housekeeping
 
