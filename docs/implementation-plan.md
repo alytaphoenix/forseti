@@ -78,20 +78,23 @@ Open/known items:
 - Sidebar tab visibility in the running pane (it exists in the panel list; verifying
   the visible tab strip renders it is a manual check).
 
-## Phase 2b — pi extension: `/ttt` commands, follow mode — ⬜ not started
+## Phase 2b — pi extension: `/ttt` commands, follow mode — ✅ **verified live** (2026-09-30)
 
-Component: `pi-extension/index.ts`. Lifecycle: no timers/sockets in the factory;
-HTTP client + state in `session_start`, closed in `session_shutdown`.
+Installed at `~/.pi/agent/extensions/forseti.ts` (user-level — every pi instance
+picks it up; repo copy is the source). Live E2E through a scratch herdr pi agent:
 
-1. `/ttt jump <path> [line] [end_line]` — write jump file → `POST /exec "Forseti:
-   Jump"` (fire-and-forget; closed port → silent no-op + notice).
-2. `/ttt follow on|off` (default off) — `tool_result` hook on edit tools → derive
-   target (path + first-changed-line from old/new strings) → emit jump.
-3. `/ttt diff` — palette title TBD-4; keystroke-chain fallback.
-4. `/herd list|agents` — read-only herdr pass-throughs when `HERDR_ENV=1`.
+| Feature | Result |
+|---|---|
+| `/ttt jump <path> <line>` via slash command through `herdr agent prompt` | ✅ jump file written, ttt opened `docs/design.md` at the line |
+| `/ttt follow on` + pi `edit` (append at line 2) | ✅ jump pushed with `firstChangedLine` → ttt opened `pi-follow-test.md` at the exact changed line |
+| `/ttt follow` status | ✅ (state resets on `/reload` — re-toggle after reloads) |
+| `/herd agents` (read-only) | ✅ |
+| `/ttt diff` → `exec "Git: Open Changes"` | ✅ wired (verified palette title in ttt source; the command POSTs ok — visual confirmation of the Changes tab pending a manual look, non-blocking) |
 
-**Acceptance:** scripted pi edit (`pi -p`) with follow on shows the edited file +
-approximate line in ttt; follow off changes nothing; all pushes tolerate a dead 4242.
+Fix along the way: `ToolExecutionEndEvent` carries **no `args`** — follow mode pairs
+`tool_execution_start` (has `args.path`) with end events via `toolCallId` to get the
+path + `result.details.firstChangedLine`. pi's edit tool details literally document
+`firstChangedLine` as "for editor navigation".
 
 ## Phase 3 — Sync, polish, shipping — ⬜ not started
 

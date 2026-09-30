@@ -207,7 +207,7 @@ event subscription, switch to events.
 | TBD-1 | Does `herdr tab create` accept a cwd/`--env`? | ✅ Yes — verified: `--cwd PATH --env KEY=VALUE --[no-]focus` |
 | TBD-2 | Tab focus command name | ✅ Verified: `herdr tab focus <tab_id>` |
 | TBD-3 | Is "sidebar panel currently visible" queryable from Lua? | Phase 2a verify |
-| TBD-4 | Exact ttt palette command titles (diff view) | Phase 2b verify |
+| TBD-4 | Exact ttt palette command titles (diff view) | ✅ Verified from source: `Git: Open Changes` (`changes.openDiff`), `Git: Open Full Diff`, `Git: Next/Previous Changed Hunk` |
 | R1 | ttt `--listen` is debug-grade; port/value pinned in source | Accepted v1; re-check after ttt upgrades |
 | R2 | Port 4242 collision (second instance binds silently) | Designed: bring-up probes, drops `--listen` with warning |
 | R3 | Trust friction: ttt approval dialog, pi `-a` | Documented per-component |

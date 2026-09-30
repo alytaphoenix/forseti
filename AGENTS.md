@@ -54,11 +54,14 @@ facts from source-level investigation.
 - **fs sandbox**: `ttt.fs` reads are restricted to workspace folders + the plugin's own dir — `/tmp` is NOT readable. Jump hand-off uses the plugin dir.
 - **Plugin loading gotchas (verified)**: symlinks in `~/.config/ttt/plugins/` are NOT loaded (copy, don't link); new plugins require a restart *or* "Plugins: Reload All"; first load shows the approval dialog (persisted in `~/.config/ttt/plugins.ttt.json`); `ttt.log` output is visible in the `debug` dump's `output` array.
 
-## pi extension facts (verified against 0.99.1 docs)
+## pi extension facts (verified against 0.99.1 docs + live runs)
 
-- Default-export factory receiving `ExtensionAPI`; TS loaded via jiti (no build step). Dev: `pi --extension ./file.ts`. Project-local: `pi install ./pi-extension -l` (needs `-a` to trust).
-- Factory must not spawn processes/sockets/watchers/timers — start/stop in `session_start` / `session_shutdown`.
-- `pi.on("tool_call" | "tool_result")` expose `toolName` + input; edit tools carry path + old/new strings → basis for follow-mode jumps.
+- Default-export factory receiving `ExtensionAPI`; TS loaded via jiti (no build step). Dev: `pi --extension ./file.ts`, or install at `~/.pi/agent/extensions/` (user-level) / `.pi/extensions/` (project). Probe a load with `pi -p --extension <file> "Reply OK"` — note anthropic OAuth refresh noise if provider not specified.
+- Factory must not spawn processes/sockets/watchers/timers — start/stop in `session_start` / `session_shutdown`. State resets on `/reload`.
+- Events: `tool_execution_end` has NO `args` (only toolCallId/toolName/result/isError) — pair with `tool_execution_start` keyed by `toolCallId` to get inputs. `edit` tool input is `{path, edits:[{oldText,newText}]}`; its result `details.firstChangedLine` gives the first changed line for free ("for editor navigation").
+- Command handler shape: `pi.registerCommand(name, {description, handler: async (args, ctx) => ...})`; feedback via `ctx.ui.notify(msg, "info"|"warning"|"error")`; `pi.exec(program, args)` for subprocesses.
+- Slash commands arrive fine through `herdr agent prompt` (bracketed paste → pi parses leading `/` commands).
+- pi natively emits `x-opencode-session` headers (`provider-attribution.js` in dist) — OpenCode Go validated-client requirement is satisfied.
 
 ## Repo conventions
 
