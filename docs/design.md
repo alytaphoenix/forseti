@@ -210,7 +210,7 @@ event subscription, switch to events.
 | TBD-4 | Exact ttt palette command titles (diff view) | ✅ Verified from source: `Git: Open Changes` (`changes.openDiff`), `Git: Open Full Diff`, `Git: Next/Previous Changed Hunk` |
 | R1 | ttt `--listen` is debug-grade; port/value pinned in source | Accepted v1; re-check after ttt upgrades |
 | R2 | Port 4242 collision (second instance binds silently) | Designed: bring-up probes, drops `--listen` with warning |
-| R3 | Trust friction: ttt approval dialog, pi `-a` | Documented per-component |
+| R3 | Trust friction: ttt approval dialog, pi `-a` | **Resolved live** — approval dialog verified end-to-end (screen-scraped coordinates via exec `click`), persisted in `plugins.ttt.json` |
 | R4 | herdr/ttt/pi upgrades shifting surfaces | `min_herdr_version` pinned; smoke test after every upgrade |
 | R5 | Follow mode stealing focus | Off by default; jump, not keystroke spam |
 | U1 | Upstream suggestion: `open FILE[:LINE[:COL]]` exec command in ttt | File issue with ttt (maintainer already ships a herdr plugin) |

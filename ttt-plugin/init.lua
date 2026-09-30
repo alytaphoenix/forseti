@@ -22,6 +22,7 @@ local agents = {}            -- { {name, status, workspace_id}, ... }
 local last_error = ""
 
 local function log_err(msg) ttt.log("error", "forseti: " .. msg) end
+local notified_done = {}   -- agent name -> true after we've pinged a settled state
 
 -- --- agent discovery -----------------------------------------------------
 -- herdr agent list emits flat JSON objects; per observed 0.9.3 output the key
@@ -169,5 +170,20 @@ ttt.register({
 })
 
 ttt.set_interval(POLL_MS, function()
+  local prev = agents
   agents = pi_agents()
+  -- notify on working -> settled transitions (done shown by herdr's own badge
+  -- distinction; we only ping once per settled state to stay quiet)
+  for _, a in ipairs(agents) do
+    local was = nil
+    for _, p in ipairs(prev) do if p.name == a.name then was = p end end
+    if was and was.status == "working" and a.status ~= "working" then
+      notified_done[a.name] = nil
+      if a.status == "blocked" then
+        ttt.set_status_item("right", "agent-" .. a.name, "! " .. a.name .. " needs you")
+      else
+        ttt.set_status_item("right", "agent-" .. a.name, a.name .. " " .. (glyph[a.status] or a.status))
+      end
+    end
+  end
 end)

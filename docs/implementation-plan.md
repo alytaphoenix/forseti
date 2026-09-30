@@ -102,8 +102,8 @@ path + `result.details.firstChangedLine`. pi's edit tool details literally docum
 |---|---|
 | Round-trip smoke test (`scripts/smoke.sh`): agent live + ttt reachable + jump hand-off | ✅ done & passing |
 | Jump accuracy: exact changed line via pi's `firstChangedLine` | ✅ done (Phase 2b) |
-| Notifications on `done`/`blocked` transitions | ⬜ |
-| Event-driven status if S4 finds a surface; else tuned polling visibility | ⬜ (polling works) |
+| Notifications on `done`/`blocked` transitions | ✅ done — sidebar poll sets a right status-bar badge on `working → settled` transitions (`coder ●` / `! name needs you`); second run of the local herdr notification surface proved `disabled` on this setup, so the ttt status bar is the channel |
+| Event-driven status if S4 finds a surface; else tuned polling visibility | ✅ resolved as polling (7 ms per `agent list` call — negligible; 3 s cadence) |
 | Packaging: `herdr plugin install` slug / ttt plugin publish / `pi install` package | ⬜ |
 | Post-upgrade smoke run (after herdr/ttt upgrades) | ⬜ continuous |
 
