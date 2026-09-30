@@ -53,25 +53,30 @@ This is the expected failure until 2a lands; document and proceed.
 **Acceptance: met.** One tab, one ttt (listening on 4242), one pi — and repeated
 invocations reuse rather than duplicate.
 
-## Phase 2a — ttt plugin: ask, status sidebar, `Forseti: Jump` — ⬜ not started
+## Phase 2a — ttt plugin: ask, status sidebar, `Forseti: Jump` — ✅ **verified live** (2026-09-30)
 
-Component: `ttt-plugin/` (`plugin.ttt.json`, `init.lua`). Permissions: `panel.sidebar`,
-`commands`, `keybindings`, `editor.read`, `editor.write`, `panel.editor`, `fs.read`,
-`system.exec: ["herdr"]`.
+Installed into `~/.config/ttt/plugins/forseti/` (copy — **symlinks are not picked up**
+by ttt's plugin loader, and new plugins load at startup only via "Plugins: Reload
+All"); first-load permission dialog approved (approvals persist in
+`~/.config/ttt/plugins.ttt.json`).
 
-1. Agent resolution helper: `herdr agent list` (no `--json` — default output is JSON) →
-   filter `agent == "pi"` → prefer the agent whose pane is in ttt's workspace; clear
-   errors for none/ambiguous.
-2. `Forseti: Jump` command: read `FORSETI_JUMP_FILE` (`{path, line, end_line}`) →
-   `ttt.open_tab` → `set_cursor` + `set_selection` (hunk highlight).
-3. `forseti.ask` (`ctrl+k a`): buffer path + cursor + selection → `herdr agent prompt
-   <resolved> "…" --wait`; notify on completion; never auto-answer `blocked`.
-4. Sidebar `Forseti`: `set_interval(3000)` poll of `agent list --json` while panel
-   visible (TBD: visibility check); render name + state; highlight `blocked`.
+Live verification:
 
-**Acceptance:** approval dialog shows expected permissions; ask sends the *selected*
-text and reports settled state; jump file + `curl -X POST --data 'exec "Forseti:
-Jump"' :4242/exec` opens the file with the hunk selected (screenshot-verified).
+| Feature | Result |
+|---|---|
+| `Forseti: Jump` (state file in plugin dir + `/exec` palette call) | ✅ opened `README.md` in a real editable buffer at the right line with the changed-range selection applied — via `ttt.open_file(path, line)` + `editor.set_selection`. No special permission needed. |
+| `forseti.ask` (selection/current-line → `herdr agent prompt`) | ✅ prompt delivered to the live pi pane (code-block context built from the active buffer); pi lifecycle observed `idle → working → idle` |
+| Sidebar "Forseti" panel | ✅ registered (`plugin.forseti` in sidebar debug dump); polls `herdr agent list` every 3 s |
+| `set_status_item` | ✅ correct signature is `(side, id, text)` — found via live error, fixed |
+
+Open/known items:
+
+- Go's upstream had transient `server_error: upstream service timeout` on one turn
+  (pi auto-retried); manual re-test replied instantly. Model flakiness, not wiring.
+- FS sandbox note (recorded in design §2): jump state went to the plugin's own dir —
+  `$SANDBOX` blocks reads outside workspace+plugin-dir, so `/tmp` was unusable.
+- Sidebar tab visibility in the running pane (it exists in the panel list; verifying
+  the visible tab strip renders it is a manual check).
 
 ## Phase 2b — pi extension: `/ttt` commands, follow mode — ⬜ not started
 

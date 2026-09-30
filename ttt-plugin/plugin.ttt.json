@@ -8,12 +8,12 @@
   "api": 1,
   "permissions": {
     "panel.sidebar": true,
-    "panel.editor": true,
     "commands": true,
     "keybindings": true,
     "editor.read": true,
     "editor.write": true,
     "fs.read": true,
+    "system.env": true,
     "system.exec": ["herdr"]
   }
 }

@@ -45,12 +45,14 @@ facts from source-level investigation.
 - Actions run **headless** (no PTY) — never exec a TUI from an action; re-dispatch into panes instead.
 - Dev: `herdr plugin link <abs path>`, confirm with `herdr plugin list`.
 
-## ttt facts (verified against v1.6.0 source & docs)
+## ttt facts (verified against v1.6.0 source & docs, plus live runs)
 
 - Exec vocabulary (`internal/app/exec_script.go`): `click|rclick|hover|drag`, `key COMBO`, `type TEXT`, `paste TEXT`, `copy`, `exec "Palette Command"`, `screenshot PATH`, `debug PATH`, `wait MS`, `wait-for TEXT [timeout=MS]`, `panel ID`, `quit|shutdown`. **No `open file` command.** Invalid actions exit nonzero / POST → non-2xx.
 - `--listen` enables HTTP `POST /exec` on the hardcoded `127.0.0.1:4242`; ttt source calls it *"a single-operator debug tool, not a public API"* → one forseti-enabled ttt per machine, unauthenticated local control (v1 accepts, docs must state it).
-- Quick Open `Ctrl+K P` (`file.quickOpen`); Go to Line `Ctrl+G` (`editor.goToLine`, palette has a goto-line mode).
-- Lua plugins: `plugin.ttt.json` manifest + entry Lua; sandboxed Lua 5.1, permission-gated (a missing permission removes the function from the module — degrade, don't crash). `ttt.set_interval(ms, fn)` runs on the main loop, min 50 ms, no permission needed, auto-cleared on reload. `os` is a safe subset. Install into `~/.config/ttt/plugins/<name>/`; first load shows an approval dialog persisted in `~/.config/ttt/plugins.ttt.json`; reload via **Plugins: Reload**.
+- Quick Open `Ctrl+K P` (`file.quickOpen`); Go to Line `Ctrl+G` (`editor.goToLine`); palette `exec` matches by title; `debug /path.json` dumps a rich state snapshot incl. sidebar panel list + plugin output log — best remote-debug tool for plugin work.
+- Lua plugin APIs (verified live): `ttt.open_file(path, line)` opens a real buffer and needs NO permission (unlike `open_tab` which needs `panel.editor`); `ttt.json` module for encode/decode; `ttt.set_status_item(side, id, text)` / `remove_status_item(id)`; `sys.env(name)` needs `system.env`; `sys.exec(binary, args)` needs `system.exec` allowlist and returns `{stdout, exit_code, ...}`.
+- **fs sandbox**: `ttt.fs` reads are restricted to workspace folders + the plugin's own dir — `/tmp` is NOT readable. Jump hand-off uses the plugin dir.
+- **Plugin loading gotchas (verified)**: symlinks in `~/.config/ttt/plugins/` are NOT loaded (copy, don't link); new plugins require a restart *or* "Plugins: Reload All"; first load shows the approval dialog (persisted in `~/.config/ttt/plugins.ttt.json`); `ttt.log` output is visible in the `debug` dump's `output` array.
 
 ## pi extension facts (verified against 0.99.1 docs)
 
