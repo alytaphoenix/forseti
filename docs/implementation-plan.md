@@ -15,7 +15,7 @@ least once, else it stays marked unverified.
 | S3: verify `agent start --kind pi -- <args>` passthrough — `scripts/spike-s3.sh` | ✅ done — args pass verbatim; non-interactive args time out on readiness wait (expected); see `docs/spikes.md` |
 | S4 (optional): hunt a CLI/event surface for status push instead of polling | ⬜ deferred |
 | Test stack: pi wired to OpenCode Go `glm-5.3-flash` (default) + halogen; both live-verified | ✅ done |
-| `git init` + GitHub private remote (`alytaphoenix/forseti`) | ✅ done |
+| `git init` + GitHub remote `alytaphoenix/forseti` (public since 2026-09-30) | ✅ done |
 
 Exit criteria: skeleton in place; S3 answered; AGENTS.md current.
 
@@ -104,15 +104,15 @@ path + `result.details.firstChangedLine`. pi's edit tool details literally docum
 | Jump accuracy: exact changed line via pi's `firstChangedLine` | ✅ done (Phase 2b) |
 | Notifications on `done`/`blocked` transitions | ✅ done — sidebar poll sets a right status-bar badge on `working → settled` transitions (`coder ●` / `! name needs you`); second run of the local herdr notification surface proved `disabled` on this setup, so the ttt status bar is the channel |
 | Event-driven status if S4 finds a surface; else tuned polling visibility | ✅ resolved as polling (7 ms per `agent list` call — negligible; 3 s cadence) |
-| Packaging: `herdr plugin install` slug / ttt plugin publish / `pi install` package | ⬜ |
+| Packaging: `herdr plugin install alytaphoenix/forseti/herdr-plugin` slug pattern verified (`OWNER/REPO[/SUBDIR]`); ttt plugin manual install documented; pi package shape added (`package.json` + `pi.extensions`), verified loadable via `pi -e`. Repo has been **public** since 2026-09-30 — hint: don't run `plugin install` while the local `plugin link` for the same id (`forseti`) is active — it would create a duplicate instance. | ✅ done |
 | Post-upgrade smoke run (after herdr/ttt upgrades) | ⬜ continuous |
 
 ## Parallel / housekeeping
 
 - **U1**: upstream issue to ttt — request an `open FILE[:LINE[:COL]]` exec command
   (kills the palette+state-file dance; maintainer already ships a herdr plugin).
-- Optional: `git init` + first commit (repo currently has no VCS).
-- ~~Run S3 spike at the next live herdr session~~ → **done** (see below).
+- ~~Optional: `git init` + first commit~~ → done (GitHub, `alytaphoenix/forseti` — repo flipped public 2026-09-30).
+- ~~Run S3 spike at the next live herdr session~~ → **done**.
 
 ## Test infrastructure (added 2026-09-30)
 
@@ -122,3 +122,20 @@ path + `result.details.firstChangedLine`. pi's edit tool details literally docum
   against these. Both verified with live `pi -p` calls (2026-09-30).
 - Go API key stored at `~/.config/forseti/opencode-go.key` (0600, outside the repo);
   referenced by pi via `!cat` in `~/.pi/agent/models.json`.
+
+## Implementation complete — status 2026-09-30
+
+All four phases executed and verified live (see per-phase tables above; spikes in
+`docs/spikes.md`). Working loop proven end-to-end:
+
+```
+forseti.open            → herdr tab: ttt (--listen) + pi agent
+ttt ctrl+k a / palette  → selection + line → herdr agent prompt
+pi replies / edits code → follow mode jumps ttt to the exact changed line
+sidebar + status bar    → live agent lifecycle (idle/working/blocked/done)
+smoke gate: scripts/smoke.sh → PASS
+```
+
+Only remaining (non-blocking) items: repo visibility decision (packaging for
+public distribution), U1 upstream issue, and re-running the smoke gate after
+herdr/ttt upgrades.
