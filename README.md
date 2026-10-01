@@ -129,7 +129,7 @@ herdr's `config.toml` — recipe in [`herdr-plugin/README.md`](herdr-plugin/READ
 
 ## Status
 
-All phases (0–7) implemented and **verified live** — bring-up, ask, follow,
+All phases (0–8) implemented and **verified live** — bring-up, ask, follow,
 review, tools, context injection, the evergreen vault, the crew
 multi-agent runner, the Phase 6 observability/sandbox/routing layer
 (check nodes, sandbox sessions, disposable worktrees, live status stream,
