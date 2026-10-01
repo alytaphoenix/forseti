@@ -16,17 +16,27 @@ facts from source-level investigation.
 
 ## pi model providers (wired & verified 2026-09-30)
 
-- `~/.pi/agent/models.json` defines two providers; both verified with a live `pi -p` call:
+- `~/.pi/agent/models.json` defines four providers; all verified with live calls:
   - `opencode-go` → `https://opencode.ai/zen/go/v1` (OpenAI-completions API), model
-    `glm-5.3-flash`. **Forseti's default test model** (set in `.pi/settings.json`:
-    `defaultProvider: opencode-go`, `defaultModel: glm-5.3-flash`, thinking `low`).
+    `glm-5.3-flash`. **Interactive bring-up agent's default** (set in
+    `.pi/settings.json`: `defaultProvider: opencode-go`, `defaultModel:
+    glm-5.3-flash`, thinking `low`). Paid — not for E2E loops.
   - `halogen` → `http://192.168.0.142:8731/v1` (keyless OpenAI-compatible), model
-    `halogen-qwen3.8-flash-next`. Note: this server emits `reasoning_content` and
-    can return empty `content` when `max_tokens` is small — budget tokens generously.
+    `halogen-qwen3.8-flash-next`. **E2E/test model — all example crews and smoke
+    gates pin this** (user decision 2026-10-01). Note: this server emits
+    `reasoning_content`, can return empty `content` when `max_tokens` is small —
+    budget tokens generously (crew runner: one empty-settle retry) — and is a
+    flaky LAN box: it goes down (connection refused → pi prompt stalls with
+    `agent_prompt_stalled`); E2E failing then is by design.
+  - `switchyard` → per-run proxy `127.0.0.1:<dynamic>/v1`, model ids = crew route
+    ids; materialized by the crew runner when the crew file declares `routes:`
+    and restored at teardown. Server: `switchyard-server` 0.2.0 (crates.io).
 - The OpenCode Go API key lives at `~/.config/forseti/opencode-go.key` (0600); pi reads
   it via a `!cat …` command in models.json — never commit, echo, or move it into the repo.
 - Project `.pi/` settings load only after project trust; use `pi -a` (or approve the
-  prompt) when testing from a fresh session.
+  prompt) when testing from a fresh session. The trust dialog ("Trust project
+  folder?") blocks every prompt until answered — crew worktree runs auto-pass
+  `-a` for this reason.
 
 
 ## herdr CLI facts (verified 0.9.3)
@@ -36,7 +46,9 @@ facts from source-level investigation.
 - `agent start <name> --kind KIND --pane <id> [-- <agent-args>]` — kinds include **pi** (native recognition). Readiness ~30 s default. Names `[a-z][a-z0-9_-]{0,31}`, unique among live agents.
 - Server errors: JSON on stderr, exit 1; syntax errors exit 2. Parse IDs from JSON, never from examples.
 - Server may be not running (`herdr status`; socket `~/.config/herdr/herdr.sock`) — CLI control needs it. Isolate experiments in a named test session; never `herdr server stop` from a session.
-- Protocol 22 (`herdr api schema --json`): the **socket API** exposes `events.subscribe`/`events.wait`, `agent.read` (format/lines/strip_ansi), `agent.prompt` with `wait {until, timeout_ms}`, `layout.apply/export`, and events incl. `pane_agent_status_changed` (`AgentStatus` enum `idle|working|blocked|done|unknown`) + `pane_output_changed`. Still **no CLI subscribe surface** — direct socket client shipped as `crew/internal/herdrd`.
+- `notification show` reports `{"reason":"disabled"}` on this setup (reconfirmed 2026-10-01) — alerts must ride the ttt status-bar bridge (crew-status.json → badge), not toasts.
+- Named sessions (S11, verified 2026-10-01): sockets at `~/.config/herdr/sessions/<name>/herdr.sock`; the CLI never auto-starts them and attach needs a TTY + no inherited `HERDR_*` env (nesting guard) — spawn servers with `env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH herdr --session <name>` inside a real PTY; the server persists after the spawning pane closes. `herdr session stop <name>` is session-scoped.
+- Protocol 22 (`herdr api schema --json`): the **socket API** exposes `events.subscribe`/`events.wait`, `agent.read` (format/lines/strip_ansi), `agent.prompt` with `wait {until, timeout_ms}`, `layout.apply/export`, `pane.wait_for_output` (S12: substring|regex match, blocks for future output, matches past scrollback instantly, errors `timeout`/`invalid_regex`), `worktree.create/list/remove` (S13: returns a full workspace with `worktree.checkout_path`), and events incl. `pane_agent_status_changed` (`AgentStatus` enum `idle|working|blocked|done|unknown`; **one `pane_id` string per subscription entry — a list is rejected**) + `pane_output_changed`. Still **no CLI subscribe surface** — direct socket client shipped as `crew/internal/herdrd`.
 - Socket wire facts (verified live 2026-09-30, spikes S6–S10): **NDJSON, no handshake**; one-shot requests **close the connection after the response** (dial per call); `events.subscribe` = persistent stream (ack `subscription_started`, pushes `{"event","data"}` no id); `agent.read` nests `result.read.text`; **`events.wait` is status-only** (`pane_output_changed` rejected `unsupported_event_wait_match`) and **not subscribable** — no output-push surface; `layout.apply` BSP round-trips (walk `result.layout.root` for pane ids); unfocused agents settle **`done` not `idle`** — include both in `until`; prompt+wait must be ONE request (`agent.prompt.wait`) or the wait races the pre-prompt idle.
 
 ## herdr plugin contract (from ttt's shipped plugin source, spike S1)

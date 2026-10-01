@@ -451,3 +451,47 @@ if events_ok then
 else
   log_err("ttt.events not available; IDE context disabled")
 end
+
+-- --- crew status bridge (Phase 6, 6B-5) -------------------------------------
+-- The crew runner writes <repo>/.forseti/crew-status.json on every event and
+-- removes it at teardown. Poll it here and surface a status badge:
+--   "crew demo 1/3 ●" while running, "crew demo 2/3 !blocked" when a node
+-- needs attention, badge cleared when the file is gone. Notifications are
+-- disabled on this setup, so this badge IS the alert path (S14/AGENTS.md).
+-- repo.json is read lazily inside the first tick: the fs API is not wired at
+-- plugin-load time (same startup-order quirk the vault state file hits).
+local REPO_FILE = ttt.plugin_dir() .. "/repo.json"
+local CREW_REPO = nil
+
+local function crew_render(st)
+  local glyph = "●"
+  if (st.blocked or 0) > 0 then glyph = "!"
+  elseif (st.failed or 0) > 0 then glyph = "✗" end
+  return string.format("crew %s %d/%d %s", st.crew or "?", st.done or 0, st.total or 0, glyph)
+end
+
+ttt.set_interval(2000, function()
+  if CREW_REPO == nil then
+    local ok_r, content = pcall(fs.read, REPO_FILE)
+    if ok_r and type(content) == "string" then
+      local ok, data = pcall(json.decode, content)
+      if ok and type(data) == "table" and data.repo then
+        CREW_REPO = data.repo
+        ttt.log("info", "forseti: crew status bridge on (" .. CREW_REPO .. ")")
+      else
+        CREW_REPO = false -- present but unusable; stop retrying
+      end
+    end
+    if CREW_REPO == nil then return end -- fs not wired yet; retry next tick
+  end
+  if CREW_REPO == false then return end
+  local ok_r, content = pcall(fs.read, CREW_REPO .. "/.forseti/crew-status.json")
+  if ok_r and type(content) == "string" then
+    local ok, st = pcall(json.decode, content)
+    if ok and type(st) == "table" then
+      ttt.set_status_item("right", "crew", crew_render(st))
+      return
+    end
+  end
+  ttt.remove_status_item("crew") -- no live run (file removed at teardown)
+end)

@@ -79,6 +79,10 @@ if [ -d "$VAULT_ROOT" ]; then
   printf '{"vault":"%s"}\n' "$VAULT_ROOT" \
     > "$HOME/.config/ttt/plugins/forseti/vault.json" 2>/dev/null || true
 fi
+# repo path for the crew status bridge (6B-5): the Lua side reads
+# <repo>/.forseti/crew-status.json through the fs sandbox
+printf '{"repo":"%s"}\n' "$dir" \
+  > "$HOME/.config/ttt/plugins/forseti/repo.json" 2>/dev/null || true
 
 created=$(herdr_json tab create --cwd "$dir" --label "$EDITOR_LABEL" \
   --env "FORSETI_VAULT=$VAULT_ROOT" --no-focus)

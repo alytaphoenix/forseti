@@ -33,16 +33,16 @@ herdr plugin action invoke forseti.open
 | [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi` |
 | [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
 | [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
-| [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges), Bubble Tea builder + live monitor, bus-file handoff, JSONL run log |
+| [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing |
 
 Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-plan.md) ·
 [`spike log (verified facts)`](docs/spikes.md) · [`AGENTS.md`](AGENTS.md)
 
 ## Crew — multi-agent pipelines
 
-`crew.yaml` describes a deterministic graph (no LLM routing — LLMs do node
-work only). `forseti-crew run` builds a dedicated herdr tab with one pane per
-node, dispatches prompts with race-free settle waits, gates edges on agent
+`crew.yaml` describes a deterministic graph (no LLM routing of edges — LLMs do
+node work only). `forseti-crew run` builds a dedicated herdr tab with one pane
+per node, dispatches prompts with race-free settle waits, gates edges on agent
 status or output regex (`re:PLAN_READY`), and templates upstream outputs into
 downstream prompts (`{{ .planner }}`).
 
@@ -51,6 +51,22 @@ cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew
 bin/forseti-crew run -f examples/crew.yaml            # TUI: builder + live monitor
 bin/forseti-crew run --headless -f examples/crew.yaml # CI path
 ```
+
+Phase 6 additions:
+
+- **E2E harness**: `checks: [{after, run}]` run shell assertions after a node
+  settles (`examples/crew-checks.yaml`) — a failing check flips the exit code,
+  so the crew file *is* the CI gate.
+- **Hermetic runs**: `--session sandbox` targets a named herdr session
+  (bootstrapped automatically when down) so crew tabs/agents never appear in
+  your live session; `--worktree <branch>` runs everything inside a disposable
+  git worktree (removed at teardown, `--keep-worktree` to keep).
+- **Observability**: `forseti-crew watch` tail-renders any run log; live status
+  stream + blocked alerts; herdr sidebar projection; ttt status-bar badge
+  (`crew demo 2/3 !`); monitor meta tab (`tab` key) with per-node cost/ctx.
+- **Model routing**: `routes:` + `route:` attach agents to a Switchyard
+  stage_router pool (efficient=halogen, capable=glm) — per-call model choice,
+  edges stay deterministic (`examples/crew-routed.yaml`).
 
 `blocked` agents surface in the TUI and are never auto-answered; teardown
 closes only the tab the run created. Example: planner → coder pipeline that
@@ -75,11 +91,14 @@ herdr's `config.toml` — recipe in [`herdr-plugin/README.md`](herdr-plugin/READ
 
 ## Status
 
-All phases (0–5) implemented and **verified live** — bring-up, ask, follow,
-review, tools, context injection, the evergreen vault, and the crew
-multi-agent runner. See the [plan](docs/implementation-plan.md) for the test
-matrix. Gates: `scripts/smoke.sh` (IDE loop) + `scripts/crew-smoke.sh`
-(2-agent crew E2E), both green.
+All phases (0–6) implemented and **verified live** — bring-up, ask, follow,
+review, tools, context injection, the evergreen vault, the crew
+multi-agent runner, and the Phase 6 observability/sandbox/routing layer
+(check nodes, sandbox sessions, disposable worktrees, live status stream,
+ttt bridge, switchyard routing). See the [plan](docs/implementation-plan.md)
+for the test matrix. Gates: `scripts/smoke.sh` (IDE loop) +
+`scripts/crew-smoke.sh` (checked crew in a sandbox session on the free halogen
+model), both green.
 
 ## Model setup
 

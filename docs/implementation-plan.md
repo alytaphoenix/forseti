@@ -209,14 +209,54 @@ surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
 - ~~Optional: `git init` + first commit~~ → done (GitHub, `alytaphoenix/forseti` — repo flipped public 2026-09-30).
 - ~~Run S3 spike at the next live herdr session~~ → **done**.
 
-## Test infrastructure (added 2026-09-30)
+## Test infrastructure (updated 2026-10-01)
 
-- pi's default model in this repo is **OpenCode Go `glm-5.3-flash`** (project
-  `.pi/settings.json`), with the halogen server (`halogen-qwen3.8-flash-next`) as a
-  free secondary. Phase 1+ test runs launch `herdr agent start --kind pi` sessions
-  against these. Both verified with live `pi -p` calls (2026-09-30).
+- **Model discipline (user-confirmed)**: E2E/test crews and smoke gates pin
+  **halogen** (`halogen/halogen-qwen3.8-flash-next`, LAN, free). The interactive
+  bring-up agent keeps `opencode-go/glm-5.3-flash` (paid, low-volume).
+  `crew/examples/*.yaml` all pin halogen; `.pi/settings.json` unchanged.
+- Halogen quirks (AGENTS.md): emits `reasoning_content`, can return empty
+  content when `max_tokens` is small (runner: one empty-settle retry, 6A-3),
+  and is a **flaky LAN dependency** — it went down mid-session (connection
+  refused); pi then stalls prompts (herdr `agent_prompt_stalled` after its 5 s
+  detection window). E2E failing on a down LAN server is by design.
 - Go API key stored at `~/.config/forseti/opencode-go.key` (0600, outside the repo);
-  referenced by pi via `!cat` in `~/.pi/agent/models.json`.
+  referenced by pi via `!cat` in `~/.pi/agent/models.json` (the switchyard
+  proxy resolves the same way when generating its TOML — keys pass through env
+  vars, never the file).
+- `switchyard-server 0.2.0` (crates.io) installed; crew spawns a per-run proxy
+  only when the crew file declares `routes:`.
+
+## Phase 6 — observability + agent sandbox/E2E — ✅ **implemented + verified live** (2026-10-01)
+
+Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
+
+| Task | Status |
+|---|---|
+| 6A-1 `check` nodes | ✅ checked crew ran: both `check_pass`, failing check → `check_fail` + process exit 1 |
+| 6A-2 `--session` sandbox | ✅ sandbox session bootstrapped from a temp live-session pane (S11), run fully hermetic (`herdr agent list` in live session shows no crew agents) |
+| 6A-3 halogen pin + empty-content guard | ✅ all example crews halogen; one empty-settle retry wired (untriggered live — halogen healthy on those runs) |
+| 6A-4 `--worktree` | ✅ worktree + workspace created, panes/checks run inside, main checkout untouched, husk sweep + branch cleanup hardened; `-a` auto-trust for the fresh dir (pi trust dialog would stall every prompt — verified) |
+| 6B-1 `forseti-crew watch` | ✅ post-hoc render: nodes + durations, checks, summary |
+| 6B-2 status stream | ✅ per-pane `pane.agent_status_changed` subs → `node_status working/done` events in <1 s |
+| 6B-3 blocked alerts | ✅ best-effort `notification.show --sound request` (returns `disabled` on this setup — expected); reliable path = 6B-5 badge |
+| 6B-4 `agent.view.set` | ✅ crew pane-id projection set at run start, cleared at teardown (S10 ownership) |
+| 6B-5 ttt status bridge | ✅ live: `crew demo 1/3 !` badge in ttt status bar while a run writes the file, cleared at teardown |
+| 6C-1 output watchers | ✅ `watch:` regex armed on running panes, deduped `pattern_matched` events |
+| 6C-2 monitor meta tab | ✅ `tab` key: pane id, model, status(+herdr), started/duration, visits, retries, output size, cost/ctx |
+| 6C-3 cost capture | ✅ `ctx_pct` parsed live from pi's status line; run summary totals cost (halogen = $0.0000) |
+| 6D-1/2/4/6 switchyard routing | ✅ routed-pool crew E2E: per-run proxy on a dynamic port, two agents through `switchyard/auto-pool`, routing JSONL tailed into `route_decision` events, provider entry materialized + restored at teardown |
+| 6D-3 schema | ✅ routes + model/route exclusivity validated (unit tests) |
+| 6D-5 TUI route forms | ✅ `R` route CRUD form + agent model-or-route fields, validation-on-save |
+
+Verification: `scripts/crew-smoke.sh` = **checked crew in `--session sandbox`
+on halogen** — PASS. Watchers/routing/worktree verified in additional headless
+runs. Open item: rerun the worktree success case when the halogen server
+returns (it went down mid-session; the mechanics themselves were verified).
+
+Boundaries: crew still needs herdr+pi only; teardown closes only its own tab;
+`blocked` surfaced, never auto-answered; one active run in v1. **Edges stay
+deterministic** — switchyard routes model calls *within* nodes, never crew edges.
 
 ## Phases 0–5 implementation complete — status 2026-09-30
 

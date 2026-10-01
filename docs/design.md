@@ -343,3 +343,106 @@ running herdr agent into a node). Save validates and writes `crew.yaml`.
 - ttt optional; no ttt plugin changes required for crew v1.
 - Per-agent model/provider config goes through pi's own args (S3 passthrough) —
   forseti still implements no provider logic.
+
+## Phase 6 — observability + agent sandbox/E2E (as-built 2026-10-01)
+
+Two goals: crew runs visible from everywhere (TUI, run log, herdr sidebar, ttt
+status bar), and hermetic cheap E2E runs of whole agent graphs. Spikes S11–S15
+carried the unknowns; all resolved live (`docs/spikes.md`).
+
+### E2E harness — the crew file is the test
+
+- **`check` nodes (6A-1)**: `checks: [{after: <node>, run: "<shell>"}]`. The
+  runner executes each after its after-node settles (any settle counts; a
+  non-done node makes the check fail), `sh -c` in the crew cwd, 5 min cap.
+  `check_pass`/`check_fail` events land in the run log; any failure flips the
+  process exit code (headless and TUI paths both). `crew-smoke.sh` now runs the
+  **checked crew** — the gate and the harness are the same artifact.
+- **`--session <name>` (6A-2)**: the run targets a named herdr session socket
+  (`~/.config/herdr/sessions/<name>/herdr.sock`). Named servers are NOT
+  auto-started by the CLI and attach needs a TTY + passes only when nesting
+  detection (inherited `HERDR_*` env) is cleared — so the runner bootstraps:
+  temp pane in the live session runs `env -u HERDR_ENV -u HERDR_PANE_ID
+  -u HERDR_SOCKET_PATH … herdr --session <name>`, poll socket, close pane
+  (server persists — `detached_server_daemon`). From then on the run is fully
+  hermetic: tabs, agents, waits, views all inside the sandbox session.
+- **`--worktree <branch>` (6A-4)**: `worktree.create` before tab build → all
+  node panes, bus files, and checks run in the worktree checkout (herdr picks
+  `~/.herdr/worktrees/<repo>/<branch>`); removed at teardown unless
+  `--keep-worktree`. Hardened against the two live failure modes: leftover
+  husks under `.herdr/worktrees` (sweep + `worktree prune` + retry) and branch
+  deletion racing worktree registration (prune + retry). Nodes get `pi -a`
+  because a disposable dir hits pi's "Trust project folder?" dialog, which
+  otherwise stalls every prompt (verified: dialog observed, `-a` skips it).
+- **Halogen discipline (6A-3)**: example crews + gates pin the free LAN model;
+  glm stays the interactive path. Empty settle → one retry (6A-3 guard), then
+  surface.
+
+### Observability
+
+- **`forseti-crew watch` (6B-1)**: post-hoc/following renderer for
+  `.forseti/runs/<run>.jsonl` — node table (status glyph, duration, cost),
+  check results, summary. Pure file reader; no herdr dependency.
+- **Status stream (6B-2)**: one `events.subscribe` with a
+  `pane.agent_status_changed` entry per crew pane (schema: one pane_id per
+  entry — a list is rejected) → `node_status` events + instant `LiveStatus`
+  badges in the TUI.
+- **Blocked alerts (6B-3)**: on the stream, `blocked` → `notification.show
+  --sound request` (best-effort: this setup reports `disabled`, confirmed
+  live) + the badge below carries the real signal.
+- **Sidebar projection (6B-4)**: `agent.view.set` with source `crew:<name>`,
+  filter `pane_id in <crew panes>`, sort attention desc; cleared at teardown.
+  UI-only (S10).
+- **ttt bridge (6B-5)**: runner writes `.forseti/crew-status.json` on every
+  event, removes it at teardown; ttt plugin polls it (2 s) and renders
+  `crew <name> <done>/<total> ●|!|✗` in the status bar. `open.sh` now writes
+  `repo.json` into the plugin dir so the Lua side knows the repo root (fs
+  sandbox has no env; lazy first-tick read because `ttt.fs` wires after plugin
+  load).
+- **Cost capture (6C-3)**: on settle, parse pi's status footer
+  (`$x.xx` + `y.y%/ctx`) — last match wins. Node records carry
+  `cost_usd`/`ctx_pct`; summary totals. Halogen reads $0.0000.
+- **Meta tab (6C-2)**: `tab` in the TUI flips the right pane to node meta
+  (pane id, resolved model, status + herdr status, started/duration, visits,
+  retries, output size, cost/ctx).
+- **Watchers (6C-1)**: `watch: [{node, match}]` arms `pane.wait_for_output`
+  (S12: matches past scrollback → emitted-line dedupe) while the node runs;
+  advisory `pattern_matched` events only.
+
+### Switchyard routing (P6-D)
+
+`routes: [{id, type: stage_router, efficient, capable, picker, confidence}]`;
+agents attach with `route: <id>` (mutually exclusive with `model:`). The
+runner, only when routes exist:
+
+1. Generates `switchyard.toml` (schema_version 1, stage_router routes) into the
+   run dir. Upstream `base_url`s resolve from `~/.pi/agent/models.json`
+   (forseti's provider/model strings live there); API keys resolve the same
+   way (`!cmd` executed) and pass ONLY as `SWITCHYARD_KEY_<PROVIDER>` env vars
+   to the server process — never in the TOML.
+2. Spawns `switchyard-server` (bin: `FORSETI_SWITCHYARD_BIN` →
+   `~/.cargo/bin` → PATH) on a free port with `--routing-log-file` inside the
+   run dir; waits for `GET /health`.
+3. Materializes the `switchyard` provider entry in pi's `models.json`
+   (one model entry per route id, `openai-completions`, compat block per
+   upstream pi doc), restoring the previous bytes at teardown.
+4. Route-attached nodes start as `pi --model switchyard/<route-id>`; settle
+   logic unchanged.
+5. Tails the routing JSONL → `route_decision` events; `/v1/stats` counters are
+   available for run-level per-model tallies.
+
+Version drift note (S14/S15): server 0.2.0 has no `auto` route type (that's the
+0.3.0 preset == stage_router efficient_first 0.5) and reads the session header
+`proxy_x_session_id`, not `x-session-id`; pi's session-affinity header therefore
+doesn't attach in 0.2.0 (routing still works; affinity is effectively
+per-request). Pin the version; the `routes:` abstraction is the swap point for
+a future libsy sidecar.
+
+### Boundaries (Phase 6)
+
+- Edges remain deterministic; switchyard routes only model calls within nodes.
+- No daemon: watch and run are user-invoked processes.
+- Sandbox sessions are never stopped by the runner (only bootstrapped);
+  `herdr session stop` remains manual.
+- One active run per session in v1; `switchyard.toml`/`server.log` are per-run
+  overwritten, routing JSONL is per-run unique.
