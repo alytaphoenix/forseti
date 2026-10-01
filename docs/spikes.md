@@ -348,6 +348,29 @@ Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
   verified live at 0.431 vs min_confidence 0.45 (skipped, distribution
   recorded).
 
+## S22 — memory runtime + opik viability (Phase 10, 2026-10-01) ✅ resolved (live)
+
+**S22a — memory runtime (in the laya venv):**
+- `sentence-transformers 6.1.0` + `sqlite-vec` install clean into the existing
+  venv (torch already there); `all-MiniLM-L6-v2` load 5.3 s one-time.
+- Embed 5 texts ~0.5 s (~100 ms each, CPU); sqlite-vec `MATCH` returns
+  distances — **vec0's default metric is L2**, not cosine; use the
+  `distance_metric=cosine` column option so `score = 1 - distance`.
+- Recall quality: correct best-match on a paraphrased question over a 5-fact
+  set; namespace filter verified both ways (private rows hidden from other
+  agents' recalls).
+
+**S22b — Opik viability: DECISION = no-go for now (deferred):**
+- The opik python client installs fine; a real integration needs either a
+  hosted API key (none in env) or the self-host docker-compose stack
+  (postgres+clickhouse+redis+backend — several GB, docker not running here).
+- Forseti's native surface already covers current observability: JSONL run
+  logs, `forseti-crew watch`, the ttt badge bridge, laya/memory eval gates.
+- Designed future item (one small exporter, zero runner deps):
+  `forseti-crew export --opik <run.jsonl>` — replay node spans +
+  laya_decision/route_decision attributes post-hoc. Activates when an
+  `OPIK_API_KEY` exists or docker comes up.
+
 ## Supporting findings
 
 - ttt Lua API: `set_interval/set_timeout` run callbacks on the editor main loop

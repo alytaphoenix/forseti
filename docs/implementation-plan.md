@@ -291,6 +291,18 @@ Spikes S18–S19 resolved live (see `docs/spikes.md`). Shipped:
 State-quality lesson recorded: laya gates should judge a file artifact, not
 terminal scrollback (encoder truncation + prompt echo, hit live).
 
+## Phase 10 — shared agent memory — ✅ **implemented + verified live** (2026-10-01)
+
+Spikes S22a/S22b resolved (see `docs/spikes.md`; Opik = documented no-go).
+
+| Task | Status |
+|---|---|
+| P10-1 memory service | ✅ FastAPI in the laya venv, port 8752, SQLite+vec0 (cosine), all-MiniLM-L6-v2; /write /recall /forget /health; namespace isolation verified both ways |
+| P10-2 pi tools + crew helper | ✅ `memory_write`/`memory_recall` live (agent answered strictly from recall); `{{ memory "q" }}` renders recalled entries into node prompts (failure → "") |
+| P10-3 serve script | ✅ `scripts/memory-serve.sh` (hardened stop: waits for the port; restart race hit live) |
+| P10-4 opik exporter | ⏸ deferred (S22b no-go: no hosted key, docker down; exporter designed, zero runner deps) |
+| P10-5 eval gate | ✅ `scripts/memory-eval.sh` — 4/4 (paraphrase recall ×3 + secret-namespace isolation) |
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in

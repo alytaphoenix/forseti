@@ -71,6 +71,17 @@ forseti-crew run -f crew/examples/crew-laya.yaml --session sandbox
 scripts/laya-eval.sh   # 9-probe gate incl. an abstention contract
 ```
 
+## Memory — shared agent recall
+
+Agents share structured cross-run memory through a local service (vector
+recall, agent-namespaced): pi's `memory_write`/`memory_recall` tools, and
+crew prompts can pull recall directly via `{{ memory "query" }}`.
+
+```sh
+scripts/memory-serve.sh start        # SQLite+vec0 at ~/.config/forseti/memory.db
+scripts/memory-eval.sh               # 4-probe gate incl. namespace isolation
+```
+
 ## Crew — multi-agent pipelines
 
 `crew.yaml` describes a deterministic graph (no LLM routing of edges — LLMs do

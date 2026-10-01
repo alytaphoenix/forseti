@@ -274,6 +274,64 @@ export default function forseti(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "memory_write",
+		label: "memory_write",
+		description:
+			"Store a durable fact/decision/finding in the shared agent memory service. Write REUSABLE knowledge: what was decided and why, where things live, gotchas discovered. Not for transient chatter or secrets.",
+		promptSnippet: "memory_write: persist a reusable fact for all agents.",
+		parameters: Type.Object({
+			text: Type.String({ description: "The fact, one concise statement" }),
+			tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags (e.g. [\"deploy\", \"gotcha\"])" })),
+		}),
+		async execute(_toolCallId, params) {
+			if (!params.text) return { content: [{ type: "text", text: "memory_write error: text required" }], isError: true };
+			const base = (process.env.FORSETI_MEMORY_URL || "http://127.0.0.1:8752").replace(/\/$/, "");
+			try {
+				const res = await fetch(`${base}/write`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ agent: "shared", text: params.text, tags: params.tags ?? [], source: "pi" }),
+				});
+				if (!res.ok) return { content: [{ type: "text", text: `memory_write: endpoint ${res.status}` }], isError: true };
+				const data: any = await res.json();
+				return { content: [{ type: "text", text: `remembered (#${data.id})` }], details: { ok: true, id: data.id } };
+			} catch (e: any) {
+				return { content: [{ type: "text", text: `memory_write: endpoint unreachable (${e?.message ?? e}) — start it with: scripts/memory-serve.sh start` }], details: { ok: false } };
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "memory_recall",
+		label: "memory_recall",
+		description:
+			"Search the shared agent memory for facts relevant to a query (vector similarity). Use at task start to check for prior decisions/gotchas, or when context seems missing.",
+		promptSnippet: "memory_recall: check prior agent knowledge by query.",
+		parameters: Type.Object({
+			query: Type.String({ description: "What to look for (paraphrase freely)" }),
+			k: Type.Optional(Type.Number({ description: "How many results (default 5)" })),
+		}),
+		async execute(_toolCallId, params) {
+			if (!params.query) return { content: [{ type: "text", text: "memory_recall error: query required" }], isError: true };
+			const base = (process.env.FORSETI_MEMORY_URL || "http://127.0.0.1:8752").replace(/\/$/, "");
+			try {
+				const res = await fetch(`${base}/recall`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ query: params.query, agent: "shared", k: params.k ?? 5 }),
+				});
+				if (!res.ok) return { content: [{ type: "text", text: `memory_recall: endpoint ${res.status}` }], isError: true };
+				const rows: any[] = await res.json();
+				if (!rows.length) return { content: [{ type: "text", text: "no memory matches" }], details: { ok: true, count: 0 } };
+				const text = rows.map((r) => `[${r.ts?.slice(0, 10)} ${r.score}] ${r.text}`).join("\n");
+				return { content: [{ type: "text", text }], details: { ok: true, count: rows.length } };
+			} catch (e: any) {
+				return { content: [{ type: "text", text: `memory_recall: endpoint unreachable (${e?.message ?? e}) — start it with: scripts/memory-serve.sh start` }], details: { ok: false } };
+			}
+		},
+	});
+
 	// ---- Phase 2d-2: review mode --------------------------------------------
 	pi.on("turn_start", async () => {
 		turnEdits.length = 0;

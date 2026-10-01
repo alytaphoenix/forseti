@@ -118,5 +118,42 @@ func sortKeys(m map[string]any) []string {
 	return ks
 }
 
+// MemoryClient is the shared-memory consumer (P10-2): recall-only from the
+// runner (writes come from agents' tools + crew check nodes).
+type MemoryClient struct {
+	BaseURL string
+	HTTP    *http.Client
+}
+
+func NewMemoryClient() *MemoryClient {
+	url := os.Getenv("FORSETI_MEMORY_URL")
+	if url == "" {
+		url = "http://127.0.0.1:8752"
+	}
+	return &MemoryClient{BaseURL: strings.TrimRight(url, "/"), HTTP: &http.Client{Timeout: 10 * time.Second}}
+}
+
+// Recall returns rows (map form: id/ts/agent/text/score) or an error when the
+// service is unreachable.
+func (c *MemoryClient) Recall(query, agent string, k int) ([]map[string]any, error) {
+	if k <= 0 {
+		k = 3
+	}
+	body, _ := json.Marshal(map[string]any{"query": query, "agent": agent, "k": k})
+	resp, err := c.HTTP.Post(c.BaseURL+"/recall", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("memory endpoint unreachable (%s): %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("memory endpoint %d", resp.StatusCode)
+	}
+	var rows []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // edgeIsLaya is a schema helper alias (kept here so runner code reads plain).
 func edgeIsLaya(e schema.Edge) bool { return e.IsLaya() }

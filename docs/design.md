@@ -613,3 +613,49 @@ drafting (promptSnippet says so).
 - Abstention is honored: low confidence surfaces as skipped edges with the
   distribution in the run log — a human can read why the graph did not
   proceed.
+
+## Phase 10 — shared agent memory (as-built 2026-10-01)
+
+A standalone memory service for the agents: structured, cross-run, vector
+recall. (User decision: dedicated service, not vault-anchored — the vault
+stays the human's evergreen store.) Spike S22a; Opik spike S22b = deferred
+(no-go documented).
+
+### `forseti-memory` (P10-1)
+
+- FastAPI in the laya venv (`crew/memory/memory_serve.py`), port 8752
+  (`FORSETI_MEMORY_PORT`), started by `scripts/memory-serve.sh`
+  (same start/stop/status/restart contract as laya-serve.sh; hardened stop
+  waits for the port to close — the restart race hit live).
+- SQLite + sqlite-vec at `~/.config/forseti/memory.db`; row =
+  `{id, ts, agent, run, source, tags, text}` + a cosine-distance vec0 shadow
+  table (`distance_metric=cosine` — vec0's default is L2, hit live).
+- Embeddings: `all-MiniLM-L6-v2` (384-d, load ~5 s once, ~100 ms per embed).
+- `/write {agent, text, tags?, source?, run?}` → `{id}`;
+  `/recall {query, agent?, k?, since?, min_score=0.3}` → rows (the relevance
+  floor keeps noise out of prompts — unfiltered recalls injected 0.04-score
+  rows, hit live); `/forget {id}`; `/health`.
+- Namespacing: a caller sees its own agent's rows + `shared` — never another
+  agent's private rows (verified both ways).
+
+### Consumers (P10-2)
+
+- pi tools `memory_write` / `memory_recall` (same registerTool shape as
+  `forseti_decide`; start-hint degradation). Verified live: an agent recalled
+  a fact and answered strictly from it.
+- crew prompt helper `{{ memory "query" }}` — recalls at render time (cap
+  2000 chars); any failure renders "" (memory never fails a run). Verified:
+  the rendered prompt carried both recalled entries into the agent.
+- Run-log events: `memory_recall` per render (entry count / unavailable).
+
+### Eval gate (P10-5)
+
+`scripts/memory-eval.sh`: writes 3 facts + a SECRET probe fact in a unique
+per-run namespace, recalls by paraphrase (3 probes), asserts the secret never
+leaks across namespaces → 4/4 PASS; deterministic.
+
+### Boundaries (Phase 10)
+
+- Memory is advisory context, never control flow.
+- The vault is the human's; agents write to the DB.
+- The service is user-invoked; clients degrade to hints.

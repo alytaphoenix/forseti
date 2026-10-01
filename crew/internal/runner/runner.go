@@ -96,6 +96,7 @@ type Run struct {
 	checksFailed    int
 	finished        bool // set before the final run_end emit; freezes the status bridge
 	laya            *LayaClient
+	memory          *MemoryClient
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -926,8 +927,12 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	r.mu.Unlock()
 	r.emit(Event{Type: "node_start", Node: a.Name, Model: resolved, Info: "pane=" + st.PaneID})
 
-	// render prompt template with upstream outputs
-	tpl, err := template.New(a.Name).Parse(a.Prompt)
+	// render prompt template with upstream outputs + a memory helper:
+	// {{ memory "query" }} recalls shared agent memory at render time
+	// (advisory context; empty string on any failure — never fails a run)
+	tpl, err := template.New(a.Name).Funcs(template.FuncMap{
+		"memory": func(q string) string { return r.recallMemory(a.Name, q) },
+	}).Parse(a.Prompt)
 	if err != nil {
 		r.fail(a.Name, fmt.Sprintf("prompt template: %v", err))
 		return
@@ -1061,6 +1066,33 @@ func huskToSweep(err error) string {
 		return ""
 	}
 	return msg[start+1 : i+end]
+}
+
+// recallMemory queries the shared memory service for a node's prompt render.
+// Never fails: endpoint down / empty → "". The result is capped so a prompt
+// stays bounded.
+func (r *Run) recallMemory(node, query string) string {
+	if r.memory == nil {
+		r.memory = NewMemoryClient()
+	}
+	rec, err := r.memory.Recall(query, node, 3)
+	if err != nil {
+		r.emit(Event{Type: "memory_recall", Node: node, Info: "unavailable: " + err.Error()})
+		return ""
+	}
+	r.emit(Event{Type: "memory_recall", Node: node, Info: fmt.Sprintf("%d entries for %q", len(rec), query)})
+	if len(rec) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, row := range rec {
+		fmt.Fprintf(&b, "- [%s] %s\n", row["ts"].(string)[:10], row["text"])
+	}
+	out := b.String()
+	if len(out) > 2000 {
+		out = out[:2000]
+	}
+	return out
 }
 
 func (r *Run) summary() string {
