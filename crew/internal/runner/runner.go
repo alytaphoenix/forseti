@@ -412,7 +412,8 @@ func (r *Run) Run(ctx context.Context) error {
 	return nil
 }
 
-// fmtTallies renders {"efficient": {"total_requests": N}} → "efficient=N".
+// fmtTallies renders stats snapshots ("efficient" → {calls: N, errors: E})
+// as "efficient=N" (+ "=N(errors=E)" when errors are present).
 func fmtTallies(m map[string]any) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -421,19 +422,20 @@ func fmtTallies(m map[string]any) string {
 	sort.Strings(keys)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
-		v := m[k]
-		switch n := v.(type) {
-		case float64:
-			parts = append(parts, fmt.Sprintf("%s=%d", k, int(n)))
-		case map[string]any:
-			if tr, ok := n["total_requests"].(float64); ok {
-				parts = append(parts, fmt.Sprintf("%s=%d", k, int(tr)))
-			} else {
-				parts = append(parts, fmt.Sprintf("%s=?", k))
-			}
-		default:
-			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+		v, ok := m[k].(map[string]any)
+		if !ok {
+			parts = append(parts, fmt.Sprintf("%s=%v", k, m[k]))
+			continue
 		}
+		calls, _ := v["calls"].(float64) // v0.2.0 field; total_requests is the 0.3.0 name
+		if calls == 0 {
+			calls, _ = v["total_requests"].(float64)
+		}
+		s := fmt.Sprintf("%s=%d", k, int(calls))
+		if errs, ok := v["errors"].(float64); ok && errs > 0 {
+			s += fmt.Sprintf(" (errors=%d)", int(errs))
+		}
+		parts = append(parts, s)
 	}
 	return strings.Join(parts, " ")
 }
