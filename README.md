@@ -50,6 +50,7 @@ downstream prompts (`{{ .planner }}`).
 cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew
 bin/forseti-crew run -f examples/crew.yaml            # TUI: builder + live monitor
 bin/forseti-crew run --headless -f examples/crew.yaml # CI path
+bin/forseti-crew watch                                # tail-render the newest run log
 ```
 
 Phase 6 additions:
@@ -66,7 +67,11 @@ Phase 6 additions:
   (`crew demo 2/3 !`); monitor meta tab (`tab` key) with per-node cost/ctx.
 - **Model routing**: `routes:` + `route:` attach agents to a Switchyard
   stage_router pool (efficient=halogen, capable=glm) — per-call model choice,
-  edges stay deterministic (`examples/crew-routed.yaml`).
+  edges stay deterministic (`examples/crew-routed.yaml`). When an upstream is
+  down, Switchyard falls back to the other tier, so routed crews survive
+  outages that kill direct-model crews.
+- **Outage override**: `--model <p/m>` / `FORSETI_CREW_MODEL` swaps direct-model
+  nodes for one run without editing the halogen-pinned files.
 
 `blocked` agents surface in the TUI and are never auto-answered; teardown
 closes only the tab the run created. Example: planner → coder pipeline that

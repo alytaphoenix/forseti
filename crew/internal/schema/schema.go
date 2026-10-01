@@ -22,19 +22,19 @@ var validStatuses = map[string]bool{
 
 type Crew struct {
 	Name   string    `yaml:"name"`
-	Routes []Route   `yaml:"routes"` // switchyard model-routes (optional, P6-D)
+	Routes []Route   `yaml:"routes,omitempty"` // switchyard model-routes (optional, P6-D)
 	Agents []Agent   `yaml:"agents"`
-	Edges  []Edge    `yaml:"edges"`
-	Checks []Check   `yaml:"checks"` // shell assertions (optional, 6A-1)
-	Watch  []Watcher `yaml:"watch"`  // output regex watchers (optional, 6C-1)
+	Edges  []Edge    `yaml:"edges,omitempty"`
+	Checks []Check   `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
+	Watch  []Watcher `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
 }
 
 type Agent struct {
 	Name  string   `yaml:"name"`
-	Kind  string   `yaml:"kind"`  // currently only "pi"
-	Model string   `yaml:"model"` // e.g. halogen/halogen-qwen3.8-flash-next
-	Route string   `yaml:"route"` // switchyard route id (mutually exclusive with Model)
-	Args  []string `yaml:"args"`  // extra pi argv (appended after --model)
+	Kind  string   `yaml:"kind,omitempty"`  // currently only "pi"
+	Model string   `yaml:"model,omitempty"` // e.g. halogen/halogen-qwen3.8-flash-next
+	Route string   `yaml:"route,omitempty"` // switchyard route id (mutually exclusive with Model)
+	Args  []string `yaml:"args,omitempty"`  // extra pi argv (appended after --model)
 	// Prompt is a Go text/template; data is map[string]string of
 	// upstream node outputs keyed by node name.
 	Prompt string `yaml:"prompt"`
@@ -43,9 +43,9 @@ type Agent struct {
 // Check is a shell assertion run after its `after` node settles.
 // exit 0 = pass; failures flip the run's exit code (crew.yaml as E2E harness).
 type Check struct {
-	Name  string `yaml:"name"`  // optional; defaults to check-<after>-<n>
-	After string `yaml:"after"` // node whose completion triggers this check
-	Run   string `yaml:"run"`   // shell command, executed in the crew cwd
+	Name  string `yaml:"name,omitempty"`  // optional; defaults to check-<after>-<n>
+	After string `yaml:"after"`           // node whose completion triggers this check
+	Run   string `yaml:"run"`             // shell command, executed in the crew cwd
 }
 
 // Watcher arms a pane.wait_for_output regex on a node's pane (advisory:
@@ -59,20 +59,20 @@ type Watcher struct {
 // Agents attach with `route: <id>` instead of `model:`.
 type Route struct {
 	ID         string  `yaml:"id"`
-	Type       string  `yaml:"type"` // v1: stage_router (the "auto" preset shape)
+	Type       string  `yaml:"type,omitempty"` // v1: stage_router (the "auto" preset shape)
 	Efficient  string  `yaml:"efficient"`
 	Capable    string  `yaml:"capable"`
-	Picker     string  `yaml:"picker"`     // efficient_first (default) | capable_first
-	Confidence float64 `yaml:"confidence"` // default 0.5
+	Picker     string  `yaml:"picker,omitempty"`     // efficient_first (default) | capable_first
+	Confidence float64 `yaml:"confidence,omitempty"` // default 0.5
 }
 
 type Edge struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
 	// When: "idle" (default) or "re:<regex>" gating on upstream output.
-	When string `yaml:"when"`
+	When string `yaml:"when,omitempty"`
 	// MaxVisits bounds cycles; required for any edge participating in a cycle.
-	MaxVisits int `yaml:"max_visits"`
+	MaxVisits int `yaml:"max_visits,omitempty"`
 }
 
 // Load parses and validates crew.yaml content.

@@ -26,8 +26,13 @@ facts from source-level investigation.
     gates pin this** (user decision 2026-10-01). Note: this server emits
     `reasoning_content`, can return empty `content` when `max_tokens` is small —
     budget tokens generously (crew runner: one empty-settle retry) — and is a
-    flaky LAN box: it goes down (connection refused → pi prompt stalls with
-    `agent_prompt_stalled`); E2E failing then is by design.
+    flaky LAN box (llama-swap): it drops requests while overloaded and on
+    2026-10-01 **swapped its model registry entirely**
+    (`halogen-qwen3.8-flash-next` gone; `flash-next-gsq`/`swift-*` present,
+    `flash-next-gsq` returning empty content even at 800 tokens). Until the
+    original model returns, run E2E with the crew override:
+    `FORSETI_CREW_MODEL=opencode-go/glm-5.3-flash` (or `--model`) — crew files
+    stay halogen-pinned.
   - `switchyard` → per-run proxy `127.0.0.1:<dynamic>/v1`, model ids = crew route
     ids; materialized by the crew runner when the crew file declares `routes:`
     and restored at teardown. Server: `switchyard-server` 0.2.0 (crates.io).
@@ -87,5 +92,5 @@ facts from source-level investigation.
 
 ## Repo conventions
 
-- Components: `herdr-plugin/` (TOML + sh), `ttt-plugin/` (JSON manifest + Lua), `pi-extension/` (TypeScript), `scripts/` (spikes and dev helpers), `docs/` (design, plan, spikes), `crew/` (Go + Bubble Tea — **shipped & verified**, Phase 5: `forseti-crew` binary; `internal/{herdrd,schema,runner}`, `cmd/forseti-crew`; example `crew/examples/crew.yaml`; gates `scripts/crew-smoke.sh`).
+- Components: `herdr-plugin/` (TOML + sh), `ttt-plugin/` (JSON manifest + Lua), `pi-extension/` (TypeScript), `scripts/` (spikes and dev helpers), `docs/` (design, plan, spikes), `crew/` (Go + Bubble Tea — **shipped & verified**, Phases 5+6: `forseti-crew` binary; `internal/{herdrd,schema,runner,switchyard}`, `cmd/forseti-crew` with `run`/`validate`/`watch`; examples `crew/examples/crew.yaml` (halogen), `crew-checks.yaml` (E2E harness), `crew-routed.yaml` (switchyard pool); gates `scripts/crew-smoke.sh` = checked crew in `--session sandbox`). Outage model override: `--model` flag / `FORSETI_CREW_MODEL` env (route nodes keep their switchyard pools). Saved crew files omit zero-value fields (omitempty) — defaults re-apply on Load/Validate.
 - Only claims you verified; when investigating, record new findings in `docs/spikes.md` and update `docs/implementation-plan.md` statuses.

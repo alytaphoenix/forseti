@@ -47,7 +47,7 @@ usage:
                    [--cwd DIR] [--tab LABEL]
                    [--session NAME] [--worktree BRANCH] [--keep-worktree]
   forseti-crew validate [-f crew.yaml]
-  forseti-crew watch [-f run.jsonl] [--follow]`)
+  forseti-crew watch [-f run.jsonl] [--follow=false]`)
 }
 
 type runFlags struct {

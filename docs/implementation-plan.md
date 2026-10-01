@@ -240,19 +240,22 @@ Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
 | 6B-1 `forseti-crew watch` | ✅ post-hoc render: nodes + durations, checks, summary |
 | 6B-2 status stream | ✅ per-pane `pane.agent_status_changed` subs → `node_status working/done` events in <1 s |
 | 6B-3 blocked alerts | ✅ best-effort `notification.show --sound request` (returns `disabled` on this setup — expected); reliable path = 6B-5 badge |
-| 6B-4 `agent.view.set` | ✅ crew pane-id projection set at run start, cleared at teardown (S10 ownership) |
+| 6B-4 `agent.view.set` | ✅ set at run start (pane-id filter, attention sort), cleared at teardown; zero projection-failure events across all live runs (S10 verified the ownership semantics; the herdr snapshot does not expose active views, so visual confirmation is the human's Agents sidebar) |
 | 6B-5 ttt status bridge | ✅ live: `crew demo 1/3 !` badge in ttt status bar while a run writes the file, cleared at teardown |
 | 6C-1 output watchers | ✅ `watch:` regex armed on running panes, deduped `pattern_matched` events |
 | 6C-2 monitor meta tab | ✅ `tab` key: pane id, model, status(+herdr), started/duration, visits, retries, output size, cost/ctx |
 | 6C-3 cost capture | ✅ `ctx_pct` parsed live from pi's status line; run summary totals cost (halogen = $0.0000) |
 | 6D-1/2/4/6 switchyard routing | ✅ routed-pool crew E2E: per-run proxy on a dynamic port, two agents through `switchyard/auto-pool`, routing JSONL tailed into `route_decision` events, provider entry materialized + restored at teardown |
 | 6D-3 schema | ✅ routes + model/route exclusivity validated (unit tests) |
-| 6D-5 TUI route forms | ✅ `R` route CRUD form + agent model-or-route fields, validation-on-save |
+| 6D-5 TUI route forms | ✅ driven live in-pane: route form (id/efficient/capable/picker/confidence with defaults) + agent form route field, saved file passes `validate` |
 
 Verification: `scripts/crew-smoke.sh` = **checked crew in `--session sandbox`
-on halogen** — PASS. Watchers/routing/worktree verified in additional headless
-runs. Open item: rerun the worktree success case when the halogen server
-returns (it went down mid-session; the mechanics themselves were verified).
+on halogen** — PASS (halogen + glm override paths both green). Watchers,
+routing (halogen direct + glm fallback during the outage), worktree success
+case, and the TUI route forms all verified in additional live runs.
+Halogen's llama-swap dropped the pinned model on 2026-10-01 (registry swapped);
+until it returns, E2E runs use `FORSETI_CREW_MODEL=opencode-go/glm-5.3-flash` —
+the pinned files and the gate are unchanged.
 
 Boundaries: crew still needs herdr+pi only; teardown closes only its own tab;
 `blocked` surfaced, never auto-answered; one active run in v1. **Edges stay
