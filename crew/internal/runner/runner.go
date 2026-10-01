@@ -723,6 +723,9 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		return
 	}
 
+	// baseline for the empty-settle guard (halogen quirk, 6A-3)
+	baseline, _ := c.AgentRead(a.Name, "recent_unwrapped", 400)
+
 	// settle atomically with the prompt (S-spike: separate wait-idle races the
 	// pre-prompt idle state and returns the startup screen instead of the answer)
 	status, err := c.AgentPromptWait(a.Name, sb.String(),
@@ -744,17 +747,18 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		r.fail(a.Name, fmt.Sprintf("agent.read: %v", err))
 		return
 	}
-	// halogen empty-content guard (6A-3): one retry, then surface (S15 quirk)
-	if strings.TrimSpace(stripStatusLines(text)) == "" && st.Retries == 0 {
+	// halogen empty-content guard (6A-3): the pane grew almost nothing →
+	// re-prompt once (S15 quirk: empty content on small max_tokens).
+	if paneDelta(baseline, text) < 150 && st.Retries == 0 {
 		st.Retries++
-		r.emit(Event{Type: "node_retry", Node: a.Name, Info: "empty settle — re-prompting once"})
-		status2, err := c.AgentPromptWait(a.Name, sb.String(),
+		r.emit(Event{Type: "node_retry", Node: a.Name, Info: fmt.Sprintf("settle delta %d chars — re-prompting once", paneDelta(baseline, text))})
+		status, err := c.AgentPromptWait(a.Name, sb.String(),
 			[]string{"idle", "done", "blocked"}, r.Opts.NodeTimeout)
 		if err != nil {
 			r.fail(a.Name, fmt.Sprintf("agent.prompt+wait (retry): %v", err))
 			return
 		}
-		if status2 == "blocked" {
+		if status == "blocked" {
 			r.mu.Lock()
 			st.Status = "blocked"
 			st.Ended = time.Now()
@@ -786,15 +790,12 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		Info: fmt.Sprintf("%d chars → %s", len(text), bus)})
 }
 
-// stripStatusLines removes pi's trailing status line (the model/cost footer)
-// so "empty settle" detection looks at actual content.
-func stripStatusLines(text string) string {
-	lines := strings.Split(text, "\n")
-	// drop trailing blanks and lines that look like the status footer
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return strings.Join(lines, "\n")
+// paneDelta is the heuristic empty-settle measure (6A-3): how much the pane
+// grew between the baseline read and the post-settle read. A real answer adds
+// the prompt echo plus its own text (hundreds of chars); an empty-content
+// settle grows the pane by the echo alone.
+func paneDelta(baseline, after string) int {
+	return len(strings.TrimSpace(after)) - len(strings.TrimSpace(baseline))
 }
 
 var (
