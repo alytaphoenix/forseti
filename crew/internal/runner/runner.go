@@ -74,6 +74,7 @@ type Options struct {
 	Session        string        // named herdr session (sandbox); bootstrapped if down
 	WorktreeBranch string        // run inside a disposable worktree ("" = main checkout)
 	KeepWorktree   bool          // keep the worktree after the run
+	Review         bool          // P7-3: end the run on a lazygit review of the worktree
 	ModelOverride  string        // substitute model for direct-model nodes (outages; routes keep their pools)
 	OnEvent        func(Event)
 }
@@ -92,6 +93,7 @@ type Run struct {
 	effectiveCwd    string // worktree checkout or Opts.Cwd
 	checksDone      map[string]bool
 	checksFailed    int
+	finished        bool // set before the final run_end emit; freezes the status bridge
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -100,6 +102,12 @@ func New(crew *schema.Crew, opts Options) *Run {
 	}
 	if opts.NodeTimeout == 0 {
 		opts.NodeTimeout = 10 * time.Minute
+	}
+	// --review implies keeping both the tab and the worktree (P7-3): the human
+	// lands on the agents' diff in lazygit when the run ends.
+	if opts.Review {
+		opts.KeepTab = true
+		opts.KeepWorktree = true
 	}
 	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, logCh: make(chan Event, 512), checksDone: map[string]bool{}}
 	r.effectiveCwd = opts.Cwd
@@ -123,8 +131,13 @@ func (r *Run) emit(ev Event) {
 
 // writeStatusBridge maintains .forseti/crew-status.json for the ttt status bar
 // (6B-5; notifications are disabled on this setup, so the badge is the alert).
+// Skipped once the run has finished — late stream pushes must not resurrect
+// the file after teardown removes it (hit live: stale badge at 11:00).
+// Path = Opts.Cwd (the main checkout) ALWAYS: with --worktree the effective
+// cwd is a disposable checkout that gets deleted — a badge living there would
+// go stale in the stable one (hit live 11:09).
 func (r *Run) writeStatusBridge() {
-	if r.effectiveCwd == "" {
+	if r.finished || r.Opts.Cwd == "" {
 		return
 	}
 	r.mu.Lock()
@@ -139,7 +152,7 @@ func (r *Run) writeStatusBridge() {
 		"running": counts["running"], "blocked": counts["blocked"],
 		"failed": counts["failed"], "checks_failed": r.checksFailedCount(),
 	})
-	path := filepath.Join(r.effectiveCwd, ".forseti", "crew-status.json")
+	path := filepath.Join(r.Opts.Cwd, ".forseti", "crew-status.json")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	_ = os.WriteFile(path, out, 0o644)
 }
@@ -409,7 +422,77 @@ func (r *Run) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// P7-3: end the run on a lazygit review pane of the worktree
+	if r.Opts.Review && r.worktreeWS != "" && r.effectiveCwd != r.Opts.Cwd {
+		if err := openReviewPane(c, tabID, r.effectiveCwd); err != nil {
+			info += " | review pane failed: " + err.Error()
+		} else {
+			info += fmt.Sprintf(" | review ready: lazygit on %s — attach the sandbox session (`herdr session attach %s`), commit, then merge from the main checkout",
+				r.effectiveCwd, r.Opts.Session)
+		}
+	}
+	r.finished = true // freeze the status bridge; teardown's remove sticks
 	r.emit(Event{Type: "run_end", Info: info})
+	return nil
+}
+
+// openReviewPane splits a lazygit pane onto the crew tab (P7-3).
+func openReviewPane(c *herdrd.Client, tabID, worktree string) error {
+	if tabID == "" {
+		return fmt.Errorf("no crew tab")
+	}
+	res, err := c.Call("pane.list", struct{}{}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	var list struct {
+		Panes []struct {
+			PaneID string `json:"pane_id"`
+			TabID  string `json:"tab_id"`
+		} `json:"panes"`
+	}
+	if err := json.Unmarshal(res, &list); err != nil {
+		return err
+	}
+	first := ""
+	for _, p := range list.Panes {
+		if p.TabID == tabID {
+			first = p.PaneID
+			break
+		}
+	}
+	if first == "" {
+		return fmt.Errorf("no panes in crew tab")
+	}
+	split, err := c.Call("pane.split", map[string]any{
+		"target_pane_id": first, "direction": "right", "focus": false,
+	}, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	var sp struct {
+		Pane struct {
+			PaneID string `json:"pane_id"`
+		} `json:"pane"`
+	}
+	_ = json.Unmarshal(split, &sp)
+	if sp.Pane.PaneID == "" {
+		return fmt.Errorf("split returned no pane id")
+	}
+	// no socket pane.run surface (S8-era fact: CLI-only) — type into the fresh
+	// shell and press Enter, mirroring what `herdr pane run` does.
+	if _, err := c.Call("pane.send_text", map[string]any{
+		"pane_id": sp.Pane.PaneID, "text": "lazygit -p " + worktree,
+	}, 10*time.Second); err != nil {
+		return err
+	}
+	_, err = c.Call("pane.send_keys", map[string]any{
+		"pane_id": sp.Pane.PaneID, "keys": []string{"enter"},
+	}, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	_, _ = c.Call("tab.focus", map[string]any{"tab_id": tabID}, 10*time.Second)
 	return nil
 }
 
@@ -688,9 +771,9 @@ func (r *Run) teardown(c *herdrd.Client) {
 		}
 		r.emit(Event{Type: "run_end", Info: "worktree removed"})
 	}
-	// status bridge → idle
-	if r.effectiveCwd != "" {
-		path := filepath.Join(r.effectiveCwd, ".forseti", "crew-status.json")
+	// status bridge → idle (stable checkout path, matching writeStatusBridge)
+	if r.Opts.Cwd != "" {
+		path := filepath.Join(r.Opts.Cwd, ".forseti", "crew-status.json")
 		_ = os.Remove(path)
 	}
 }

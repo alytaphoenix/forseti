@@ -46,6 +46,7 @@ usage:
   forseti-crew run [-f crew.yaml] [--headless] [--keep-tab] [--timeout MIN]
                    [--cwd DIR] [--tab LABEL]
                    [--session NAME] [--worktree BRANCH] [--keep-worktree]
+                   [--review] [--model P/M]
   forseti-crew validate [-f crew.yaml]
   forseti-crew watch [-f run.jsonl] [--follow=false]`)
 }
@@ -60,6 +61,7 @@ type runFlags struct {
 	session      string
 	worktree     string
 	keepWorktree bool
+	review       bool
 	model        string
 }
 
@@ -74,6 +76,7 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	fs.StringVar(&f.session, "session", "", "named herdr session (hermetic sandbox)")
 	fs.StringVar(&f.worktree, "worktree", "", "git branch for a disposable worktree run")
 	fs.BoolVar(&f.keepWorktree, "keep-worktree", false, "keep the worktree after the run")
+	fs.BoolVar(&f.review, "review", false, "end on a lazygit review of the worktree (implies --keep-worktree + --keep-tab)")
 	fs.StringVar(&f.model, "model", "", "override model for direct-model nodes (FORSETI_CREW_MODEL env also works)")
 	_ = fs.Parse(args)
 	if f.model == "" {
@@ -124,6 +127,7 @@ func cmdRun(args []string) {
 		Session:        f.session,
 		WorktreeBranch: f.worktree,
 		KeepWorktree:   f.keepWorktree,
+		Review:         f.review,
 		ModelOverride:  f.model,
 	}
 	if f.headless {

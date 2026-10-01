@@ -401,30 +401,6 @@ local function render(panel)
   panel:label("type above: custom ask")
 end
 
-ttt.register({
-  sidebar = { title = "Forseti", render = render },
-  commands = {
-    { id = "forseti.jump", title = "Forseti: Jump", handler = jump },
-    { id = "forseti.ask", title = "Forseti: Ask pi about selection", handler = quick_ask },
-    { id = "forseti.review", title = "Forseti: Review", handler = review },
-    { id = "forseti.daily", title = "Forseti: Daily Note", handler = daily_note },
-    { id = "forseti.backlinks", title = "Forseti: Backlinks", handler = backlinks },
-    { id = "forseti.wikilink", title = "Forseti: Follow Wikilink", handler = wikilink_jump },
-    { id = "forseti.obsidian", title = "Forseti: Open in Obsidian", handler = open_obsidian },
-    {
-      id = "forseti.toggle_focus",
-      title = "Forseti: Toggle focus pi on ask",
-      handler = function()
-        auto_focus = not auto_focus
-        ttt.set_status_item("left", "ask", "focus-on-ask " .. (auto_focus and "ON" or "OFF"))
-        ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
-      end,
-    },
-  },
-  keybindings = {
-    { key = "ctrl+k a", command = "forseti.ask" },
-  },
-})
 
 ttt.set_interval(POLL_MS, function()
   local prev = agents
@@ -450,6 +426,22 @@ if events_ok then
   events.on("file.save", function(_path) write_context() end)
 else
   log_err("ttt.events not available; IDE context disabled")
+end
+
+-- fs_ready: lazy retry of the filesystem API (U2 startup-order quirk —
+-- LoadAll wires plugins before the FilesystemAPI exists; a later tick finds
+-- it wired). Re-reads the vault state file once fs comes up.
+local function fs_ready()
+  if fs_api_ready then return true end
+  local ok_r, content = pcall(fs.read, ttt.plugin_dir() .. "/vault.json")
+  if ok_r and type(content) == "string" then
+    fs_api_ready = true
+    local ok, data = pcall(json.decode, content)
+    if ok and type(data) == "table" and data.vault then VAULT = data.vault end
+    ttt.log("info", "forseti: fs API came up on retry — vault + git features enabled")
+    return true
+  end
+  return false
 end
 
 -- --- crew status bridge (Phase 6, 6B-5) -------------------------------------
@@ -495,3 +487,89 @@ ttt.set_interval(2000, function()
   end
   ttt.remove_status_item("crew") -- no live run (file removed at teardown)
 end)
+
+
+-- --- Phase 7: git surface (lazygit pane + ask-about-diff) --------------------
+
+-- P7-2: open/focus the lazygit pane via the herdr plugin action (git.sh does
+-- the focus-or-create; ttt only re-dispatches — no TUI nesting here).
+local function open_git()
+  local out = herdr_cmd({ "plugin", "action", "invoke", "forseti.git" })
+  if not out then
+    ttt.set_status_item("left", "ask", "forseti: git action failed (herdr up?)")
+    ttt.set_timeout(3000, function() ttt.remove_status_item("ask") end)
+    return
+  end
+  local state = out:match('"forseti":"focused"') and "focused" or "opened"
+  ttt.set_status_item("left", "ask", "forseti: lazygit " .. state)
+  ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
+end
+
+-- P7-5: ask pi about the working tree's uncommitted changes.
+-- git runs via the manifest allowlist ("git"); the diff excerpt caps at ~2k
+-- chars so the prompt stays small. Repo root resolves from the open file.
+local function ask_diff()
+  if not fs_ready() then
+    ttt.set_status_item("left", "ask", "forseti: fs not ready — retry")
+    ttt.set_timeout(3000, function() ttt.remove_status_item("ask") end)
+    return
+  end
+  local ok_p, cur = pcall(editor.file_path)
+  if not ok_p or not cur or not cur:find("/repos/") then
+    log_err(("ask_diff: no repo file open (ok_p=%s path=%s)"):format(tostring(ok_p), tostring(cur)))
+    ttt.set_status_item("left", "ask", "forseti: open a file in the repo first")
+    ttt.set_timeout(3500, function() ttt.remove_status_item("ask") end)
+    return
+  end
+  local root = cur:match("(.*/repos/[^/]+)")
+  if not root and CREW_REPO then root = CREW_REPO end
+  local ok_s, stat = pcall(sys.exec, "git", { "-C", root, "status", "--porcelain" }, "")
+  if not ok_s or not stat or (stat.exit_code or 0) ~= 0 then
+    log_err("ask_diff: git status failed (" .. tostring(ok_s) .. ")")
+    ttt.set_status_item("left", "ask", "forseti: git status failed")
+    ttt.set_timeout(3000, function() ttt.remove_status_item("ask") end)
+    return
+  end
+  if stat.stdout == "" then
+    ttt.set_status_item("left", "ask", "forseti: working tree clean — nothing to ask about")
+    ttt.set_timeout(3000, function() ttt.remove_status_item("ask") end)
+    return
+  end
+  local ok_d, diff = pcall(sys.exec, "git", { "-C", root, "diff" }, "")
+  local excerpt = (ok_d and diff and diff.stdout) or ""
+  if #excerpt > 2000 then excerpt = excerpt:sub(1, 2000) .. "\n… (truncated)" end
+  local question = "Explain these uncommitted changes:\n\n"
+    .. "```\n" .. stat.stdout .. "```\n"
+    .. (excerpt ~= "" and ("```diff\n" .. excerpt .. "\n```\n") or "")
+  local ok_q = herdr_cmd({ "agent", "prompt", "coder", question })
+  ttt.set_status_item("left", "ask", ok_q and "asked pi about uncommitted changes" or "forseti: prompt failed")
+  ttt.set_timeout(3000, function() ttt.remove_status_item("ask") end)
+end
+
+
+ttt.register({
+  sidebar = { title = "Forseti", render = render },
+  commands = {
+    { id = "forseti.jump", title = "Forseti: Jump", handler = jump },
+    { id = "forseti.ask", title = "Forseti: Ask pi about selection", handler = quick_ask },
+    { id = "forseti.review", title = "Forseti: Review", handler = review },
+    { id = "forseti.git", title = "Forseti: Git (lazygit pane)", handler = open_git },
+    { id = "forseti.ask_diff", title = "Forseti: Ask pi about uncommitted changes", handler = ask_diff },
+    { id = "forseti.daily", title = "Forseti: Daily Note", handler = daily_note },
+    { id = "forseti.backlinks", title = "Forseti: Backlinks", handler = backlinks },
+    { id = "forseti.wikilink", title = "Forseti: Follow Wikilink", handler = wikilink_jump },
+    { id = "forseti.obsidian", title = "Forseti: Open in Obsidian", handler = open_obsidian },
+    {
+      id = "forseti.toggle_focus",
+      title = "Forseti: Toggle focus pi on ask",
+      handler = function()
+        auto_focus = not auto_focus
+        ttt.set_status_item("left", "ask", "focus-on-ask " .. (auto_focus and "ON" or "OFF"))
+        ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
+      end,
+    },
+  },
+  keybindings = {
+    { key = "ctrl+k a", command = "forseti.ask" },
+  },
+})

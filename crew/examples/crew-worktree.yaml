@@ -1,0 +1,21 @@
+# forseti crew — worktree review flow (P7-3): agents write into a disposable
+# worktree, git-state checks assert the result, and `--review` ends the run on
+# a lazygit pane of that worktree for the human to commit/merge.
+# Run: forseti-crew run -f crew-worktree.yaml --session sandbox --worktree <branch> --review
+name: demo-worktree-review
+
+agents:
+  - name: author
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      Create a file named WORKTREE_REVIEW.md in the repo root containing a
+      short markdown checklist titled "Agent review checklist" with two items.
+      Reply with the single word WRITTEN when done.
+
+checks:
+  # git-state assertions (the crew file as E2E harness)
+  - after: author
+    run: "git status --porcelain | grep -q WORKTREE_REVIEW.md"
+  - after: author
+    run: "grep -q 'review checklist' WORKTREE_REVIEW.md"

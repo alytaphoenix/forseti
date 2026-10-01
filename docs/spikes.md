@@ -276,6 +276,38 @@ Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
 - Crew integration: node `route: <id>` ⇒ pi `--model switchyard/<route-id>`;
   runner owns proxy lifecycle + provider-entry materialization.
 
+## S16 — lazygit in panes (Phase 7, 2026-10-01) ✅ resolved (live)
+
+- `brew install lazygit` → 0.65.1 (`/opt/homebrew/bin/lazygit`).
+- `lazygit -p <repo>` renders correctly inside a herdr pane (Status/Diff/Files
+  panels visible within ~3 s); `q` quits cleanly back to the shell prompt —
+  relaunch via `pane run` is safe.
+- macOS config path: `~/Library/Application Support/lazygit/config.yml`
+  (auto-created on first quit; NOT `~/.config/lazygit/` unless
+  `XDG_CONFIG_HOME` is set). Repo-scoped config also exists: `<repo>/.git/lazygit.yml`
+  plus parent-dir `.lazygit.yml` (docs) — not used in v1.
+- 0.65.x collision notes: `Ctrl+O` is universal copy-to-clipboard; custom
+  commands therefore bind `Ctrl+G` (files context) and `Ctrl+Y`.
+- Custom keybindings override inbuilt ones in the SAME context; global custom
+  keys lose to context-specific inbuilt ones (upstream docs).
+
+## S17 — lazygit customCommands → forseti (Phase 7, 2026-10-01) ✅ resolved (live)
+
+- `customCommands` shape (0.65.x): `{key, command (Go template), context,
+  description, loadingText, output}`; context `files` exposes
+  `{{.SelectedFile.Name}}` (repo-root-relative; `| quote` available).
+- Verified loop: a managed, marker-guarded block binds
+  - `<c-g>` → `git-jump.sh "{{.SelectedFile.Name}}"` — resolves the file
+    against `git rev-parse --show-toplevel`, writes `jump.json`, re-dispatches
+    into the live ttt via `POST /exec exec "Forseti: Jump"`. Live drive: ttt
+    opened the selected file.
+  - `<c-y>` → `pi-ask.sh --file …` — prompts the live forseti pi agent. Live
+    drive: the coder agent went `working` and answered.
+- ttt plugin load-order lesson (recurring U2 class): **handlers defined AFTER
+  `ttt.register` are captured as nil**; the fix is definition order (handlers
+  above `ttt.register`), not reloads — a reload following a failed reload
+  latches stale state (previously verified).
+
 ## Supporting findings
 
 - ttt Lua API: `set_interval/set_timeout` run callbacks on the editor main loop

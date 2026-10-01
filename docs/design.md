@@ -457,3 +457,82 @@ a future libsy sidecar.
   `herdr session stop` remains manual.
 - One active run per session in v1; `switchyard.toml`/`server.log` are per-run
   overwritten, routing JSONL is per-run unique.
+
+## Phase 7 — lazygit integration (as-built 2026-10-01)
+
+Git becomes a pane app like everything else. lazygit 0.65.1 (brew) is the
+human surface for the changes agents write; it can dispatch back into the
+live ttt and pi. Spikes S16/S17; full scope P7-1…P7-5.
+
+### Bring-up: `forseti.git` action (P7-1)
+
+`herdr-plugin/scripts/git.sh`, mirroring `open.sh`'s contract:
+
+- resolves the target checkout from `HERDR_PLUGIN_CONTEXT_JSON`
+  (checkout_path → focused_pane_cwd → workspace_cwd; `TTT_TARGET_DIR` override)
+- requires the forseti tab (label `FORSETI_EDITOR_LABEL`, default `forseti`)
+- **idempotency keys off `pane.process_info`**: a pane whose foreground
+  process is `lazygit` IS the git pane → focus it (a user-quit lazygit leaves
+  a shell, so re-invoking relaunches safely). Only shell panes are hostable —
+  a running ttt/pi is never typed into; when no shell pane exists a fresh
+  pane is split off the tab's first pane
+- ends with `tab focus` + a JSON result line
+
+### ttt palette: `Forseti: Git (lazygit pane)` (P7-2)
+
+Re-dispatches to the action via the existing `herdr_cmd` helper; surfaces the
+result (`opened`/`focused`) as a status item. No TUI nesting.
+
+### Crew review loop: `forseti-crew run --review` (P7-3)
+
+Opt-in; implies `--keep-worktree` + `--keep-tab`. When the graph completes on
+a worktree run, the runner splits a lazygit pane onto the crew tab
+(socket: `pane.split` + `pane.send_text "lazygit -p <checkout>"` + Enter —
+there is no socket `pane.run` surface) and `run_end` carries the merge recipe
+(worktree path + attach hint + commit/merge order). Example:
+`crew/examples/crew-worktree.yaml` with git-state checks
+(`git status --porcelain` shape + content grep).
+
+### lazygit → forseti customCommands (P7-4)
+
+`install_lazygit_config` appends a marked, marker-guarded block to lazygit's
+config (idempotent, self-healing on every invoke):
+
+```yaml
+customCommands:
+  - key: '<c-g>'   # Open in forseti (ttt)
+    context: 'files'
+    command: '<repo>/herdr-plugin/scripts/git-jump.sh "{{.SelectedFile.Name}}"'
+  - key: '<c-y>'   # Ask pi about this file
+    context: 'files'
+    command: '<repo>/herdr-plugin/scripts/pi-ask.sh --file "{{.SelectedFile.Name}}" "review this file in the current working tree"'
+```
+
+`git-jump.sh` writes the jump handoff (absolute path resolved against the
+repo toplevel) and re-dispatches into the running ttt; `pi-ask.sh` resolves
+the live pi agent (named one first, else first `pi` agent) and prompts it.
+Both verified live end-to-end.
+
+### ttt: `Forseti: Ask pi about uncommitted changes` (P7-5)
+
+Palette command: `git status --porcelain` (no-op with a status message when
+clean) → `git diff` excerpt capped at 2k chars → prompts the coder agent
+through the ask plumbing. Requires `git` in the ttt manifest's
+`system.exec` allowlist (approved at first load).
+
+### Load-order lesson (recurring)
+
+Handlers must be DEFINED above `ttt.register` — later definitions are
+captured as nil handler slots and palette exec fails with "command not
+found"; a reload after a failed reload latches stale state, so the cure is
+file order, not plugin reload.
+
+### Boundaries (Phase 7)
+
+- lazygit is a **human surface only** — agents use `git` directly (check
+  nodes, pi tools); no lazygit automation for agents.
+- One lazygit pane per forseti tab (focus-or-create), one per crew tab for
+  `--review`.
+- Config edits are append-only under the `# >>> forseti >>>` marker; user
+  settings are never rewritten. CI gates skip lazygit probes when the binary
+  is absent (skip, not fail).

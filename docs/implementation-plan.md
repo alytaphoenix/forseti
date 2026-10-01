@@ -227,9 +227,7 @@ surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
 - `switchyard-server 0.2.0` (crates.io) installed; crew spawns a per-run proxy
   only when the crew file declares `routes:`.
 
-## Phase 6 — observability + agent sandbox/E2E — ✅ **implemented + verified live** (2026-10-01)
-
-Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
+## Phase 6 — observability + agent sandbox/E2E — ✅ **implemented + verified live** (2026-10-01)Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
 
 | Task | Status |
 |---|---|
@@ -260,6 +258,23 @@ the pinned files and the gate are unchanged.
 Boundaries: crew still needs herdr+pi only; teardown closes only its own tab;
 `blocked` surfaced, never auto-answered; one active run in v1. **Edges stay
 deterministic** — switchyard routes model calls *within* nodes, never crew edges.
+
+## Phase 7 — lazygit integration (git surface) — ✅ **implemented + verified live** (2026-10-01)
+
+Spikes S16–S17 resolved live (see `docs/spikes.md`). Shipped:
+
+| Task | Status |
+|---|---|
+| P7-1 `forseti.git` action | ✅ focus-or-create lazygit pane in the forseti tab; process-info idempotency (second invoke focuses, never duplicates; user-quit relaunches safely); never types into running TUIs |
+| P7-2 ttt palette `Forseti: Git (lazygit pane)` | ✅ re-dispatch via herdr action; result surfaced as status item |
+| P7-3 crew `--review` | ✅ implies keep-worktree+keep-tab; lazygit pane on the worktree at run end; merge recipe in `run_end`; `crew/examples/crew-worktree.yaml` with git-state checks |
+| P7-4 lazygit customCommands loop | ✅ marked marker-guarded config block; Ctrl+G → live ttt (opened the selected file), Ctrl+Y → live pi (coder answered) |
+| P7-5 ttt `Forseti: Ask pi about uncommitted changes` | ✅ porcelain status → capped diff excerpt → coder prompt; clean-tree no-op message |
+
+Verification: git.sh invoked twice live (created → focused); full worktree
+review E2E green on glm (halogen's model still absent from the LAN registry);
+lazygit Ctrl+G/Ctrl+Y live drives both closed the loop. Load-order lesson
+recorded: handlers must be defined above `ttt.register`.
 
 ## Phases 0–5 implementation complete — status 2026-09-30
 

@@ -10,6 +10,9 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
+License: [MIT](LICENSE) · Current release: **v0.1.0** (see
+[Releases](https://github.com/alytaphoenix/forseti/releases))
+
 ## The loop
 
 <p align="center">
@@ -30,13 +33,27 @@ herdr plugin action invoke forseti.open
 
 | Component | Surface | Implements |
 |---|---|---|
-| [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi` |
+| [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi`; `forseti.git` opens/focuses a lazygit pane on the current checkout |
 | [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
 | [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
 | [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing |
 
 Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-plan.md) ·
 [`spike log (verified facts)`](docs/spikes.md) · [`AGENTS.md`](AGENTS.md)
+
+## Git — lazygit in the loop
+
+lazygit (0.65.1) joins ttt and pi as a pane app:
+
+- `herdr plugin action invoke forseti.git` — opens (or focuses) a lazygit pane
+  on the current checkout inside the forseti tab; safe to re-invoke, relaunches
+  after a quit, never types into a running editor/agent.
+- From ttt: palette `Forseti: Git (lazygit pane)`.
+- From lazygit: `Ctrl+G` opens the selected file in the live ttt, `Ctrl+Y`
+  asks the live pi agent about it (both bind via a managed, marker-guarded
+  block in lazygit's config).
+- `forseti-crew run --worktree <branch> --review` ends a run on a lazygit pane
+  of the agents' worktree with the merge recipe in the run log.
 
 ## Crew — multi-agent pipelines
 
@@ -96,12 +113,13 @@ herdr's `config.toml` — recipe in [`herdr-plugin/README.md`](herdr-plugin/READ
 
 ## Status
 
-All phases (0–6) implemented and **verified live** — bring-up, ask, follow,
+All phases (0–7) implemented and **verified live** — bring-up, ask, follow,
 review, tools, context injection, the evergreen vault, the crew
-multi-agent runner, and the Phase 6 observability/sandbox/routing layer
+multi-agent runner, the Phase 6 observability/sandbox/routing layer
 (check nodes, sandbox sessions, disposable worktrees, live status stream,
-ttt bridge, switchyard routing). See the [plan](docs/implementation-plan.md)
-for the test matrix. Gates: `scripts/smoke.sh` (IDE loop) +
+ttt bridge, switchyard routing), and the lazygit git surface (pane app +
+back-dispatch loop). See the [plan](docs/implementation-plan.md) for the test
+matrix. Gates: `scripts/smoke.sh` (IDE loop) +
 `scripts/crew-smoke.sh` (checked crew in a sandbox session on the free halogen
 model), both green.
 

@@ -18,3 +18,9 @@ id = "open-notes"
 title = "Open Forseti notes workspace"
 contexts = ["workspace"]
 command = ["sh", "scripts/notes.sh"]
+
+[[actions]]
+id = "git"
+title = "Open Forseti git (lazygit)"
+contexts = ["workspace"]
+command = ["sh", "scripts/git.sh"]
