@@ -74,6 +74,7 @@ type Options struct {
 	Session        string        // named herdr session (sandbox); bootstrapped if down
 	WorktreeBranch string        // run inside a disposable worktree ("" = main checkout)
 	KeepWorktree   bool          // keep the worktree after the run
+	ModelOverride  string        // substitute model for direct-model nodes (outages; routes keep their pools)
 	OnEvent        func(Event)
 }
 
@@ -283,7 +284,7 @@ func (r *Run) Run(ctx context.Context) error {
 			case a.Route != "":
 				args = append(args, "--model", "switchyard/"+a.Route)
 			case a.Model != "":
-				args = append(args, "--model", a.Model)
+				args = append(args, "--model", r.effectiveModel(a))
 			}
 			// disposable worktree = fresh dir every run → pi's project-trust
 			// prompt would stall every prompt (hit live). Auto-trust for the
@@ -694,9 +695,17 @@ func (r *Run) teardown(c *herdrd.Client) {
 	}
 }
 
+// effectiveModel applies the outage model override to direct-model nodes.
+func (r *Run) effectiveModel(a schema.Agent) string {
+	if r.Opts.ModelOverride != "" && a.Model != "" {
+		return r.Opts.ModelOverride
+	}
+	return a.Model
+}
+
 func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	a := r.Crew.Agent(st.Name)
-	resolved := a.Model
+	resolved := r.effectiveModel(*a)
 	if a.Route != "" {
 		resolved = "switchyard/" + a.Route
 	}

@@ -60,6 +60,7 @@ type runFlags struct {
 	session      string
 	worktree     string
 	keepWorktree bool
+	model        string
 }
 
 func parseRun(fs *flag.FlagSet, args []string) *runFlags {
@@ -73,7 +74,11 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	fs.StringVar(&f.session, "session", "", "named herdr session (hermetic sandbox)")
 	fs.StringVar(&f.worktree, "worktree", "", "git branch for a disposable worktree run")
 	fs.BoolVar(&f.keepWorktree, "keep-worktree", false, "keep the worktree after the run")
+	fs.StringVar(&f.model, "model", "", "override model for direct-model nodes (FORSETI_CREW_MODEL env also works)")
 	_ = fs.Parse(args)
+	if f.model == "" {
+		f.model = os.Getenv("FORSETI_CREW_MODEL")
+	}
 	return f
 }
 
@@ -119,6 +124,7 @@ func cmdRun(args []string) {
 		Session:        f.session,
 		WorktreeBranch: f.worktree,
 		KeepWorktree:   f.keepWorktree,
+		ModelOverride:  f.model,
 	}
 	if f.headless {
 		opts.OnEvent = func(ev runner.Event) {
