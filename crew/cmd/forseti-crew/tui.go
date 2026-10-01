@@ -135,6 +135,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		return m.startRun()
+	case "f":
+		// focus the REAL herdr pane of the selected node (human-in-the-loop:
+		// takeover happens in the actual pane, never inside the monitor)
+		if m.client != nil && len(m.crew.Agents) > 0 {
+			name := m.crew.Agents[m.selected%len(m.crew.Agents)].Name
+			if err := m.client.AgentFocus(name); err != nil {
+				return m.logf("focus %s: %v", name, err), nil
+			}
+			return m.logf("focused real pane: %s", name), nil
+		}
 	case "b":
 		m.mode = "build"
 		m.buildMsg = "a=add agent · e=add edge · A=adopt live · s=save · q=back"
@@ -339,7 +349,7 @@ func (m *model) View() string {
 		for _, e := range m.crew.Edges {
 			left.WriteString(fmt.Sprintf("    %s→%s\n", e.From, e.To))
 		}
-		left.WriteString("\nj/k select · r run · b build · q quit")
+		left.WriteString("\nj/k select · r run · f focus pane · b build · q quit")
 	} else if m.form != nil {
 		f := m.form
 		left.WriteString(fmt.Sprintf("\nadd %s — field %d/%d (enter next · esc cancel)\n\n", f.kind, f.step+1, len(f.fields)))

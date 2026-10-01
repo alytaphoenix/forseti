@@ -339,6 +339,12 @@ func (c *Client) AgentPromptWait(name, text string, until []string, timeout time
 	return "idle", nil
 }
 
+// AgentFocus jumps the herdr UI to the pane hosting the named agent.
+func (c *Client) AgentFocus(name string) error {
+	_, err := c.Call("agent.focus", map[string]any{"target": name}, 10*time.Second)
+	return err
+}
+
 // AgentWait blocks until the agent reaches one of the until states.
 func (c *Client) AgentWait(name string, until []string, timeout time.Duration) error {
 	_, err := c.Call("agent.wait", map[string]any{
