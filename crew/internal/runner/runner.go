@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"text/template"
@@ -222,7 +223,17 @@ func (r *Run) Run(ctx context.Context) error {
 	if r.Opts.WorktreeBranch != "" {
 		ws, path, err := c.WorktreeCreate(r.Opts.Cwd, r.Opts.WorktreeBranch, "", "forseti-crew-wt", 90*time.Second)
 		if err != nil {
-			return fmt.Errorf("worktree create: %w", err)
+			// a crashed earlier run can leave an unregistered husk under
+			// herdr's worktrees root; sweep it and retry once
+			if swept := huskToSweep(err); swept != "" {
+				r.emit(Event{Type: "run_start", Info: "sweeping leftover worktree husk: " + swept})
+				_ = os.RemoveAll(swept)
+				_ = exec.Command("git", "-C", r.Opts.Cwd, "worktree", "prune").Run()
+				ws, path, err = c.WorktreeCreate(r.Opts.Cwd, r.Opts.WorktreeBranch, "", "forseti-crew-wt", 90*time.Second)
+			}
+			if err != nil {
+				return fmt.Errorf("worktree create: %w", err)
+			}
 		}
 		r.worktreeWS, r.effectiveCwd = ws, path
 		r.emit(Event{Type: "run_start", Info: "worktree ready: " + path})
@@ -273,6 +284,12 @@ func (r *Run) Run(ctx context.Context) error {
 				args = append(args, "--model", "switchyard/"+a.Route)
 			case a.Model != "":
 				args = append(args, "--model", a.Model)
+			}
+			// disposable worktree = fresh dir every run → pi's project-trust
+			// prompt would stall every prompt (hit live). Auto-trust for the
+			// run; user args come later so an explicit -na can override.
+			if r.Opts.WorktreeBranch != "" {
+				args = append(args, "-a")
 			}
 			args = append(args, a.Args...)
 			if err := c.AgentStart(a.Name, a.Kind, r.Nodes[a.Name].PaneID, args, 90*time.Second); err != nil {
@@ -378,8 +395,47 @@ func (r *Run) Run(ctx context.Context) error {
 		}
 	}
 	r.mu.Unlock()
-	r.emit(Event{Type: "run_end", Info: r.summary()})
+	info := r.summary()
+	if r.proxy != nil {
+		// run-level route tally (per-node attribution is impossible in
+		// switchyard 0.2.0 — pi's session header doesn't attach, S15)
+		if st, err := r.proxy.Stats(); err == nil {
+			if tiers, ok := st["tiers"].(map[string]any); ok && len(tiers) > 0 {
+				info += " | routed tiers: " + fmtTallies(tiers)
+			}
+			if models, ok := st["models"].(map[string]any); ok && len(models) > 0 {
+				info += " | models: " + fmtTallies(models)
+			}
+		}
+	}
+	r.emit(Event{Type: "run_end", Info: info})
 	return nil
+}
+
+// fmtTallies renders {"efficient": {"total_requests": N}} → "efficient=N".
+func fmtTallies(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := m[k]
+		switch n := v.(type) {
+		case float64:
+			parts = append(parts, fmt.Sprintf("%s=%d", k, int(n)))
+		case map[string]any:
+			if tr, ok := n["total_requests"].(float64); ok {
+				parts = append(parts, fmt.Sprintf("%s=%d", k, int(tr)))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s=?", k))
+			}
+		default:
+			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // connect resolves the herdr socket, bootstrapping a named sandbox session
@@ -438,7 +494,6 @@ func (r *Run) connect() (*herdrd.Client, error) {
 	}
 	return nil, fmt.Errorf("sandbox %q did not come up within 30s", r.Opts.Session)
 }
-
 
 // pumpStatus consumes the status stream: updates live badges (6B-2) and fires
 // blocked notifications (6B-3, best-effort — disabled toasts fall back to the
@@ -608,10 +663,25 @@ func (r *Run) teardown(c *herdrd.Client) {
 		r.proxy = nil
 	}
 	if r.worktreeWS != "" && !r.Opts.KeepWorktree {
-		_ = c.WorktreeRemove(r.worktreeWS, true)
-		branch := r.Opts.WorktreeBranch
-		if branch != "" {
-			_ = exec.Command("git", "-C", r.Opts.Cwd, "branch", "-D", branch).Run()
+		wtPath := r.effectiveCwd
+		if err := c.WorktreeRemove(r.worktreeWS, true); err != nil {
+			r.emit(Event{Type: "node_failed", Info: "worktree remove: " + err.Error()})
+		}
+		// worktree.remove can leave a husk (e.g. our untracked .forseti dir);
+		// sweep it — but only under herdr's own worktrees root
+		if wtPath != r.Opts.Cwd && strings.Contains(wtPath, ".herdr/worktrees") {
+			if _, err := os.Stat(wtPath); err == nil {
+				_ = os.RemoveAll(wtPath)
+			}
+			_ = exec.Command("git", "-C", r.Opts.Cwd, "worktree", "prune").Run()
+		}
+		if branch := r.Opts.WorktreeBranch; branch != "" {
+			// branch -D can fail while the worktree is still registered; prune
+			// then retry once
+			if err := exec.Command("git", "-C", r.Opts.Cwd, "branch", "-D", branch).Run(); err != nil {
+				_ = exec.Command("git", "-C", r.Opts.Cwd, "worktree", "prune").Run()
+				_ = exec.Command("git", "-C", r.Opts.Cwd, "branch", "-D", branch).Run()
+			}
 		}
 		r.emit(Event{Type: "run_end", Info: "worktree removed"})
 	}
@@ -752,6 +822,23 @@ func (r *Run) fail(node, msg string) {
 	}
 	r.mu.Unlock()
 	r.emit(Event{Type: "node_failed", Node: node, Info: msg})
+}
+
+// huskToSweep extracts a leftover worktree path from a create failure
+// ("'/…/.herdr/worktrees/<repo>/<branch>' already exists"). Only paths under
+// herdr's own worktrees root are sweepable.
+func huskToSweep(err error) string {
+	msg := err.Error()
+	i := strings.Index(msg, ".herdr/worktrees")
+	if i < 0 {
+		return ""
+	}
+	start := strings.LastIndex(msg[:i], "'")
+	end := strings.Index(msg[i:], "'")
+	if start < 0 || end < 0 {
+		return ""
+	}
+	return msg[start+1 : i+end]
 }
 
 func (r *Run) summary() string {

@@ -119,10 +119,13 @@ func (m *model) metaView() string {
 	}
 	var b strings.Builder
 	b.WriteString("META: " + name + "\n\n")
-	st := m.run.Nodes[name]
 	a := m.crew.Agent(name)
+	var st *runner.NodeState
+	if m.run != nil {
+		st = m.run.Nodes[name]
+	}
 	if st == nil || a == nil {
-		b.WriteString("(no state)")
+		b.WriteString("(no run yet — press r to start)")
 		return b.String()
 	}
 	model := a.Model
