@@ -20,7 +20,8 @@ echo "crew-smoke: validating examples…"
 # Model override (outage): FORSETI_CREW_MODEL=opencode-go/glm-5.3-flash swaps
 # direct-model nodes without touching the halogen-pinned crew files.
 echo "crew-smoke: running checked crew headless in sandbox session (a few minutes)…"
-echo "crew-smoke: model: ${FORSETI_CREW_MODEL:-halogen (pinned in crew file)}"rm -f "$PROBE"
+echo "crew-smoke: model: ${FORSETI_CREW_MODEL:-halogen (pinned in crew file)}"
+rm -f "$PROBE"
 if ! "$BIN" run --headless -f "$CREWFILE" --session sandbox > /tmp/crew-smoke-events.jsonl 2>&1; then
   echo "crew-smoke: FAIL — run exited nonzero"
   tail -8 /tmp/crew-smoke-events.jsonl

@@ -429,7 +429,18 @@ runner, only when routes exist:
 4. Route-attached nodes start as `pi --model switchyard/<route-id>`; settle
    logic unchanged.
 5. Tails the routing JSONL → `route_decision` events; `/v1/stats` counters are
-   available for run-level per-model tallies.
+   available for run-level per-model tallies, and `run_end` carries the
+   per-model request tally (e.g. `models: glm-5.3-flash=2
+   halogen-qwen3.8-flash-next=0 (errors=2)`).
+
+Resilience (verified live during a halogen outage): when an upstream is
+unreachable, switchyard falls back to the other tier
+(`fallback_reason: "unavailable"` in the routing log) — a routed crew keeps
+running while a direct-model crew on the same dead model fails at pi's
+connection-error path. Known blind spot: routed nodes report the ROUTE's
+declared cost in pi's footer ($0.0000), not the actual upstream's; the
+`route_decision` tokens + per-model tally are the truthful cost view for
+routed runs.
 
 Version drift note (S14/S15): server 0.2.0 has no `auto` route type (that's the
 0.3.0 preset == stage_router efficient_first 0.5) and reads the session header
