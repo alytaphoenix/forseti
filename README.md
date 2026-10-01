@@ -55,6 +55,22 @@ lazygit (0.65.1) joins ttt and pi as a pane app:
 - `forseti-crew run --worktree <branch> --review` ends a run on a lazygit pane
   of the agents' worktree with the merge recipe in the run log.
 
+## Decisions — Laya, the bounded edge-gate
+
+Crew edges stay deterministic (`idle` | `re:<regex>`) **plus** one more gate:
+`when: laya:choice:<instructions>` — a ~421M local decision model (Laya,
+Apache 2.0, ~21 ms warm on Apple silicon) branches the graph on what the
+upstream output MEANS, over a bounded option set the crew file declares. The
+runner stays the authority (argmax above `min_confidence`, else abstain with
+the distribution in the run log); a dead endpoint fail-safes to skip. Agents
+get the same service as the `forseti_decide` tool.
+
+```sh
+scripts/laya-setup.sh && scripts/laya-serve.sh start
+forseti-crew run -f crew/examples/crew-laya.yaml --session sandbox
+scripts/laya-eval.sh   # 9-probe gate incl. an abstention contract
+```
+
 ## Crew — multi-agent pipelines
 
 `crew.yaml` describes a deterministic graph (no LLM routing of edges — LLMs do

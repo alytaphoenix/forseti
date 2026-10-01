@@ -220,6 +220,60 @@ export default function forseti(pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "forseti_decide",
+		label: "forseti_decide",
+		description:
+			"Ask the local Laya decision model a BOUNDED question about the given state. Returns the most-likely named option with a probability distribution. Use for routing/classification/risk decisions (which component owns this, is this blocking, does the user threaten to cancel). Do NOT use it for open-ended questions, drafting, or explanation — it only chooses among the options you give it.",
+		promptSnippet:
+			"forseti_decide: bounded local decisions (routing/urgency/probability) with calibrated distributions.",
+		parameters: Type.Object({
+			input: Type.String({ description: "The state/evidence text to decide about (ticket body, log tail, plan, diff — keep it the relevant evidence only)" }),
+			question: Type.String({ description: "What to decide, phrased as a question" }),
+			options: Type.Array(
+				Type.Object({
+					name: Type.String({ description: "Short option label (1-2 words)" }),
+					description: Type.String({ description: "Concrete criteria for when this option fits" }),
+				}),
+				{ description: "The allowed answers (2-8 options)" },
+			),
+		}),
+		async execute(_toolCallId, params) {
+			if (!params.input || !params.question || !params.options || params.options.length < 2) {
+				return { content: [{ type: "text", text: "forseti_decide error: input, question, and at least 2 options required" }], isError: true };
+			}
+			const base = (process.env.FORSETI_LAYA_URL || "http://127.0.0.1:8751").replace(/\/$/, "");
+			const criteria: Record<string, string> = {};
+			for (const o of params.options) criteria[o.name] = o.description;
+			criteria["other"] = "none of the options fit";
+			try {
+				const res = await fetch(`${base}/v1/systemone`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						state: { input: params.input },
+						questions: {
+							decide: { type: "choice", instructions: params.question, criteria },
+						},
+					}),
+				});
+				if (!res.ok) {
+					return { content: [{ type: "text", text: `forseti_decide: laya endpoint ${res.status} (start it with: scripts/laya-serve.sh start)` }], details: { ok: false } };
+				}
+				const data: any = await res.json();
+				const a = data.answers?.decide;
+				if (!a) return { content: [{ type: "text", text: "forseti_decide: malformed laya response" }], details: { ok: false } };
+				const probs = Object.entries(a.probabilities || {})
+					.map(([k, v]) => `${k}: ${v}`)
+					.join(", ");
+				const text = `decision: ${a.choice} (confidence ${a.confidence})\ndistribution: ${probs}\ncheckpoint: ${data.routing?.model ?? data.model}`;
+				return { content: [{ type: "text", text }], details: { ok: true, choice: a.choice, confidence: a.confidence, probabilities: a.probabilities } };
+			} catch (e: any) {
+				return { content: [{ type: "text", text: `forseti_decide: laya endpoint unreachable (${e?.message ?? e}) — start it with: scripts/laya-serve.sh start` }], details: { ok: false } };
+			}
+		},
+	});
+
 	// ---- Phase 2d-2: review mode --------------------------------------------
 	pi.on("turn_start", async () => {
 		turnEdits.length = 0;

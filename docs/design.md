@@ -536,3 +536,80 @@ file order, not plugin reload.
 - Config edits are append-only under the `# >>> forseti >>>` marker; user
   settings are never rewritten. CI gates skip lazygit probes when the binary
   is absent (skip, not fail).
+
+## Phase 8 — Laya decision layer (as-built 2026-10-01)
+
+Bounded local decisions enter the workflow: crew edges can branch on what the
+upstream MEANT, and pi can ask routing questions mid-task — both served by one
+local Laya endpoint (Convai Innovations' ~421M ModernBERT decision model,
+Apache 2.0, `laya==0.3.22`, mps on this Mac, warm predict ~21 ms). Spikes
+S18/S19; plan `~/.opencode/plan/forseti-phase8-laya.md`.
+
+### Runtime (P8-1)
+
+- `scripts/laya-setup.sh`: pinned venv at `~/.config/forseti/laya-venv`
+  (pip never global), one-time checkpoint fetch + warmup.
+- `scripts/laya-serve.sh start|stop|status|restart`: binds 127.0.0.1:8751
+  (env: `FORSETI_LAYA_PORT`), preloads `english`, polls `/health` 40 s
+  (cold load ~20 s), pidfile idempotent start. The endpoint speaks Jev's
+  `POST /v1/systemone {state, questions}` wire — answers carry
+  `choice|score|noul` + `probabilities` + calibrated `confidence` +
+  `answer_confidence` (top share).
+
+### Crew edges: `when: laya:choice:<instructions>` (P8-2)
+
+Schema: the edge gains `min_confidence` (default 0.5, the abstention dial)
+and `state_file` (judge a file artifact instead of the pane transcript — the
+scrollback truncates the 512-token encoder and carries the prompt echo, hit
+live; the artifact is the review target).
+
+Runner: a settled node's laya edges evaluate as ONE grouped decision —
+
+- criteria: each target's instructions + implicit `other` ("none fit")
+- argmax wins; below the winning edge's `min_confidence` → abstain (skip,
+  full distribution recorded); `other` or a dead endpoint → fail-safe skip
+  (the graph never hangs on a decision service)
+- `laya_decision` events carry chosen/confidence/answer_confidence/latency;
+  `edge_skip` explains why (`not chosen` | `abstained: conf < min_confidence`
+  | `max_visits reached`)
+
+Verified E2E (`crew/examples/crew-laya.yaml`, sandbox, glm override):
+planner writes the incident note → gate picks `opsfix` (conf 0.675, 119 ms)
+→ codefix skipped → opsfix runs. Also verified live: the abstention path
+(conf 0.431 < 0.45 → skip with distribution).
+
+### pi tool: `forseti_decide` (P8-3)
+
+`pi-extension/index.ts`: bounded questions from the agent —
+
+```
+forseti_decide(input, question, options[{name, description}])
+→ "decision: <name> (confidence <c>)\ndistribution: k: v, …\ncheckpoint: <m>"
+```
+
+Options map to laya criteria (+ `other` escape); degrades with a start hint
+when the endpoint is down. Verified live: pi routed an ambiguous state and
+hedged correctly on low confidence. Never mutates the editor; not for
+drafting (promptSnippet says so).
+
+### Calibration + abstention (P8-4)
+
+- `scripts/laya-eval.sh` runs `crew/eval/laya-probe.jsonl` (9 probes: choice
+  rubric rows, one ABSTENTION-contract row — a confusable must NOT resolve
+  above 0.5 confidence —, noul rows, score rows with index→level mapping).
+  Gate: 9/9; exit 1 on wrong answers or pathological calibration; deterministic
+  (no generative model needed).
+- The eval taught the same lesson the article preaches twice over: probe
+  criteria must be internally consistent with the expected label, and
+  ambiguous states belong under abstention contracts, not forced labels.
+
+### Boundaries (Phase 8)
+
+- Laya never generates text: no switchyard target, no pi provider entry.
+- v1 activation = argmax-with-threshold; probability-mass fan-out is a
+  documented future item.
+- The endpoint is a user-invoked process; the runner/tool degrade to hints,
+  never auto-spawn.
+- Abstention is honored: low confidence surfaces as skipped edges with the
+  distribution in the run log — a human can read why the graph did not
+  proceed.

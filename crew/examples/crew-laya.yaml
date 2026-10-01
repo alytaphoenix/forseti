@@ -1,0 +1,44 @@
+# forseti crew — Laya decision-gate demo (P8-2): the planner's output is
+# triaged by a bounded LOCAL decision model; the argmax above min_confidence
+# activates exactly one downstream edge. Requires the laya endpoint:
+#   scripts/laya-serve.sh start
+# Run: forseti-crew run -f crew-laya.yaml --session sandbox [--model P/M]
+name: demo-laya-triage
+
+agents:
+  - name: planner
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      Write a SHORT incident note (3 lines) into a file named LAYA_TRIAGE.md
+      describing a live login outage: the auth service returns 5xx for most
+      users since 10:05 UTC, the status page is updated, and on-call ops has
+      been paged. Keep the note strictly about the availability incident.
+      End your reply with the single word NOTED.
+
+  - name: opsfix
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      You are the ON-CALL OPS responder. Append one line to LAYA_TRIAGE.md
+      starting with "OPS:" stating the rollback/status-page action you would
+      take. Reply with OPS_NOTED.
+
+  - name: codefix
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      You are the CODE FIXER. Append one line to LAYA_TRIAGE.md starting with
+      "CODE:" naming the suspected code path. Reply with CODE_NOTED.
+
+edges:
+  - from: planner
+    to: opsfix
+    when: "laya:choice:access, availability or outage problem — on-call ops owns it"
+    min_confidence: 0.4
+    state_file: LAYA_TRIAGE.md   # judge the artifact, not the terminal scrollback
+  - from: planner
+    to: codefix
+    when: "laya:choice:a code defect in the product — a developer owns it"
+    min_confidence: 0.4
+    state_file: LAYA_TRIAGE.md

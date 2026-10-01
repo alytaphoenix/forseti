@@ -308,6 +308,46 @@ Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
   above `ttt.register`), not reloads — a reload following a failed reload
   latches stale state (previously verified).
 
+## S18 — Laya runtime + serve (Phase 8, 2026-10-01) ✅ resolved (live)
+
+- `laya 0.3.22` (pip, venv-only at `~/.config/forseti/laya-venv`): Router +
+  `laya-serve` binary; `laya[serve]` adds the FastAPI/uvicorn surface.
+- **Wire** (TypeSafe Jev-compatible): `POST /v1/systemone {state, questions}`
+  → `{model, answers{type, choice|score|noul, probabilities, confidence,
+  answer_confidence, action}, usage{state_tokens, truncated…}, routing}`.
+  `GET /health` → status + loaded checkpoints + device + revisions.
+- Env config only: `LAYA_HOST/PORT` (bind 127.0.0.1:<port> for forseti),
+  `LAYA_MODELS=english` preload, `LAYA_DEVICE`, `LAYA_API_KEY` (optional
+  bearer), `LAYA_MAX_CONCURRENT`. No CLI flags; `--help` BOOTS the server.
+- **Latency on this Mac**: warm predict ~21 ms (direct), ~90-170 ms over HTTP;
+  cold start ~20 s (model load) — the serve script polls /health for 40 s.
+- Device: **mps** (Apple GPU), revision `55cf4c4e` pinned in /health.
+- Checkpoint caveat (from its own runtime warning): "invalid temperatures…
+  Treat confidence from the affected entries as uncalibrated" — empirically
+  the calibrated `confidence` still discriminates uncertainty well (clear
+  cases 0.79-0.96, near-ties 0.16-0.19, confusables 0.18), but it must be
+  treated as a threshold dial, not a probability.
+
+## S19 — laya edge-gate semantics (Phase 8, 2026-10-01) ✅ resolved (live)
+
+- `when: laya:choice:<instructions>` + `min_confidence` + `state_file` per
+  edge; the runner groups a node's laya edges into ONE decision: criteria =
+  each target's instructions (+ implicit "other" escape), state = the
+  `state_file` content (if declared) else the captured output.
+- **State quality is the deciding factor** (the article's "evidence, not a
+  dump" made real): the full pane transcript truncated the 512-token encoder
+  (341 tokens dropped) AND carried the prompt echo → abstained on a clear
+  outage note (conf 0.056); the tail-2500 also abstained; the incident NOTE
+  file alone → `opsfix` conf 0.43-0.68. **Rule: laya gates should judge a
+  file artifact, not terminal scrollback.**
+- Prompt pollution is real: a planner instructed to write "no code changes
+  needed" produced a note whose own text pulled toward the codefix option —
+  decisive note content → decisive confidences (0.675 demo run).
+- E2E (sandbox, glm override): planner → laya gate (opsfix conf 0.675,
+  119 ms) → codefix skipped → opsfix ran → run_end done=2. Abstention path
+  verified live at 0.431 vs min_confidence 0.45 (skipped, distribution
+  recorded).
+
 ## Supporting findings
 
 - ttt Lua API: `set_interval/set_timeout` run callbacks on the editor main loop

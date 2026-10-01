@@ -43,9 +43,9 @@ type Agent struct {
 // Check is a shell assertion run after its `after` node settles.
 // exit 0 = pass; failures flip the run's exit code (crew.yaml as E2E harness).
 type Check struct {
-	Name  string `yaml:"name,omitempty"`  // optional; defaults to check-<after>-<n>
-	After string `yaml:"after"`           // node whose completion triggers this check
-	Run   string `yaml:"run"`             // shell command, executed in the crew cwd
+	Name  string `yaml:"name,omitempty"` // optional; defaults to check-<after>-<n>
+	After string `yaml:"after"`          // node whose completion triggers this check
+	Run   string `yaml:"run"`            // shell command, executed in the crew cwd
 }
 
 // Watcher arms a pane.wait_for_output regex on a node's pane (advisory:
@@ -69,10 +69,21 @@ type Route struct {
 type Edge struct {
 	From string `yaml:"from"`
 	To   string `yaml:"to"`
-	// When: "idle" (default) or "re:<regex>" gating on upstream output.
+	// When: "idle" (default), "re:<regex>" (output gate), or
+	// "laya:choice:<instructions>" — a bounded decision gate: the runner asks
+	// the local Laya endpoint a choice question whose options are the
+	// laya-gated targets of the same from-node (+ implicit "other"); the
+	// argmax above min_confidence activates exactly that edge.
 	When string `yaml:"when,omitempty"`
 	// MaxVisits bounds cycles; required for any edge participating in a cycle.
 	MaxVisits int `yaml:"max_visits,omitempty"`
+	// MinConfidence gates laya edges (default 0.5): below it the edge
+	// abstains (skipped with the distribution recorded) rather than guess.
+	MinConfidence float64 `yaml:"min_confidence,omitempty"`
+	// StateFile: when set, the laya gate judges THIS file's content (relative
+	// to the workdir) instead of the pane transcript — the artifact the agent
+	// wrote is the review target, not the terminal scrollback.
+	StateFile string `yaml:"state_file,omitempty"`
 }
 
 // Load parses and validates crew.yaml content.
@@ -88,6 +99,10 @@ func Load(data []byte) (*Crew, error) {
 }
 
 var routeIDRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// layaWhenRule parses `laya:choice:<instructions>` edge gates (instructions
+// may be empty at parse time — validation rejects empties explicitly).
+var layaWhenRule = regexp.MustCompile(`^laya:choice:(.*)$`)
 
 var validRouteTypes = map[string]bool{"stage_router": true}
 var validPickers = map[string]bool{"efficient_first": true, "capable_first": true}
@@ -189,8 +204,21 @@ func (c *Crew) Validate() error {
 		if e.When == "" {
 			e.When = "idle"
 		}
-		if !strings.HasPrefix(e.When, "re:") && !validStatuses[e.When] {
-			return fmt.Errorf("edge %d: when %q not a status or re:<regex>", i, e.When)
+		if m := layaWhenRule.FindStringSubmatch(e.When); m != nil {
+			if strings.TrimSpace(m[1]) == "" {
+				return fmt.Errorf("edge %d: empty laya instructions", i)
+			}
+			if e.MinConfidence == 0 {
+				e.MinConfidence = 0.5
+			}
+			if e.MinConfidence <= 0 || e.MinConfidence > 1 {
+				return fmt.Errorf("edge %d: min_confidence must be in (0,1]", i)
+			}
+		} else if e.MinConfidence != 0 || e.StateFile != "" {
+			return fmt.Errorf("edge %d: min_confidence/state_file only apply to laya edges", i)
+		}
+		if !strings.HasPrefix(e.When, "re:") && !validStatuses[e.When] && !layaWhenRule.MatchString(e.When) {
+			return fmt.Errorf("edge %d: when %q not a status, re:<regex>, or laya:choice:<instructions>", i, e.When)
 		}
 		if strings.HasPrefix(e.When, "re:") {
 			if _, err := regexp.Compile(e.When[3:]); err != nil {
@@ -258,6 +286,17 @@ func (c *Crew) findCycles() [][]string {
 		}
 	}
 	return cycles
+}
+
+// IsLaya reports whether the edge's when is a laya decision gate.
+func (e Edge) IsLaya() bool { return layaWhenRule.MatchString(e.When) }
+
+// LayaInstructions extracts the choice instructions from a laya gate.
+func (e Edge) LayaInstructions() string {
+	if m := layaWhenRule.FindStringSubmatch(e.When); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // Entry returns nodes with no incoming edges (the run's starting wave).

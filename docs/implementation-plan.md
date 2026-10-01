@@ -276,6 +276,21 @@ review E2E green on glm (halogen's model still absent from the LAN registry);
 lazygit Ctrl+G/Ctrl+Y live drives both closed the loop. Load-order lesson
 recorded: handlers must be defined above `ttt.register`.
 
+## Phase 8 — Laya decision layer — ✅ **implemented + verified live** (2026-10-01)
+
+Spikes S18–S19 resolved live (see `docs/spikes.md`). Shipped:
+
+| Task | Status |
+|---|---|
+| P8-1 runtime + serve | ✅ pinned venv (`laya==0.3.22`), `scripts/laya-setup.sh` + `laya-serve.sh` (start/stop/status/restart, /health-polled, pidfile idempotent); endpoint on 127.0.0.1:8751, mps, warm ~21 ms |
+| P8-2 `when: laya:choice` edges | ✅ schema (min_confidence + state_file) + grouped runner gate; E2E green (opsfix conf 0.675 / 119 ms); abstention path verified live (0.431 < 0.45 → skip) |
+| P8-3 pi tool `forseti_decide` | ✅ registered + deployed; live probe: bounded decision with distribution, correct hedge on ambiguous input |
+| P8-4 calibration + abstention | ✅ `scripts/laya-eval.sh` + 9-probe set (choice/noul/score/abstain contracts) — 9/9 PASS |
+| P8-5 docs + demo | ✅ design.md Phase 8 as-built, this table, spikes S18/S19, `crew/examples/crew-laya.yaml` |
+
+State-quality lesson recorded: laya gates should judge a file artifact, not
+terminal scrollback (encoder truncation + prompt echo, hit live).
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in

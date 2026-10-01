@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -94,6 +95,7 @@ type Run struct {
 	checksDone      map[string]bool
 	checksFailed    int
 	finished        bool // set before the final run_end emit; freezes the status bridge
+	laya            *LayaClient
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -307,8 +309,18 @@ func (r *Run) Run(ctx context.Context) error {
 			}
 			args = append(args, a.Args...)
 			if err := c.AgentStart(a.Name, a.Kind, r.Nodes[a.Name].PaneID, args, 90*time.Second); err != nil {
-				r.fail(a.Name, fmt.Sprintf("agent.start: %v", err))
-				return
+				// a freshly-spawned sandbox server can answer ping before its
+				// pane PTYs are attachable (hit live: agent_pane_busy on
+				// every pane) — settle and retry once
+				var ae *herdrd.APIError
+				if errors.As(err, &ae) && ae.Code == "agent_pane_busy" {
+					time.Sleep(1200 * time.Millisecond)
+					err = c.AgentStart(a.Name, a.Kind, r.Nodes[a.Name].PaneID, args, 90*time.Second)
+				}
+				if err != nil {
+					r.fail(a.Name, fmt.Sprintf("agent.start: %v", err))
+					return
+				}
 			}
 			// "done" = idle-but-unseen (unfocused tab); both mean ready for input
 			if err := c.AgentWait(a.Name, []string{"idle", "done", "blocked"}, 90*time.Second); err != nil {
@@ -372,14 +384,23 @@ func (r *Run) Run(ctx context.Context) error {
 			}(st)
 		}
 		wg2.Wait()
-		// after the wave, run checks for freshly-settled nodes, then evaluate edges
+		// after the wave: checks for freshly-settled nodes, laya decision
+		// gates (one grouped endpoint call per settled node), then plain gates
 		r.runDueChecks(c)
+		for _, st := range ready {
+			if st.Status == "done" {
+				r.evaluateLayaEdges(st, visitedEdge, satisfied)
+			}
+		}
 		r.mu.Lock()
 		for _, st := range ready {
 			if st.Status != "done" {
 				continue
 			}
 			for _, e := range r.Crew.OutEdges(st.Name) {
+				if e.IsLaya() {
+					continue // handled by evaluateLayaEdges (grouped call)
+				}
 				key := e.From + ">" + e.To
 				limit := e.MaxVisits
 				if limit == 0 {
@@ -574,7 +595,21 @@ func (r *Run) connect() (*herdrd.Client, error) {
 				_, _ = dc.Call("tab.close", map[string]any{"tab_id": out.Layout.TabID}, 10*time.Second)
 			}
 			r.emit(Event{Type: "run_start", Info: "sandbox session " + r.Opts.Session + " bootstrapped"})
-			return herdrd.NewAt(sock)
+			rc, err := herdrd.NewAt(sock)
+			if err != nil {
+				return nil, err
+			}
+			// the socket can appear before the server can create panes
+			// (hit live: agent_pane_busy on every pane) — poll ping until
+			// the server answers authoritatively
+			healthDeadline := time.Now().Add(20 * time.Second)
+			for time.Now().Before(healthDeadline) {
+				if err := rc.Ping(); err == nil {
+					return rc, nil
+				}
+				time.Sleep(400 * time.Millisecond)
+			}
+			return nil, fmt.Errorf("sandbox %q socket up but server not answering ping within 20s", r.Opts.Session)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -784,6 +819,98 @@ func (r *Run) effectiveModel(a schema.Agent) string {
 		return r.Opts.ModelOverride
 	}
 	return a.Model
+}
+
+// evaluateLayaEdges resolves a settled node's laya-gated outgoing edges with
+// ONE bounded decision (S19): a choice over the group's targets (+ implicit
+// "other"). Argmax above the winning edge's min_confidence activates exactly
+// that edge; everything else skips with the distribution recorded. A dead or
+// failing endpoint fail-safes to skip — the graph never hangs on decisions.
+//
+// State precedence: the group's first declared state_file (the artifact the
+// agent wrote — the terminal scrollback truncates the encoder and is polluted
+// by the prompt echo, hit live); else the node's captured output.
+func (r *Run) evaluateLayaEdges(st *NodeState, visitedEdge map[string]int, satisfied map[string]bool) {
+	var layaEdges []schema.Edge
+	for _, e := range r.Crew.OutEdges(st.Name) {
+		if e.IsLaya() {
+			layaEdges = append(layaEdges, e)
+		}
+	}
+	if len(layaEdges) == 0 {
+		return
+	}
+	state := st.Output
+	stateFile := ""
+	for _, e := range layaEdges {
+		if e.StateFile != "" {
+			stateFile = e.StateFile
+			break
+		}
+	}
+	if stateFile != "" {
+		if b, err := os.ReadFile(filepath.Join(r.effectiveCwd, stateFile)); err == nil {
+			state = string(b)
+			r.emit(Event{Type: "laya_decision", Node: st.Name, Info: "state from file: " + stateFile})
+		} else {
+			r.emit(Event{Type: "laya_decision", Node: st.Name, Info: "state_file unreadable (" + err.Error() + ") — falling back to output"})
+		}
+	}
+	if len(state) > 4000 {
+		state = state[:4000] // state = evidence, not a full dump (upstream cap 50k)
+	}
+	choices := make([]layaChoice, 0, len(layaEdges))
+	for _, e := range layaEdges {
+		choices = append(choices, layaChoice{Target: e.To, Instructions: e.LayaInstructions()})
+	}
+	chosen, conf, rec, err := r.layaClient().Decide(state, choices)
+	if rec != nil {
+		r.emit(Event{Type: "laya_decision", Node: st.Name, Model: fmt.Sprint(rec["checkpoint"]),
+			Info: fmt.Sprintf("chosen=%s conf=%.3f latency=%dms", rec["chosen"], conf, rec["latency_ms"])})
+	}
+	if err != nil {
+		for _, e := range layaEdges {
+			key := e.From + ">" + e.To
+			r.emit(Event{Type: "edge_skip", Node: e.To, Info: fmt.Sprintf("%s laya gate failed-safe: %v", key, err)})
+			r.mu.Lock()
+			r.Nodes[e.To].Status = "skipped"
+			r.mu.Unlock()
+		}
+		return
+	}
+	for _, e := range layaEdges {
+		key := e.From + ">" + e.To
+		limit := e.MaxVisits
+		if limit == 0 {
+			limit = 1
+		}
+		activate := e.To == chosen && visitedEdge[key] < limit && conf >= e.MinConfidence
+		if activate {
+			visitedEdge[key]++
+			r.mu.Lock()
+			satisfied[e.To] = true
+			r.mu.Unlock()
+		} else {
+			why := "not chosen"
+			if e.To == chosen && conf < e.MinConfidence {
+				why = fmt.Sprintf("abstained: conf %.3f < min_confidence %.2f", conf, e.MinConfidence)
+			} else if e.To == chosen && visitedEdge[key] >= limit {
+				why = "max_visits reached"
+			}
+			r.emit(Event{Type: "edge_skip", Node: e.To, Info: fmt.Sprintf("%s laya gate: %s", key, why)})
+			r.mu.Lock()
+			r.Nodes[e.To].Status = "skipped"
+			r.mu.Unlock()
+		}
+	}
+}
+
+// layaClient lazily builds the decision client (config from FORSETI_LAYA_URL).
+func (r *Run) layaClient() *LayaClient {
+	if r.laya == nil {
+		r.laya = NewLayaClient()
+	}
+	return r.laya
 }
 
 func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {

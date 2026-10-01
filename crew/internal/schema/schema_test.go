@@ -176,3 +176,41 @@ func TestWatchValidation(t *testing.T) {
 		t.Fatalf("valid watch rejected: %v", err)
 	}
 }
+
+func TestLayaEdgeGate(t *testing.T) {
+	c, err := Load([]byte(`
+agents:
+  - {name: triage, model: m, prompt: plan}
+  - {name: builder, model: m, prompt: build}
+  - {name: docs, model: m, prompt: write}
+edges:
+  - {from: triage, to: builder, when: "laya:choice:code changes and fixes"}
+  - {from: triage, to: docs, when: "laya:choice:documentation work", min_confidence: 0.7}
+`))
+	if err != nil {
+		t.Fatalf("want valid, got %v", err)
+	}
+	for _, e := range c.Edges {
+		if !e.IsLaya() || e.LayaInstructions() == "" {
+			t.Fatalf("laya parse broken: %+v", e)
+		}
+	}
+	if c.Edges[0].MinConfidence != 0.5 || c.Edges[1].MinConfidence != 0.7 {
+		t.Fatalf("min_confidence defaults/override broken: %v %v", c.Edges[0].MinConfidence, c.Edges[1].MinConfidence)
+	}
+}
+
+func TestLayaEdgeValidation(t *testing.T) {
+	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:\"}\n"))
+	if err == nil || !strings.Contains(err.Error(), "empty laya instructions") {
+		t.Fatalf("want empty-instructions error, got %v", err)
+	}
+	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, min_confidence: 0.8}\n"))
+	if err == nil || !strings.Contains(err.Error(), "only apply to laya") {
+		t.Fatalf("want min_confidence-scope error, got %v", err)
+	}
+	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:ship it\", min_confidence: 2}\n"))
+	if err == nil || !strings.Contains(err.Error(), "(0,1]") {
+		t.Fatalf("want min_confidence-range error, got %v", err)
+	}
+}
