@@ -1,0 +1,25 @@
+# forseti crew — routed pool demo (6D): two agents share one switchyard route.
+# The proxy picks efficient (halogen, free) vs capable (glm-5.3-flash, paid)
+# per model call. Requires: switchyard-server (cargo install switchyard-server),
+# pi provider entry (materialized automatically by the runner).
+name: demo-routed-pool
+
+routes:
+  - id: auto-pool
+    type: stage_router
+    efficient: halogen/halogen-qwen3.8-flash-next
+    capable: opencode-go/glm-5.3-flash
+    picker: efficient_first
+    confidence: 0.5
+
+agents:
+  - name: scout-a
+    kind: pi
+    route: auto-pool
+    prompt: |
+      Reply with exactly: ROUTE_A_OK and nothing else.
+  - name: scout-b
+    kind: pi
+    route: auto-pool
+    prompt: |
+      Reply with exactly: ROUTE_B_OK and nothing else.

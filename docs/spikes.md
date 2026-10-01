@@ -192,6 +192,90 @@ Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
   view. crew must NOT use it for control flow — it exists to steer the built-in
   Agents sidebar. Optional nicety for crew: project its run's agents into the view.
 
+## S11 — named-session lifecycle (Phase 6, 2026-10-01) ✅ resolved (live)
+
+- Named session sockets live at `~/.config/herdr/sessions/<name>/herdr.sock`
+  (confirmed via `herdr --session X status` path resolution + live server).
+- **CLI never auto-starts a named server**: `herdr --session X <cmd>` →
+  `server_not_running` error pointing at `herdr session attach X`.
+- Attach requires a TTY: non-TTY `herdr --session X < /dev/null` →
+  "cannot attach without a usable terminal" **before** the server spawns.
+- **Nested herdr is blocked by default** inside panes ("recursive descent
+  denied"); knob is `[experimental] allow_nested` in config.toml. BUT nesting is
+  detected via inherited env — **clearing `HERDR_ENV` (+ `HERDR_PANE_ID`,
+  `HERDR_SOCKET_PATH`) lets a pane spawn a named-session server** without any
+  user config change. Verified: `env -u HERDR_ENV -u HERDR_PANE_ID
+  -u HERDR_SOCKET_PATH herdr --session forseti-spike` inside a live-session
+  pane started the sandbox server in ~2 s.
+- Isolation verified: tab created in sandbox visible in sandbox `tab.list`,
+  **absent** from default session; separate workspaces/agents/logs per session.
+- Sandbox server **persists after the bootstrap pane closes** (detached_server_daemon
+  capability) → bootstrap pane can be closed immediately once the socket appears.
+- `herdr session stop <name>` stops only that session; default untouched.
+- crew `--session` design: runner bootstraps via a temp live-session pane if the
+  named socket is absent (spawn, poll socket, close pane), then operates fully
+  headless against the named socket; `herdrd.SocketPath()` already resolves it.
+
+## S12 — pane.wait_for_output semantics (Phase 6, 2026-10-01) ✅ resolved (live)
+
+- `pane.wait_for_output {pane_id, source, strip_ansi, match:{type:substring|regex, value}, timeout_ms}`.
+- Blocks server-side until match; returns `{type:"output_matched", pane_id,
+  revision, matched_line, read:{...}}` — `matched_line` is the actual line.
+- **Matches existing scrollback instantly** (source=recent) — watchers wanting
+  only NEW output must baseline (unique per-run markers, or wait after settle).
+- Future output: fired 2.6 s after the line was printed by a slow pane. ✓
+- Timeout → error `{"code":"timeout"}` after exactly timeout_ms.
+- Bad regex → error `{"code":"invalid_regex"}` with the Rust regex parse error.
+- One-shot per call; re-arm per event for repeated watching.
+
+## S13 — worktree.create from a run (Phase 6, 2026-10-01) ✅ resolved (live)
+
+- `worktree.create {cwd, branch, path, label, trust_repository:true, focus:false}` →
+  `{type:"worktree_created", workspace:{workspace_id, worktree:{repo_key,
+  repo_root, checkout_path, is_linked_worktree:true}}, tab:{...}}` — creates the
+  git worktree AND a dedicated herdr workspace in one call.
+- `worktree.list {workspace_id|cwd, trust_repository}` → source + worktree set.
+- `worktree.remove {workspace_id, force:true, trust_repository}` →
+  `{type:"worktree_removed"}`; removes dir + workspace. Branch deletion is ours
+  (`git branch -D`).
+- Crew `--worktree` design: create before tab build, use `checkout_path` as node
+  cwd, remove after run (unless `--keep-worktree`).
+
+## S14 — switchyard-server bring-up (Phase 6, 2026-10-01) ✅ resolved (live)
+
+- `switchyard-server 0.2.0` (crates.io, `~/.cargo/bin`) — NVIDIA NeMo Switchyard;
+  `switchyard-libsy` is the embeddable routing core, the server is the proxy path.
+- TOML: `schema_version = 1` + `[llm_clients.X] format="openai_chat"
+  base_url api_key_env?` + `[targets.X] id llm_client` + `[routes.X] id type
+  capable_target efficient_target picker confidence_threshold`.
+- **0.2.0 route types: `noop|random|passthrough|llm_classifier|stage_router` —
+  no `auto`** (docs describe 0.3.0; the "auto" preset == stage_router
+  efficient_first + threshold 0.5 + no classifier).
+- Mixed pool works: keyless halogen + keyed opencode-go in one route
+  (same-provider constraint applies only to `forward_auth` routes).
+- `--dry-run` validates config+env without binding; `--host/--port` dynamic;
+  `--routing-log-file` appends JSONL `{ts, session_id, model, tier, tokens…}`.
+- Readiness: `GET /health` → `{"status":"ok"}`; `GET /v1/models` lists route ids;
+  `GET /v1/stats` → totals, per-model/tier counters, routing overhead percentiles.
+- Every response carries `x-model-router-selected-model` +
+  `x-model-router-rationale` (e.g. "fall-through selected
+  halogen-qwen3.8-flash-next (confidence 0.000)").
+- **Session header drift**: 0.2.0 reads `proxy_x_session_id` (verified recorded in
+  routing log); upstream docs' `x-session-id`/openrouter format is 0.3.0.
+
+## S15 — pi ⇄ switchyard live loop (Phase 6, 2026-10-01) ✅ resolved (live)
+
+- pi 0.99.1 round-trips through a route: `models.json` provider `switchyard`
+  (`api: openai-completions`, placeholder apiKey, `compat` per upstream doc),
+  model id = route id → `pi -p --model switchyard/forseti-auto` answered,
+  routing log recorded the call (prompt_tokens 5254 = pi system prompt).
+- pi's request logged `session_id: null` — pi's session-affinity header does NOT
+  match 0.2.0's `proxy_x_session_id` (0.3.0 aligns these). Stage-router
+  session-scoped hold/affinity is effectively per-request in 0.2.0. Not a
+  blocker for crew (routing still works); revisit on upgrade.
+- Crew integration: node `route: <id>` ⇒ pi `--model switchyard/<route-id>`;
+  runner owns proxy lifecycle + provider-entry materialization.
+
 ## Supporting findings
 
 - ttt Lua API: `set_interval/set_timeout` run callbacks on the editor main loop

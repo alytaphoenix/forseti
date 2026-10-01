@@ -43,6 +43,23 @@ func SocketPath() (string, error) {
 	return filepath.Join(base, "herdr.sock"), nil
 }
 
+// SocketPathFor resolves the socket for a named session (or the default
+// session when name == "").
+func SocketPathFor(name string) (string, error) {
+	base := os.Getenv("HERDR_CONFIG_DIR")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".config", "herdr")
+	}
+	if name == "" {
+		return filepath.Join(base, "herdr.sock"), nil
+	}
+	return filepath.Join(base, "sessions", name, "herdr.sock"), nil
+}
+
 // Envelope is the raw request frame.
 type Envelope struct {
 	ID     string          `json:"id"`
@@ -77,10 +94,16 @@ func New() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(p); err != nil {
-		return nil, fmt.Errorf("herdr socket %s not present (server running?): %w", p, err)
+	return NewAt(p)
+}
+
+// NewAt creates a client for an explicit socket path (session bootstrap
+// targets the default socket while HERDR_SESSION is overridden).
+func NewAt(sock string) (*Client, error) {
+	if _, err := os.Stat(sock); err != nil {
+		return nil, fmt.Errorf("herdr socket %s not present (server running?): %w", sock, err)
 	}
-	return &Client{sock: p}, nil
+	return &Client{sock: sock}, nil
 }
 
 func (c *Client) nextID(prefix string) string {
@@ -372,4 +395,95 @@ func (c *Client) FocusedWorkspace() (string, error) {
 		return "", errors.New("snapshot has no focused workspace")
 	}
 	return out.Snapshot.FocusedWorkspaceID, nil
+}
+
+// NotificationShow raises a herdr notification (sound: none|done|request).
+func (c *Client) NotificationShow(title, body, sound string) error {
+	_, err := c.Call("notification.show", map[string]any{
+		"title": title, "body": body, "sound": sound,
+	}, 10*time.Second)
+	return err
+}
+
+// AgentViewSet projects a source-owned view into herdr's Agents sidebar
+// (UI-only, S10). filter/sort are raw API shapes.
+func (c *Client) AgentViewSet(source, label string, filter map[string]any, sort []map[string]any) error {
+	params := map[string]any{"source": source}
+	if label != "" {
+		params["label"] = label
+	}
+	if filter != nil {
+		params["filter"] = filter
+	}
+	if len(sort) > 0 {
+		params["sort"] = sort
+	}
+	_, err := c.Call("agent.view.set", params, 10*time.Second)
+	return err
+}
+
+// AgentViewClear removes this source's projection.
+func (c *Client) AgentViewClear(source string) error {
+	_, err := c.Call("agent.view.clear", map[string]any{"source": source}, 10*time.Second)
+	return err
+}
+
+// PaneWaitForOutput blocks until the pane's output matches (S12: matches
+// existing scrollback instantly; error codes: timeout | invalid_regex).
+// Returns the matched line.
+func (c *Client) PaneWaitForOutput(paneID, matchType, value string, timeout time.Duration) (string, error) {
+	res, err := c.Call("pane.wait_for_output", map[string]any{
+		"pane_id":    paneID,
+		"source":     "recent",
+		"strip_ansi": true,
+		"match":      map[string]any{"type": matchType, "value": value},
+		"timeout_ms": timeout.Milliseconds(),
+	}, timeout+10*time.Second)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		MatchedLine string `json:"matched_line"`
+	}
+	_ = json.Unmarshal(res, &out)
+	return out.MatchedLine, nil
+}
+
+// WorktreeCreate creates a git worktree + dedicated herdr workspace (S13).
+// Returns (workspaceID, checkoutPath).
+func (c *Client) WorktreeCreate(cwd, branch, path, label string, timeout time.Duration) (string, string, error) {
+	params := map[string]any{"cwd": cwd, "trust_repository": true, "focus": false}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	if path != "" {
+		params["path"] = path
+	}
+	if label != "" {
+		params["label"] = label
+	}
+	res, err := c.Call("worktree.create", params, timeout)
+	if err != nil {
+		return "", "", err
+	}
+	var out struct {
+		Workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+			Worktree    struct {
+				CheckoutPath string `json:"checkout_path"`
+			} `json:"worktree"`
+		} `json:"workspace"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		return "", "", err
+	}
+	return out.Workspace.WorkspaceID, out.Workspace.Worktree.CheckoutPath, nil
+}
+
+// WorktreeRemove removes a worktree + its workspace.
+func (c *Client) WorktreeRemove(workspaceID string, force bool) error {
+	_, err := c.Call("worktree.remove", map[string]any{
+		"workspace_id": workspaceID, "force": force, "trust_repository": true,
+	}, 60*time.Second)
+	return err
 }

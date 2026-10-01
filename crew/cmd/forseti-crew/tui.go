@@ -41,15 +41,16 @@ type model struct {
 	client *herdrd.Client
 	prog   *tea.Program
 
-	selected    int
-	log         []string
-	mode        string // "view" | "build"
-	form        *form
-	buildMsg  string
-	monitor   string
-	monitorNode string
+	selected      int
+	log           []string
+	mode          string // "view" | "build"
+	form          *form
+	buildMsg      string
+	monitor       string
+	monitorNode   string
+	metaTab       bool // 6C-2: right pane shows node meta instead of output
 	width, height int
-	running   bool
+	running       bool
 }
 
 func runTUI(crew *schema.Crew, opts runner.Options) error {
@@ -110,6 +111,48 @@ func (m *model) updateMonitor() (tea.Model, tea.Cmd) {
 	return m, m.monitorTick()
 }
 
+// metaView renders the 6C-2 meta tab for the selected node.
+func (m *model) metaView() string {
+	name := "—"
+	if len(m.crew.Agents) > 0 {
+		name = m.crew.Agents[m.selected%len(m.crew.Agents)].Name
+	}
+	var b strings.Builder
+	b.WriteString("META: " + name + "\n\n")
+	st := m.run.Nodes[name]
+	a := m.crew.Agent(name)
+	if st == nil || a == nil {
+		b.WriteString("(no state)")
+		return b.String()
+	}
+	model := a.Model
+	if a.Route != "" {
+		model = a.Route + " (routed pool)"
+	}
+	fmt.Fprintf(&b, "pane:      %s\n", st.PaneID)
+	fmt.Fprintf(&b, "model:     %s\n", model)
+	fmt.Fprintf(&b, "status:    %s", st.Status)
+	if st.LiveStatus != "" && st.LiveStatus != st.Status {
+		fmt.Fprintf(&b, " (herdr: %s)", st.LiveStatus)
+	}
+	b.WriteString("\n")
+	if !st.Started.IsZero() {
+		end, has := st.Ended, !st.Ended.IsZero()
+		if !has {
+			end = time.Now()
+		}
+		fmt.Fprintf(&b, "started:   %s\n", st.Started.Format("15:04:05"))
+		fmt.Fprintf(&b, "duration:  %s%s\n", end.Sub(st.Started).Round(time.Second), map[bool]string{true: "", false: " (running)"}[has])
+	}
+	fmt.Fprintf(&b, "visits:    %d\n", st.Visits)
+	fmt.Fprintf(&b, "retries:   %d\n", st.Retries)
+	fmt.Fprintf(&b, "output:    %d chars\n", len(st.Output))
+	if st.CostUSD > 0 || st.CtxPct > 0 {
+		fmt.Fprintf(&b, "cost:      $%.4f (%.1f%% ctx)\n", st.CostUSD, st.CtxPct)
+	}
+	return b.String()
+}
+
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.form != nil {
 		return m.formKey(msg)
@@ -135,6 +178,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		return m.startRun()
+	case "tab":
+		// 6C-2: toggle the right pane between output tail and node meta
+		m.metaTab = !m.metaTab
+		return m, nil
 	case "f":
 		// focus the REAL herdr pane of the selected node (human-in-the-loop:
 		// takeover happens in the actual pane, never inside the monitor)
@@ -147,7 +194,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		m.mode = "build"
-		m.buildMsg = "a=add agent · e=add edge · A=adopt live · s=save · q=back"
+		m.buildMsg = "a=add agent · e=add edge · R=add route · A=adopt live · s=save · q=back"
 	case "v":
 		m.mode = "view"
 	case "a":
@@ -157,6 +204,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if m.mode == "build" {
 			m.startEdgeForm()
+		}
+	case "R":
+		if m.mode == "build" {
+			m.startRouteForm()
 		}
 	case "A":
 		if m.mode == "build" {
@@ -227,13 +278,31 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		switch f.kind {
 		case "agent":
-			m.crew.Agents = append(m.crew.Agents, schema.Agent{
-				Name: vals[0], Model: vals[1], Kind: "pi", Prompt: vals[2],
-			})
+			a := schema.Agent{Name: vals[0], Kind: "pi", Prompt: vals[2]}
+			if vals[1] != "" {
+				a.Model = vals[1]
+			}
+			if len(vals) > 3 && vals[3] != "" {
+				a.Route = vals[3]
+			}
+			m.crew.Agents = append(m.crew.Agents, a)
 			m.buildMsg = "agent " + vals[0] + " added"
 		case "edge":
 			m.crew.Edges = append(m.crew.Edges, schema.Edge{From: vals[0], To: vals[1], When: vals[2]})
 			m.buildMsg = fmt.Sprintf("edge %s→%s added (when=%s)", vals[0], vals[1], vals[2])
+		case "route":
+			conf := 0.5
+			fmt.Sscanf(vals[4], "%g", &conf)
+			if vals[4] == "" {
+				conf = 0.5
+			}
+			rt := schema.Route{ID: vals[0], Efficient: vals[1], Capable: vals[2],
+				Picker: vals[3], Confidence: conf}
+			if rt.Picker == "" {
+				rt.Picker = "efficient_first"
+			}
+			m.crew.Routes = append(m.crew.Routes, rt)
+			m.buildMsg = fmt.Sprintf("route %s added (attach agents with route: %s)", vals[0], vals[0])
 		}
 		m.form = nil
 		return m, nil
@@ -248,13 +317,16 @@ func (m *model) startAgentForm() {
 	ti.Placeholder = "planner"
 	ti.Focus()
 	ti2 := textinput.New()
-	ti2.Placeholder = "opencode-go/glm-5.3-flash"
+	ti2.Placeholder = "halogen/halogen-qwen3.8-flash-next (or leave blank for route)"
 	ti3 := textinput.New()
 	ti3.Placeholder = "Plan the task. Output a numbered plan."
+	ti4 := textinput.New()
+	ti4.Placeholder = "route id (blank = use model)"
 	m.form = &form{kind: "agent", fields: []formField{
 		{label: "name", input: ti},
 		{label: "model", input: ti2},
 		{label: "prompt", input: ti3},
+		{label: "route", input: ti4},
 	}}
 }
 
@@ -273,6 +345,27 @@ func (m *model) startEdgeForm() {
 	ti3.SetValue("idle")
 	m.form = &form{kind: "edge", fields: []formField{
 		{label: "from", input: ti}, {label: "to", input: ti2}, {label: "when", input: ti3},
+	}}
+}
+
+func (m *model) startRouteForm() {
+	ti := textinput.New()
+	ti.Placeholder = "auto-pool"
+	ti.Focus()
+	ti2 := textinput.New()
+	ti2.Placeholder = "efficient: halogen/halogen-qwen3.8-flash-next"
+	ti3 := textinput.New()
+	ti3.Placeholder = "capable: opencode-go/glm-5.3-flash"
+	ti4 := textinput.New()
+	ti4.Placeholder = "picker: efficient_first | capable_first"
+	ti5 := textinput.New()
+	ti5.Placeholder = "confidence (0-1, default 0.5)"
+	m.form = &form{kind: "route", fields: []formField{
+		{label: "id", input: ti},
+		{label: "efficient", input: ti2},
+		{label: "capable", input: ti3},
+		{label: "picker", input: ti4},
+		{label: "confidence", input: ti5},
 	}}
 }
 
@@ -336,10 +429,26 @@ func (m *model) View() string {
 	if m.mode == "view" {
 		for i, a := range m.crew.Agents {
 			st := "pending"
+			live := ""
+			cost := ""
 			if m.run != nil {
-				st = m.run.Nodes[a.Name].Status
+				if ns := m.run.Nodes[a.Name]; ns != nil {
+					st = ns.Status
+					live = ns.LiveStatus
+					if ns.CostUSD > 0 {
+						cost = fmt.Sprintf(" $%.4f", ns.CostUSD)
+					}
+				}
 			}
-			line := fmt.Sprintf("%s %s %s", statusGlyph[st], a.Name, a.Model)
+			resolved := a.Model
+			if a.Route != "" {
+				resolved = "⇄" + a.Route
+			}
+			liveTag := ""
+			if live != "" && live != st {
+				liveTag = " (" + live + ")"
+			}
+			line := fmt.Sprintf("%s %s %s%s%s", statusGlyph[st], a.Name, resolved, cost, liveTag)
 			if i == m.selected%max(1, len(m.crew.Agents)) {
 				left.WriteString("▶ " + line + "\n")
 			} else {
@@ -349,7 +458,7 @@ func (m *model) View() string {
 		for _, e := range m.crew.Edges {
 			left.WriteString(fmt.Sprintf("    %s→%s\n", e.From, e.To))
 		}
-		left.WriteString("\nj/k select · r run · f focus pane · b build · q quit")
+		left.WriteString("\nj/k select · r run · f focus pane · tab meta · b build · q quit")
 	} else if m.form != nil {
 		f := m.form
 		left.WriteString(fmt.Sprintf("\nadd %s — field %d/%d (enter next · esc cancel)\n\n", f.kind, f.step+1, len(f.fields)))
@@ -357,22 +466,31 @@ func (m *model) View() string {
 	} else {
 		left.WriteString("\nagents:\n")
 		for _, a := range m.crew.Agents {
-			left.WriteString("  · " + a.Name + " (" + a.Model + ")\n")
+			resolved := a.Model
+			if a.Route != "" {
+				resolved = "⇄" + a.Route
+			}
+			left.WriteString("  · " + a.Name + " (" + resolved + ")\n")
 		}
 		left.WriteString("edges:\n")
 		for _, e := range m.crew.Edges {
 			left.WriteString(fmt.Sprintf("  · %s→%s when=%s\n", e.From, e.To, e.When))
 		}
-		left.WriteString("\na=add agent · e=add edge · A=adopt live · s=save · q=back")
+		for _, rt := range m.crew.Routes {
+			left.WriteString(fmt.Sprintf("  route · %s: efficient=%s capable=%s\n", rt.ID, rt.Efficient, rt.Capable))
+		}
+		left.WriteString("\na=add agent · e=add edge · R=add route · A=adopt live · s=save · q=back")
 	}
 	if m.buildMsg != "" {
 		left.WriteString("\n" + m.buildMsg)
 	}
 
-	// right column: monitor
-	mon := m.monitor
-	if m.monitorNode != "" {
-		mon = "MONITOR: " + m.monitorNode + "\n" + mon
+	// right column: monitor or meta
+	var mon string
+	if m.metaTab {
+		mon = m.metaView()
+	} else if m.monitorNode != "" {
+		mon = "MONITOR: " + m.monitorNode + "\n" + m.monitor
 	} else {
 		mon = "MONITOR: (select a running node to tail)"
 	}

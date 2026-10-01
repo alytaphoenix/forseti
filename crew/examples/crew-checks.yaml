@@ -1,8 +1,8 @@
-# forseti crew v1 — deterministic planner → builder pipeline.
-# Model: halogen (LAN, free) — the E2E/test model. glm-5.3-flash (opencode-go)
-# is the paid quality path for interactive work, not for test crews.
-# Run: forseti-crew run -f crew.yaml [--headless]
-name: demo-planner-builder
+# forseti crew — E2E harness shape (6A-1): the crew file itself carries the
+# assertions. Checks run in the crew cwd after their after-node settles;
+# any failure flips the process exit code — CI-able without external glue.
+# Run: forseti-crew run -f crew-checks.yaml --headless --session sandbox
+name: demo-planner-builder-checked
 
 agents:
   - name: planner
@@ -29,3 +29,15 @@ edges:
   - from: planner
     to: builder
     when: re:PLAN_READY
+
+# checks (6A-1): shell assertions, run in the crew cwd, exit 0 = pass.
+checks:
+  - after: planner
+    run: "grep -q PLAN_READY .forseti/bus/planner.md"
+  - after: builder
+    run: "test -f HELLO_CREW.md && grep -q 'crew pipeline works' HELLO_CREW.md"
+
+# watch (6C-1): advisory pattern events (never fail the run)
+watch:
+  - node: builder
+    match: "DONE"

@@ -5,11 +5,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"forseti/crew/internal/runner"
@@ -26,6 +29,8 @@ func main() {
 		cmdRun(os.Args[2:])
 	case "validate":
 		cmdValidate(os.Args[2:])
+	case "watch":
+		cmdWatch(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -40,16 +45,21 @@ func usage() {
 usage:
   forseti-crew run [-f crew.yaml] [--headless] [--keep-tab] [--timeout MIN]
                    [--cwd DIR] [--tab LABEL]
-  forseti-crew validate [-f crew.yaml]`)
+                   [--session NAME] [--worktree BRANCH] [--keep-worktree]
+  forseti-crew validate [-f crew.yaml]
+  forseti-crew watch [-f run.jsonl] [--follow]`)
 }
 
 type runFlags struct {
-	file     string
-	headless bool
-	keepTab  bool
-	timeout  int
-	cwd      string
-	tab      string
+	file         string
+	headless     bool
+	keepTab      bool
+	timeout      int
+	cwd          string
+	tab          string
+	session      string
+	worktree     string
+	keepWorktree bool
 }
 
 func parseRun(fs *flag.FlagSet, args []string) *runFlags {
@@ -60,6 +70,9 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	fs.IntVar(&f.timeout, "timeout", 10, "per-node settle timeout (minutes)")
 	fs.StringVar(&f.cwd, "cwd", "", "repo cwd for panes (default: current dir)")
 	fs.StringVar(&f.tab, "tab", "forseti-crew", "crew tab label")
+	fs.StringVar(&f.session, "session", "", "named herdr session (hermetic sandbox)")
+	fs.StringVar(&f.worktree, "worktree", "", "git branch for a disposable worktree run")
+	fs.BoolVar(&f.keepWorktree, "keep-worktree", false, "keep the worktree after the run")
 	_ = fs.Parse(args)
 	return f
 }
@@ -94,11 +107,18 @@ func cmdRun(args []string) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	// --session: herdrd.SocketPath() resolves HERDR_SESSION (6A-2)
+	if f.session != "" {
+		os.Setenv("HERDR_SESSION", f.session)
+	}
 	opts := runner.Options{
-		Cwd:         cwd,
-		TabLabel:    f.tab,
-		NodeTimeout: time.Duration(f.timeout) * time.Minute,
-		KeepTab:     f.keepTab,
+		Cwd:            cwd,
+		TabLabel:       f.tab,
+		NodeTimeout:    time.Duration(f.timeout) * time.Minute,
+		KeepTab:        f.keepTab,
+		Session:        f.session,
+		WorktreeBranch: f.worktree,
+		KeepWorktree:   f.keepWorktree,
 	}
 	if f.headless {
 		opts.OnEvent = func(ev runner.Event) {
@@ -115,10 +135,45 @@ func cmdRun(args []string) {
 				os.Exit(1)
 			}
 		}
+		if r.ChecksFailed() {
+			os.Exit(1)
+		}
 		return
 	}
 	if err := runTUI(crew, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "run error:", err)
 		os.Exit(1)
 	}
+	if hasFailedEvent(f.file, cwd) {
+		os.Exit(1)
+	}
+}
+
+// hasFailedEvent checks the newest run log for failures (TUI path exit code).
+func hasFailedEvent(file, cwd string) bool {
+	runDir := file
+	if !strings.HasSuffix(file, ".jsonl") {
+		// find newest run jsonl in .forseti/runs
+		matches, err := filepath.Glob(filepath.Join(cwd, ".forseti", "runs", "*.jsonl"))
+		if err != nil || len(matches) == 0 {
+			return false
+		}
+		runDir = matches[len(matches)-1]
+	}
+	f, err := os.Open(runDir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	failed := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var ev runner.Event
+		if json.Unmarshal(sc.Bytes(), &ev) == nil {
+			if ev.Type == "node_failed" || ev.Type == "check_fail" {
+				failed = true
+			}
+		}
+	}
+	return failed
 }

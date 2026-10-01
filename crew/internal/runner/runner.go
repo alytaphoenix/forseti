@@ -1,18 +1,33 @@
 // Package runner executes a crew graph on herdr: one dedicated tab, one pane
-// per node, deterministic edge-gated scheduling (no LLM routing).
+// per node, deterministic edge-gated scheduling (no LLM routing of edges).
 //
 // Hand-off contract (design.md §Phase 5):
 //   - each node's captured output goes to .forseti/bus/<node>.md
 //   - downstream prompts template it in via {{ .<node> }}
 //   - every step is appended to .forseti/runs/<run>.jsonl
+//
+// Phase 6 additions (docs/spikes.md S11–S15):
+//   - checks: shell assertions run after their after-node settles (6A-1)
+//   - --session: run against a named herdr session socket (6A-2), bootstrap
+//     via a temp pane in the live session when the sandbox is down (S11)
+//   - empty-output retry for halogen-routed nodes (6A-3)
+//   - --worktree: run inside a disposable herdr worktree workspace (6A-4, S13)
+//   - live status subscription + blocked notifications (6B-2/6B-3)
+//   - agent.view.set projection (6B-4), ttt status bridge (6B-5)
+//   - watch: pane.wait_for_output regex watchers (6C-1, S12)
+//   - cost capture from pi's status line (6C-3)
+//   - switchyard proxy lifecycle + routing-log tail (6D-1/6D-4/6D-6)
 package runner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -20,24 +35,33 @@ import (
 
 	"forseti/crew/internal/herdrd"
 	"forseti/crew/internal/schema"
+	"forseti/crew/internal/switchyard"
 )
 
 // Event is a run-log record (also streamed to the TUI).
 type Event struct {
-	TS   time.Time `json:"ts"`
-	Type string    `json:"type"` // run_start|node_start|node_done|node_blocked|node_failed|edge_skip|run_end
-	Node string    `json:"node,omitempty"`
-	Info string    `json:"info,omitempty"`
+	TS      time.Time `json:"ts"`
+	Type    string    `json:"type"` // run_start|node_start|node_done|node_retry|node_blocked|node_failed|node_status|edge_skip|check_pass|check_fail|pattern_matched|route_decision|run_end
+	Node    string    `json:"node,omitempty"`
+	Info    string    `json:"info,omitempty"`
+	Model   string    `json:"model,omitempty"`
+	CostUSD float64   `json:"cost_usd,omitempty"`
+	CtxPct  float64   `json:"ctx_pct,omitempty"`
+	Line    string    `json:"line,omitempty"` // pattern_matched matched line
 }
 
 type NodeState struct {
-	Name    string
-	Status  string // pending|running|done|blocked|failed|skipped
-	PaneID  string
-	Output  string
-	Visits  int
-	Started time.Time
-	Ended   time.Time
+	Name       string
+	Status     string // pending|running|done|blocked|failed|skipped
+	PaneID     string
+	Output     string
+	Visits     int
+	Started    time.Time
+	Ended      time.Time
+	LiveStatus string // herdr agent_status (stream subscription)
+	CostUSD    float64
+	CtxPct     float64
+	Retries    int
 }
 
 type Options struct {
@@ -46,7 +70,9 @@ type Options struct {
 	TabLabel       string        // default "forseti-crew"
 	NodeTimeout    time.Duration // per-node prompt settle timeout (default 10m)
 	KeepTab        bool          // leave the crew tab open after the run
-	HeadlessPrompt string        // unused placeholder for future
+	Session        string        // named herdr session (sandbox); bootstrapped if down
+	WorktreeBranch string        // run inside a disposable worktree ("" = main checkout)
+	KeepWorktree   bool          // keep the worktree after the run
 	OnEvent        func(Event)
 }
 
@@ -57,6 +83,13 @@ type Run struct {
 	Nodes map[string]*NodeState
 	logf  *os.File
 	logCh chan Event
+
+	proxy           *switchyard.Proxy
+	restoreProvider func()
+	worktreeWS      string // worktree workspace id ("" if not created)
+	effectiveCwd    string // worktree checkout or Opts.Cwd
+	checksDone      map[string]bool
+	checksFailed    int
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -66,7 +99,8 @@ func New(crew *schema.Crew, opts Options) *Run {
 	if opts.NodeTimeout == 0 {
 		opts.NodeTimeout = 10 * time.Minute
 	}
-	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, logCh: make(chan Event, 512)}
+	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, logCh: make(chan Event, 512), checksDone: map[string]bool{}}
+	r.effectiveCwd = opts.Cwd
 	for _, a := range crew.Agents {
 		r.Nodes[a.Name] = &NodeState{Name: a.Name, Status: "pending"}
 	}
@@ -82,6 +116,40 @@ func (r *Run) emit(ev Event) {
 	if r.Opts.OnEvent != nil {
 		r.Opts.OnEvent(ev)
 	}
+	r.writeStatusBridge()
+}
+
+// writeStatusBridge maintains .forseti/crew-status.json for the ttt status bar
+// (6B-5; notifications are disabled on this setup, so the badge is the alert).
+func (r *Run) writeStatusBridge() {
+	if r.effectiveCwd == "" {
+		return
+	}
+	r.mu.Lock()
+	counts := map[string]int{}
+	for _, st := range r.Nodes {
+		counts[st.Status]++
+	}
+	r.mu.Unlock()
+	out, _ := json.Marshal(map[string]any{
+		"crew": r.Crew.Name, "ts": time.Now().Format(time.RFC3339),
+		"total": len(r.Crew.Agents), "done": counts["done"],
+		"running": counts["running"], "blocked": counts["blocked"],
+		"failed": counts["failed"], "checks_failed": r.checksFailedCount(),
+	})
+	path := filepath.Join(r.effectiveCwd, ".forseti", "crew-status.json")
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.WriteFile(path, out, 0o644)
+}
+
+func (r *Run) checksFailedCount() int {
+	n := 0
+	for _, ch := range r.Crew.Checks {
+		if r.checksDone[ch.Name+"_failed"] {
+			n++
+		}
+	}
+	return n
 }
 
 // Snapshot returns current node states (sorted by crew order).
@@ -95,16 +163,26 @@ func (r *Run) Snapshot() []*NodeState {
 	return out
 }
 
+// ChecksFailed reports whether any check assertion failed (exit-code input).
+func (r *Run) ChecksFailed() bool {
+	for _, ch := range r.Crew.Checks {
+		if r.checksDone[ch.Name+"_failed"] {
+			return true
+		}
+	}
+	return false
+}
+
 // Run executes the whole graph. Blocks until completion or ctx cancel.
 func (r *Run) Run(ctx context.Context) error {
-	c, err := herdrd.New()
+	c, err := r.connect()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(r.Opts.Cwd, ".forseti", "bus"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(r.effectiveCwd, ".forseti", "bus"), 0o755); err != nil {
 		return err
 	}
-	runDir := filepath.Join(r.Opts.Cwd, ".forseti", "runs")
+	runDir := filepath.Join(r.effectiveCwd, ".forseti", "runs")
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return err
 	}
@@ -114,7 +192,45 @@ func (r *Run) Run(ctx context.Context) error {
 		return err
 	}
 	defer r.logf.Close()
-	r.emit(Event{Type: "run_start", Info: fmt.Sprintf("crew=%s agents=%d edges=%d", r.Crew.Name, len(r.Crew.Agents), len(r.Crew.Edges))})
+	r.emit(Event{Type: "run_start", Info: fmt.Sprintf("crew=%s agents=%d edges=%d session=%q worktree=%q",
+		r.Crew.Name, len(r.Crew.Agents), len(r.Crew.Edges), r.Opts.Session, r.Opts.WorktreeBranch)})
+
+	// teardown in reverse order of setup
+	defer r.teardown(c)
+
+	// 0. switchyard proxy (6D-1): one per run, before any agent starts
+	if len(r.Crew.Routes) > 0 {
+		p, err := switchyard.Start(r.Crew.Routes, runDir, strings.TrimSuffix(name, ".jsonl")+".routing.jsonl")
+		if err != nil {
+			return fmt.Errorf("switchyard proxy: %w", err)
+		}
+		r.proxy = p
+		ids := make([]string, len(r.Crew.Routes))
+		for i, rt := range r.Crew.Routes {
+			ids[i] = rt.ID
+		}
+		if r.restoreProvider, err = p.MaterializeProvider(ids); err != nil {
+			p.Stop()
+			r.proxy = nil
+			return fmt.Errorf("pi provider materialization: %w", err)
+		}
+		r.emit(Event{Type: "route_decision", Info: fmt.Sprintf("proxy on :%d (routing log %s)", p.Port, p.RoutingLog)})
+		go r.tailRoutingLog()
+	}
+
+	// 1. worktree (6A-4): disposable checkout; panes + checks run there
+	if r.Opts.WorktreeBranch != "" {
+		ws, path, err := c.WorktreeCreate(r.Opts.Cwd, r.Opts.WorktreeBranch, "", "forseti-crew-wt", 90*time.Second)
+		if err != nil {
+			return fmt.Errorf("worktree create: %w", err)
+		}
+		r.worktreeWS, r.effectiveCwd = ws, path
+		r.emit(Event{Type: "run_start", Info: "worktree ready: " + path})
+		// bus/runs dirs live in the worktree
+		if err := os.MkdirAll(filepath.Join(r.effectiveCwd, ".forseti", "bus"), 0o755); err != nil {
+			return err
+		}
+	}
 
 	ws := r.Opts.WorkspaceID
 	if ws == "" {
@@ -123,8 +239,8 @@ func (r *Run) Run(ctx context.Context) error {
 		}
 	}
 
-	// 1. declarative tab: right-leaning spine of N panes (S8 verified)
-	paneIDs, tabID, err := createCrewTab(c, ws, r.Opts.TabLabel, r.Opts.Cwd, len(r.Crew.Agents))
+	// 2. declarative tab: right-leaning spine of N panes (S8 verified)
+	paneIDs, tabID, err := createCrewTab(c, ws, r.Opts.TabLabel, r.effectiveCwd, len(r.Crew.Agents))
 	if err != nil {
 		return fmt.Errorf("create crew tab: %w", err)
 	}
@@ -137,14 +253,25 @@ func (r *Run) Run(ctx context.Context) error {
 		r.Nodes[a.Name].PaneID = paneIDs[i]
 	}
 
-	// 2. start all agents up-front (readiness is per-agent; S9: wait idle before first prompt)
+	// 3. project crew agents into herdr's Agents sidebar (6B-4, S10: UI-only)
+	viewSource := "crew:" + r.Crew.Name
+	if err := c.AgentViewSet(viewSource, r.Crew.Name,
+		map[string]any{"op": "in", "field": "pane_id", "values": paneIDs},
+		[]map[string]any{{"field": "attention", "order": "desc"}}); err != nil {
+		r.emit(Event{Type: "node_failed", Info: "view projection: " + err.Error()})
+	}
+
+	// 4. start all agents up-front (readiness is per-agent; S9: wait idle before first prompt)
 	var wg sync.WaitGroup
 	for _, a := range r.Crew.Agents {
 		wg.Add(1)
 		go func(a schema.Agent) {
 			defer wg.Done()
 			args := []string{}
-			if a.Model != "" {
+			switch {
+			case a.Route != "":
+				args = append(args, "--model", "switchyard/"+a.Route)
+			case a.Model != "":
 				args = append(args, "--model", a.Model)
 			}
 			args = append(args, a.Args...)
@@ -167,7 +294,24 @@ func (r *Run) Run(ctx context.Context) error {
 		}
 	}
 
-	// 3. wave scheduler: run nodes whose incoming edges are all satisfied
+	// 5. live status stream (6B-2): pane.agent_status_changed per crew pane
+	subs := make([]map[string]any, 0, len(paneIDs))
+	for _, pid := range paneIDs {
+		subs = append(subs, map[string]any{"type": "pane.agent_status_changed", "pane_id": pid})
+	}
+	if sub, err := c.Subscribe(subs, 15*time.Second); err == nil {
+		go r.pumpStatus(c, sub)
+		defer sub.Close()
+	} else {
+		r.emit(Event{Type: "node_failed", Info: "status stream unavailable: " + err.Error()})
+	}
+
+	// 6. output regex watchers (6C-1): advisory pattern_matched events
+	for _, w := range r.Crew.Watch {
+		go r.watchLoop(ctx, c, w)
+	}
+
+	// 7. wave scheduler: run nodes whose incoming edges are all satisfied
 	visitedEdge := map[string]int{} // "from>to" → times used
 	satisfied := map[string]bool{}  // node → all incoming satisfied for this trigger
 	for _, n := range r.Nodes {
@@ -197,7 +341,8 @@ func (r *Run) Run(ctx context.Context) error {
 			}(st)
 		}
 		wg2.Wait()
-		// after the wave, evaluate outgoing edges to unlock downstream nodes
+		// after the wave, run checks for freshly-settled nodes, then evaluate edges
+		r.runDueChecks(c)
 		r.mu.Lock()
 		for _, st := range ready {
 			if st.Status != "done" {
@@ -237,14 +382,258 @@ func (r *Run) Run(ctx context.Context) error {
 	return nil
 }
 
+// connect resolves the herdr socket, bootstrapping a named sandbox session
+// when needed (S11: spawn via a temp pane in the live session; server persists).
+func (r *Run) connect() (*herdrd.Client, error) {
+	if r.Opts.Session == "" {
+		return herdrd.New()
+	}
+	sock, err := herdrd.SocketPathFor(r.Opts.Session)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(sock); err == nil {
+		return herdrd.NewAt(sock)
+	}
+	// bootstrap: named server only starts under a TTY; use a temp pane of the
+	// live session and clear the nesting-marker env vars
+	defSock, err := herdrd.SocketPathFor("")
+	if err != nil {
+		return nil, err
+	}
+	dc, err := herdrd.NewAt(defSock)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %q down and default session not running: %w", r.Opts.Session, err)
+	}
+	defer func() { _ = dc }()
+	ws, err := dc.FocusedWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	cmd := "env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SOCKET_PATH -u HERDR_SESSION -u HERDR_WORKSPACE_ID -u HERDR_TAB_ID herdr --session " + r.Opts.Session
+	res, err := dc.Call("layout.apply", map[string]any{
+		"workspace_id": ws, "tab_label": "forseti-sandbox-boot", "focus": false,
+		"root": map[string]any{"type": "pane", "label": "boot", "cwd": r.Opts.Cwd,
+			"command": []string{"sh", "-c", cmd}},
+	}, 20*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox bootstrap: %w", err)
+	}
+	var out struct {
+		Layout struct {
+			TabID string `json:"tab_id"`
+		} `json:"layout"`
+	}
+	_ = json.Unmarshal(res, &out)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sock); err == nil {
+			if out.Layout.TabID != "" {
+				_, _ = dc.Call("tab.close", map[string]any{"tab_id": out.Layout.TabID}, 10*time.Second)
+			}
+			r.emit(Event{Type: "run_start", Info: "sandbox session " + r.Opts.Session + " bootstrapped"})
+			return herdrd.NewAt(sock)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("sandbox %q did not come up within 30s", r.Opts.Session)
+}
+
+
+// pumpStatus consumes the status stream: updates live badges (6B-2) and fires
+// blocked notifications (6B-3, best-effort — disabled toasts fall back to the
+// ttt status bridge which every event writes anyway).
+func (r *Run) pumpStatus(c *herdrd.Client, sub *herdrd.Subscription) {
+	for ev := range sub.Events {
+		var data struct {
+			PaneID      string `json:"pane_id"`
+			AgentStatus string `json:"agent_status"`
+		}
+		if err := json.Unmarshal(ev.Data, &data); err != nil || data.PaneID == "" {
+			continue
+		}
+		r.mu.Lock()
+		for _, st := range r.Nodes {
+			if st.PaneID == data.PaneID {
+				st.LiveStatus = data.AgentStatus
+				if data.AgentStatus == "blocked" && st.Status == "running" {
+					st.Status = "blocked"
+					st.Ended = time.Now()
+				}
+			}
+		}
+		name := ""
+		for _, st := range r.Nodes {
+			if st.PaneID == data.PaneID {
+				name = st.Name
+			}
+		}
+		r.mu.Unlock()
+		if name != "" {
+			r.emit(Event{Type: "node_status", Node: name, Info: data.AgentStatus})
+			if data.AgentStatus == "blocked" {
+				go func(node string) {
+					_ = c.NotificationShow("forseti-crew: "+node+" needs you",
+						"agent blocked — approval/question UI in its pane", "request")
+				}(name)
+			}
+		}
+	}
+}
+
+// watchLoop arms pane.wait_for_output repeatedly (S12: matches past scrollback,
+// so already-emitted lines are skipped) — advisory only.
+func (r *Run) watchLoop(ctx context.Context, c *herdrd.Client, w schema.Watcher) {
+	seen := map[string]bool{}
+	for ctx.Err() == nil {
+		r.mu.Lock()
+		st := r.Nodes[w.Node]
+		pane, running := st.PaneID, st.Status == "running"
+		r.mu.Unlock()
+		if !running || pane == "" {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		line, err := c.PaneWaitForOutput(pane, "regex", w.Match, 30*time.Second)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if !seen[line] {
+			seen[line] = true
+			r.emit(Event{Type: "pattern_matched", Node: w.Node, Line: line, Info: "watch " + w.Match})
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// runDueChecks runs checks whose after-node just settled (6A-1). Failures do
+// not stop the graph; they flip the process exit code via ChecksFailed().
+func (r *Run) runDueChecks(c *herdrd.Client) {
+	for i, ch := range r.Crew.Checks {
+		key := fmt.Sprintf("check:%d", i)
+		if r.checksDone[key] {
+			continue
+		}
+		r.mu.Lock()
+		st := r.Nodes[ch.After]
+		settled := st != nil && (st.Status == "done" || st.Status == "failed" || st.Status == "blocked")
+		r.mu.Unlock()
+		if !settled {
+			continue
+		}
+		r.checksDone[key] = true
+		if st.Status != "done" {
+			r.emit(Event{Type: "check_fail", Node: ch.Name, Info: fmt.Sprintf("node %s settled %s before check ran", ch.After, st.Status)})
+			r.checksDone[ch.Name+"_failed"] = true
+			continue
+		}
+		pass, tail := runCheck(ch.Run, r.effectiveCwd)
+		ev := Event{Type: "check_pass", Node: ch.Name}
+		if !pass {
+			ev.Type = "check_fail"
+			r.checksDone[ch.Name+"_failed"] = true
+		}
+		ev.Info = strings.TrimSpace(tail)
+		r.emit(ev)
+	}
+}
+
+func runCheck(shell, dir string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", shell)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	tail := string(out)
+	if len(tail) > 240 {
+		tail = "…" + tail[len(tail)-240:]
+	}
+	if err != nil {
+		return false, fmt.Sprintf("%v | %s", err, tail)
+	}
+	return true, tail
+}
+
+// tailRoutingLog streams switchyard's routing JSONL into the run log (6D-6).
+func (r *Run) tailRoutingLog() {
+	if r.proxy == nil {
+		return
+	}
+	path := r.proxy.RoutingLog
+	deadline := time.Now().Add(2 * time.Hour)
+	var offset int64
+	for time.Now().Before(deadline) {
+		if r.proxy == nil {
+			return
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		fi, _ := f.Stat()
+		if fi.Size() > offset {
+			_, _ = f.Seek(offset, 0)
+			sc := bufio.NewScanner(f)
+			for sc.Scan() {
+				var rec struct {
+					Model  string `json:"model"`
+					Tokens int    `json:"total_tokens"`
+					TS     string `json:"ts"`
+				}
+				if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Model != "" {
+					r.emit(Event{Type: "route_decision", Model: rec.Model,
+						Info: fmt.Sprintf("routed call: %d tokens @ %s", rec.Tokens, rec.TS)})
+				}
+			}
+			offset = fi.Size()
+		}
+		_ = f.Close()
+		time.Sleep(750 * time.Millisecond)
+	}
+}
+
+// teardown reverses setup: view projection, provider entry, proxy, worktree.
+func (r *Run) teardown(c *herdrd.Client) {
+	if c != nil {
+		_ = c.AgentViewClear("crew:" + r.Crew.Name)
+	}
+	if r.restoreProvider != nil {
+		r.restoreProvider()
+		r.restoreProvider = nil
+	}
+	if r.proxy != nil {
+		r.proxy.Stop()
+		r.proxy = nil
+	}
+	if r.worktreeWS != "" && !r.Opts.KeepWorktree {
+		_ = c.WorktreeRemove(r.worktreeWS, true)
+		branch := r.Opts.WorktreeBranch
+		if branch != "" {
+			_ = exec.Command("git", "-C", r.Opts.Cwd, "branch", "-D", branch).Run()
+		}
+		r.emit(Event{Type: "run_end", Info: "worktree removed"})
+	}
+	// status bridge → idle
+	if r.effectiveCwd != "" {
+		path := filepath.Join(r.effectiveCwd, ".forseti", "crew-status.json")
+		_ = os.Remove(path)
+	}
+}
+
 func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	a := r.Crew.Agent(st.Name)
+	resolved := a.Model
+	if a.Route != "" {
+		resolved = "switchyard/" + a.Route
+	}
 	r.mu.Lock()
 	st.Status = "running"
 	st.Started = time.Now()
 	st.Visits++
 	r.mu.Unlock()
-	r.emit(Event{Type: "node_start", Node: a.Name, Info: "pane=" + st.PaneID})
+	r.emit(Event{Type: "node_start", Node: a.Name, Model: resolved, Info: "pane=" + st.PaneID})
 
 	// render prompt template with upstream outputs
 	tpl, err := template.New(a.Name).Parse(a.Prompt)
@@ -285,7 +674,31 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		r.fail(a.Name, fmt.Sprintf("agent.read: %v", err))
 		return
 	}
-	bus := filepath.Join(r.Opts.Cwd, ".forseti", "bus", a.Name+".md")
+	// halogen empty-content guard (6A-3): one retry, then surface (S15 quirk)
+	if strings.TrimSpace(stripStatusLines(text)) == "" && st.Retries == 0 {
+		st.Retries++
+		r.emit(Event{Type: "node_retry", Node: a.Name, Info: "empty settle — re-prompting once"})
+		status2, err := c.AgentPromptWait(a.Name, sb.String(),
+			[]string{"idle", "done", "blocked"}, r.Opts.NodeTimeout)
+		if err != nil {
+			r.fail(a.Name, fmt.Sprintf("agent.prompt+wait (retry): %v", err))
+			return
+		}
+		if status2 == "blocked" {
+			r.mu.Lock()
+			st.Status = "blocked"
+			st.Ended = time.Now()
+			r.mu.Unlock()
+			r.emit(Event{Type: "node_blocked", Node: a.Name, Info: "approval/question UI detected — needs you in the pane"})
+			return
+		}
+		if text, err = c.AgentRead(a.Name, "recent_unwrapped", 400); err != nil {
+			r.fail(a.Name, fmt.Sprintf("agent.read (retry): %v", err))
+			return
+		}
+	}
+	cost, ctxPct := parsePiStatus(text)
+	bus := filepath.Join(r.effectiveCwd, ".forseti", "bus", a.Name+".md")
 	if err := os.WriteFile(bus, []byte(text), 0o644); err != nil {
 		r.emit(Event{Type: "node_failed", Node: a.Name, Info: "bus write: " + err.Error()})
 		r.mu.Lock()
@@ -297,8 +710,38 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	st.Output = text
 	st.Status = "done"
 	st.Ended = time.Now()
+	st.CostUSD, st.CtxPct = cost, ctxPct
 	r.mu.Unlock()
-	r.emit(Event{Type: "node_done", Node: a.Name, Info: fmt.Sprintf("%d chars → %s", len(text), bus)})
+	r.emit(Event{Type: "node_done", Node: a.Name, Model: resolved, CostUSD: cost, CtxPct: ctxPct,
+		Info: fmt.Sprintf("%d chars → %s", len(text), bus)})
+}
+
+// stripStatusLines removes pi's trailing status line (the model/cost footer)
+// so "empty settle" detection looks at actual content.
+func stripStatusLines(text string) string {
+	lines := strings.Split(text, "\n")
+	// drop trailing blanks and lines that look like the status footer
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+var (
+	piCostRe = regexp.MustCompile(`\$([0-9]+(?:\.[0-9]+)?)`)
+	piCtxRe  = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%/`)
+)
+
+// parsePiStatus extracts $ cost + context % from pi's footer (last matches).
+func parsePiStatus(text string) (float64, float64) {
+	var cost, ctx float64
+	if m := piCostRe.FindAllStringSubmatch(text, -1); len(m) > 0 {
+		fmt.Sscanf(m[len(m)-1][1], "%f", &cost)
+	}
+	if m := piCtxRe.FindAllStringSubmatch(text, -1); len(m) > 0 {
+		fmt.Sscanf(m[len(m)-1][1], "%f", &ctx)
+	}
+	return cost, ctx
 }
 
 func (r *Run) fail(node, msg string) {
@@ -309,19 +752,6 @@ func (r *Run) fail(node, msg string) {
 	}
 	r.mu.Unlock()
 	r.emit(Event{Type: "node_failed", Node: node, Info: msg})
-}
-
-func (r *Run) statusOf(c *herdrd.Client, name string) string {
-	agents, err := c.AgentList()
-	if err != nil {
-		return "unknown"
-	}
-	for _, a := range agents {
-		if a.Name == name {
-			return a.AgentStatus
-		}
-	}
-	return "unknown"
 }
 
 func (r *Run) summary() string {
@@ -335,6 +765,14 @@ func (r *Run) summary() string {
 			parts = append(parts, fmt.Sprintf("%s=%d", s, counts[s]))
 		}
 	}
+	if f := r.checksFailedCount(); f > 0 {
+		parts = append(parts, fmt.Sprintf("checks_failed=%d", f))
+	}
+	var cost float64
+	for _, st := range r.Nodes {
+		cost += st.CostUSD
+	}
+	parts = append(parts, fmt.Sprintf("cost=$%.4f", cost))
 	return strings.Join(parts, " ")
 }
 

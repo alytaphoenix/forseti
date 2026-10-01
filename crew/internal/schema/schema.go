@@ -21,19 +21,49 @@ var validStatuses = map[string]bool{
 }
 
 type Crew struct {
-	Name   string  `yaml:"name"`
-	Agents []Agent `yaml:"agents"`
-	Edges  []Edge  `yaml:"edges"`
+	Name   string    `yaml:"name"`
+	Routes []Route   `yaml:"routes"` // switchyard model-routes (optional, P6-D)
+	Agents []Agent   `yaml:"agents"`
+	Edges  []Edge    `yaml:"edges"`
+	Checks []Check   `yaml:"checks"` // shell assertions (optional, 6A-1)
+	Watch  []Watcher `yaml:"watch"`  // output regex watchers (optional, 6C-1)
 }
 
 type Agent struct {
 	Name  string   `yaml:"name"`
 	Kind  string   `yaml:"kind"`  // currently only "pi"
-	Model string   `yaml:"model"` // e.g. opencode-go/glm-5.3-flash
+	Model string   `yaml:"model"` // e.g. halogen/halogen-qwen3.8-flash-next
+	Route string   `yaml:"route"` // switchyard route id (mutually exclusive with Model)
 	Args  []string `yaml:"args"`  // extra pi argv (appended after --model)
 	// Prompt is a Go text/template; data is map[string]string of
 	// upstream node outputs keyed by node name.
 	Prompt string `yaml:"prompt"`
+}
+
+// Check is a shell assertion run after its `after` node settles.
+// exit 0 = pass; failures flip the run's exit code (crew.yaml as E2E harness).
+type Check struct {
+	Name  string `yaml:"name"`  // optional; defaults to check-<after>-<n>
+	After string `yaml:"after"` // node whose completion triggers this check
+	Run   string `yaml:"run"`   // shell command, executed in the crew cwd
+}
+
+// Watcher arms a pane.wait_for_output regex on a node's pane (advisory:
+// emits pattern_matched events, never fails the run).
+type Watcher struct {
+	Node  string `yaml:"node"`
+	Match string `yaml:"match"` // regex (Rust regex crate semantics server-side)
+}
+
+// Route declares a switchyard stage_router over an efficient/capable model pool.
+// Agents attach with `route: <id>` instead of `model:`.
+type Route struct {
+	ID         string  `yaml:"id"`
+	Type       string  `yaml:"type"` // v1: stage_router (the "auto" preset shape)
+	Efficient  string  `yaml:"efficient"`
+	Capable    string  `yaml:"capable"`
+	Picker     string  `yaml:"picker"`     // efficient_first (default) | capable_first
+	Confidence float64 `yaml:"confidence"` // default 0.5
 }
 
 type Edge struct {
@@ -57,9 +87,46 @@ func Load(data []byte) (*Crew, error) {
 	return &c, nil
 }
 
+var routeIDRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+var validRouteTypes = map[string]bool{"stage_router": true}
+var validPickers = map[string]bool{"efficient_first": true, "capable_first": true}
+
 func (c *Crew) Validate() error {
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("crew has no agents")
+	}
+	routes := map[string]bool{}
+	for i := range c.Routes {
+		r := &c.Routes[i]
+		if !routeIDRule.MatchString(r.ID) {
+			return fmt.Errorf("route %d: id %q must match [a-z0-9][a-z0-9_-]{0,31}", i, r.ID)
+		}
+		if routes[r.ID] {
+			return fmt.Errorf("duplicate route id %q", r.ID)
+		}
+		routes[r.ID] = true
+		if r.Type == "" {
+			r.Type = "stage_router"
+		}
+		if !validRouteTypes[r.Type] {
+			return fmt.Errorf("route %q: type %q unsupported (v1: stage_router)", r.ID, r.Type)
+		}
+		if strings.TrimSpace(r.Efficient) == "" || strings.TrimSpace(r.Capable) == "" {
+			return fmt.Errorf("route %q: efficient and capable are required", r.ID)
+		}
+		if r.Picker == "" {
+			r.Picker = "efficient_first"
+		}
+		if !validPickers[r.Picker] {
+			return fmt.Errorf("route %q: picker %q invalid", r.ID, r.Picker)
+		}
+		if r.Confidence == 0 {
+			r.Confidence = 0.5
+		}
+		if r.Confidence <= 0 || r.Confidence > 1 {
+			return fmt.Errorf("route %q: confidence must be in (0,1]", r.ID)
+		}
 	}
 	seen := map[string]bool{}
 	for i := range c.Agents {
@@ -77,8 +144,35 @@ func (c *Crew) Validate() error {
 		if a.Kind != "pi" {
 			return fmt.Errorf("agent %q: kind %q unsupported (v1: pi only)", a.Name, a.Kind)
 		}
+		if a.Model != "" && a.Route != "" {
+			return fmt.Errorf("agent %q: set model or route, not both", a.Name)
+		}
+		if a.Route != "" && !routes[a.Route] {
+			return fmt.Errorf("agent %q: unknown route %q", a.Name, a.Route)
+		}
 		if strings.TrimSpace(a.Prompt) == "" {
 			return fmt.Errorf("agent %q: empty prompt", a.Name)
+		}
+	}
+	for i := range c.Checks {
+		ch := &c.Checks[i]
+		if !seen[ch.After] {
+			return fmt.Errorf("check %d: after %q is not an agent", i, ch.After)
+		}
+		if strings.TrimSpace(ch.Run) == "" {
+			return fmt.Errorf("check %d: empty run", i)
+		}
+		if ch.Name == "" {
+			ch.Name = fmt.Sprintf("check-%s-%d", ch.After, i+1)
+		}
+	}
+	for i := range c.Watch {
+		w := &c.Watch[i]
+		if !seen[w.Node] {
+			return fmt.Errorf("watch %d: node %q is not an agent", i, w.Node)
+		}
+		if _, err := regexp.Compile(w.Match); err != nil {
+			return fmt.Errorf("watch %d: bad regex %q: %w", i, w.Match, err)
 		}
 	}
 	for i := range c.Edges {
@@ -186,6 +280,16 @@ func (c *Crew) Agent(name string) *Agent {
 	for i := range c.Agents {
 		if c.Agents[i].Name == name {
 			return &c.Agents[i]
+		}
+	}
+	return nil
+}
+
+// Route looks up a route by id.
+func (c *Crew) Route(id string) *Route {
+	for i := range c.Routes {
+		if c.Routes[i].ID == id {
+			return &c.Routes[i]
 		}
 	}
 	return nil
