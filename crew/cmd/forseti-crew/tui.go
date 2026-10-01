@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"forseti/crew/internal/herdrd"
 	"forseti/crew/internal/runner"
 	"forseti/crew/internal/schema"
+	"forseti/crew/internal/toolspec"
 )
 
 type logMsg struct{ s string }
@@ -197,7 +200,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		m.mode = "build"
-		m.buildMsg = "a=add agent · e=add edge · R=add route · A=adopt live · s=save · q=back"
+		m.buildMsg = "a=add agent · e=add edge · R=add route · T=add tool · P=probe tools · A=adopt live · s=save · q=back"
 	case "v":
 		m.mode = "view"
 	case "a":
@@ -211,6 +214,14 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		if m.mode == "build" {
 			m.startRouteForm()
+		}
+	case "T":
+		if m.mode == "build" {
+			m.startToolForm()
+		}
+	case "P":
+		if m.mode == "build" {
+			m.probeTools()
 		}
 	case "A":
 		if m.mode == "build" {
@@ -306,6 +317,9 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.crew.Routes = append(m.crew.Routes, rt)
 			m.buildMsg = fmt.Sprintf("route %s added (attach agents with route: %s)", vals[0], vals[0])
+		case "tool":
+			msg := m.saveTool(vals)
+			m.buildMsg = msg
 		}
 		m.form = nil
 		return m, nil
@@ -370,6 +384,135 @@ func (m *model) startRouteForm() {
 		{label: "picker", input: ti4},
 		{label: "confidence", input: ti5},
 	}}
+}
+
+// startToolForm (P9-4): the declarative tool spec authoring form.
+// params syntax: "name:type:description" separated by ';' — one line for the
+// whole properties table.
+// probe syntax: "expect_contains" (exit 0 assumed; blank = probe-free DRAFT).
+func (m *model) startToolForm() {
+	ti := textinput.New()
+	ti.Placeholder = "current_time_utc"
+	ti.Focus()
+	ti2 := textinput.New()
+	ti2.Placeholder = "what the model reads in the tool list"
+	ti3 := textinput.New()
+	ti3.Placeholder = "shell | http"
+	ti4 := textinput.New()
+	ti4.Placeholder = "shell: run template · http: url"
+	ti5 := textinput.New()
+	ti5.Placeholder = "params: repo:string:the repo path;depth:number:walk depth"
+	ti6 := textinput.New()
+	ti6.Placeholder = "probe expect_contains (blank = draft)"
+	m.form = &form{kind: "tool", fields: []formField{
+		{label: "name", input: ti},
+		{label: "description", input: ti2},
+		{label: "executor type", input: ti3},
+		{label: "run / url", input: ti4},
+		{label: "params", input: ti5},
+		{label: "probe", input: ti6},
+	}}
+}
+
+// toolParamSpec parses "name:type:description;..." into properties.
+func toolParamSpec(s string) map[string]any {
+	props := map[string]any{}
+	for _, part := range strings.Split(s, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		bits := strings.SplitN(part, ":", 3)
+		name := strings.TrimSpace(bits[0])
+		if name == "" {
+			continue
+		}
+		typ := "string"
+		desc := ""
+		if len(bits) > 1 && strings.TrimSpace(bits[1]) != "" {
+			typ = strings.TrimSpace(bits[1])
+		}
+		if len(bits) > 2 {
+			desc = strings.TrimSpace(bits[2])
+		}
+		props[name] = map[string]any{"type": typ, "description": desc}
+	}
+	return props
+}
+
+// probeTools runs every spec in the tools dir and surfaces the tally.
+func (m *model) probeTools() {
+	if _, err := os.Stat(toolsDir()); err != nil {
+		m.buildMsg = "no tools dir: " + toolsDir()
+		return
+	}
+	// run the shim's validate (reuses the gates; the TUI stays thin)
+	cmd := exec.Command(toolsBin(), "validate")
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		m.buildMsg = "probe FAIL: " + msg
+		return
+	}
+	m.buildMsg = msg
+}
+
+func toolsDir() string {
+	if d := os.Getenv("FORSETI_TOOLS_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "forseti", "tools.d")
+}
+
+func toolsBin() string {
+	if b := os.Getenv("FORSETI_TOOLS_BIN"); b != "" {
+		return b
+	}
+	// prefer the sibling binary next to the running forseti-crew
+	if exe, err := os.Executable(); err == nil {
+		sib := filepath.Join(filepath.Dir(exe), "forseti-tools")
+		if _, err := os.Stat(sib); err == nil {
+			return sib
+		}
+	}
+	return "forseti-tools"
+}
+
+// saveTool writes a tool spec from the form (P9-4): validate-on-save, probe
+// when declared; the file lands in FORSETI_TOOLS_DIR (default tools.d).
+func (m *model) saveTool(vals []string) string {
+	name, desc, execType, runURL, params, probeContains := vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]
+	spec := map[string]any{
+		"name":        name,
+		"description": desc,
+		"parameters": map[string]any{
+			"type":       "object",
+			"properties": toolParamSpec(params),
+		},
+		"executor": func() map[string]any {
+			if execType == "http" {
+				return map[string]any{"type": "http", "url": runURL}
+			}
+			return map[string]any{"type": "shell", "run": runURL}
+		}(),
+	}
+	if strings.TrimSpace(probeContains) != "" {
+		spec["probe"] = map[string]any{"args": map[string]any{}, "expect_exit": 0, "expect_contains": probeContains}
+	}
+	out, err := yaml.Marshal(spec)
+	if err != nil {
+		return "tool marshal: " + err.Error()
+	}
+	// validate by round-tripping through the toolspec loader
+	if _, err := toolspec.Load(out); err != nil {
+		return "invalid, not saved: " + err.Error()
+	}
+	path := filepath.Join(toolsDir(), name+".yaml")
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return "save: " + err.Error()
+	}
+	return "saved " + path + " (pi picks it up on its next session; probe with P)"
 }
 
 func (m *model) adoptLive() {

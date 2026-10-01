@@ -1,0 +1,2 @@
+{"args": {"repo": "/Users/alytaphoenix/repos/forseti"}, "expect_exit": 0}
+{"args": {"repo": "/nonexistent-repo"}, "expect_exit": 128}
