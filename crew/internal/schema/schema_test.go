@@ -214,3 +214,134 @@ func TestLayaEdgeValidation(t *testing.T) {
 		t.Fatalf("want min_confidence-range error, got %v", err)
 	}
 }
+
+func TestPhasesValid(t *testing.T) {
+	c, err := Load([]byte(`
+agents:
+  - {name: explorer, prompt: explore}
+  - {name: coder, prompt: "build {{ .explorer }}"}
+phases:
+  - name: research
+    instructions: Read-only. No edits.
+    agents: [explorer]
+  - name: build
+    instructions: Implement what research found.
+    agents: [coder]
+edges:
+  - {from: explorer, to: coder}
+`))
+	if err != nil {
+		t.Fatalf("want valid, got %v", err)
+	}
+	if got := c.PhaseOf("explorer"); got != 0 {
+		t.Fatalf("PhaseOf(explorer) = %d", got)
+	}
+	if got := c.PhaseOf("coder"); got != 1 {
+		t.Fatalf("PhaseOf(coder) = %d", got)
+	}
+	if c.Phase("build") == nil || c.Phase("research").Instructions == "" {
+		t.Fatalf("phase lookup broken")
+	}
+}
+
+func TestNoPhasesBackcompat(t *testing.T) {
+	c, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b}\n"))
+	if err != nil {
+		t.Fatalf("phase-less crew must stay valid, got %v", err)
+	}
+	if len(c.Phases) != 0 || c.PhaseOf("a") != -1 {
+		t.Fatalf("phases should be empty, got %+v", c.Phases)
+	}
+}
+
+func TestPhaseDuplicateName(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+phases:
+  - {name: p, instructions: do, agents: [a]}
+  - {name: p, instructions: do, agents: [b]}
+`))
+	if err == nil || !strings.Contains(err.Error(), "duplicate phase") {
+		t.Fatalf("want duplicate-phase error, got %v", err)
+	}
+}
+
+func TestPhaseNameRule(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+phases:
+  - {name: Bad_Name, instructions: do, agents: [a]}
+`))
+	if err == nil || !strings.Contains(err.Error(), "herdr rule") {
+		t.Fatalf("want name-rule error, got %v", err)
+	}
+}
+
+func TestPhaseUnknownAgent(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+phases:
+  - {name: p, instructions: do, agents: [ghost]}
+`))
+	if err == nil || !strings.Contains(err.Error(), "not declared") {
+		t.Fatalf("want not-declared error, got %v", err)
+	}
+}
+
+func TestPhaseDoubleMembership(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+phases:
+  - {name: p1, instructions: do, agents: [a, b]}
+  - {name: p2, instructions: do, agents: [b]}
+`))
+	if err == nil || !strings.Contains(err.Error(), "at most one phase") {
+		t.Fatalf("want double-membership error, got %v", err)
+	}
+}
+
+func TestPhaseUnphasedAgentRejected(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+phases:
+  - {name: p, instructions: do, agents: [a]}
+`))
+	if err == nil || !strings.Contains(err.Error(), "not in any phase") {
+		t.Fatalf("want unphased-agent error, got %v", err)
+	}
+}
+
+func TestPhaseEmptyFields(t *testing.T) {
+	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, agents: [a]}\n"))
+	if err == nil || !strings.Contains(err.Error(), "empty instructions") {
+		t.Fatalf("want empty-instructions error, got %v", err)
+	}
+	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, instructions: do}\n"))
+	if err == nil || !strings.Contains(err.Error(), "no agents") {
+		t.Fatalf("want no-agents error, got %v", err)
+	}
+}
+
+func TestPhaseBackwardEdge(t *testing.T) {
+	_, err := Load([]byte(`
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+phases:
+  - {name: p1, instructions: do, agents: [a]}
+  - {name: p2, instructions: do, agents: [b]}
+edges:
+  - {from: b, to: a}
+`))
+	if err == nil || !strings.Contains(err.Error(), "goes backward") {
+		t.Fatalf("want backward-edge error, got %v", err)
+	}
+}

@@ -24,9 +24,21 @@ type Crew struct {
 	Name   string    `yaml:"name"`
 	Routes []Route   `yaml:"routes,omitempty"` // switchyard model-routes (optional, P6-D)
 	Agents []Agent   `yaml:"agents"`
+	Phases []Phase   `yaml:"phases,omitempty"` // ordered work stages with barrier semantics (P11)
 	Edges  []Edge    `yaml:"edges,omitempty"`
 	Checks []Check   `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
 	Watch  []Watcher `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
+}
+
+// Phase is an ordered stage of work: its agents only dispatch after every
+// node in earlier phases has reached a terminal state (done/skipped/failed).
+// Instructions prefix each member agent's prompt at dispatch (same template
+// engine: upstream outputs + {{ memory }} work inside instructions).
+// A crew without phases behaves exactly as before (one implicit phase).
+type Phase struct {
+	Name         string   `yaml:"name"`         // herdr name rule
+	Instructions string   `yaml:"instructions"` // template prepended to member prompts
+	Agents       []string `yaml:"agents"`       // member node names; each agent lives in at most one phase
 }
 
 type Agent struct {
@@ -144,6 +156,8 @@ func (c *Crew) Validate() error {
 		}
 	}
 	seen := map[string]bool{}
+	phaseSeen := map[string]bool{}
+	membership := map[string]string{} // agent name → phase name
 	for i := range c.Agents {
 		a := &c.Agents[i]
 		if !nameRule.MatchString(a.Name) {
@@ -167,6 +181,39 @@ func (c *Crew) Validate() error {
 		}
 		if strings.TrimSpace(a.Prompt) == "" {
 			return fmt.Errorf("agent %q: empty prompt", a.Name)
+		}
+	}
+	for i := range c.Phases {
+		p := &c.Phases[i]
+		if !nameRule.MatchString(p.Name) {
+			return fmt.Errorf("phase %d: name %q violates herdr rule [a-z][a-z0-9_-]{0,31}", i, p.Name)
+		}
+		if phaseSeen[p.Name] {
+			return fmt.Errorf("duplicate phase name %q", p.Name)
+		}
+		phaseSeen[p.Name] = true
+		if len(p.Agents) == 0 {
+			return fmt.Errorf("phase %q: no agents", p.Name)
+		}
+		if strings.TrimSpace(p.Instructions) == "" {
+			return fmt.Errorf("phase %q: empty instructions", p.Name)
+		}
+		for _, m := range p.Agents {
+			if !seen[m] {
+				return fmt.Errorf("phase %q: agent %q is not declared", p.Name, m)
+			}
+			if membership[m] != "" {
+				return fmt.Errorf("agent %q: already in phase %q (each agent lives in at most one phase)", m, membership[m])
+			}
+			membership[m] = p.Name
+		}
+	}
+	// with phases declared, every agent must be a member (explicit beats implicit)
+	if len(c.Phases) > 0 {
+		for _, a := range c.Agents {
+			if membership[a.Name] == "" {
+				return fmt.Errorf("agent %q: not in any phase (phases are declared — add it to one)", a.Name)
+			}
 		}
 	}
 	for i := range c.Checks {
@@ -223,6 +270,14 @@ func (c *Crew) Validate() error {
 		if strings.HasPrefix(e.When, "re:") {
 			if _, err := regexp.Compile(e.When[3:]); err != nil {
 				return fmt.Errorf("edge %d: bad regex %q: %w", i, e.When[3:], err)
+			}
+		}
+		// backward phase edges rejected (v1: time flows forward between phases;
+		// cross-phase loop-backs are a documented future item)
+		if len(c.Phases) > 0 {
+			fo, fi := indexPhaseOf(c.Phases, membership[e.From]), indexPhaseOf(c.Phases, membership[e.To])
+			if fo > fi {
+				return fmt.Errorf("edge %d: %q→%q goes backward (phase %q → %q) — cross-phase loop-backs unsupported in v1", i, e.From, e.To, membership[e.From], membership[e.To])
 			}
 		}
 	}
@@ -322,6 +377,43 @@ func (c *Crew) Agent(name string) *Agent {
 		}
 	}
 	return nil
+}
+
+// Phase looks up a phase by name.
+func (c *Crew) Phase(name string) *Phase {
+	for i := range c.Phases {
+		if c.Phases[i].Name == name {
+			return &c.Phases[i]
+		}
+	}
+	return nil
+}
+
+// PhaseOf returns the phase index an agent belongs to (0-based; -1 when the
+// crew declares no phases or the agent is unphased).
+func (c *Crew) PhaseOf(agent string) int {
+	if len(c.Phases) == 0 {
+		return -1
+	}
+	for i := range c.Phases {
+		for _, m := range c.Phases[i].Agents {
+			if m == agent {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// indexPhaseOf maps a phase name to its index (-1 for "" or unknown); used by
+// validation, which reasons over the membership map.
+func indexPhaseOf(phases []Phase, name string) int {
+	for i := range phases {
+		if phases[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // Route looks up a route by id.

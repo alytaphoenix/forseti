@@ -43,8 +43,9 @@ import (
 // Event is a run-log record (also streamed to the TUI).
 type Event struct {
 	TS      time.Time `json:"ts"`
-	Type    string    `json:"type"` // run_start|node_start|node_done|node_retry|node_blocked|node_failed|node_status|edge_skip|check_pass|check_fail|pattern_matched|route_decision|run_end
+	Type    string    `json:"type"` // run_start|phase_start|phase_done|node_start|node_done|node_retry|node_blocked|node_failed|node_status|edge_skip|check_pass|check_fail|pattern_matched|route_decision|run_end
 	Node    string    `json:"node,omitempty"`
+	Phase   string    `json:"phase,omitempty"` // phase name on phase events (P11)
 	Info    string    `json:"info,omitempty"`
 	Model   string    `json:"model,omitempty"`
 	CostUSD float64   `json:"cost_usd,omitempty"`
@@ -64,6 +65,18 @@ type NodeState struct {
 	CostUSD    float64
 	CtxPct     float64
 	Retries    int
+	PhaseIdx   int // P11: phase position (-1 when the crew declares no phases)
+}
+
+// phaseState is the P11 barrier bookkeeping for one declared phase.
+type phaseState struct {
+	name  string
+	nodes []string
+	// terminal states release the barrier (done/failed/skipped; blocked holds
+	// it — surfaced, never auto-answered, matching the human-in-the-loop rule)
+	terminal int
+	started  bool // phase_start emitted
+	done     bool // phase_done emitted
 }
 
 type Options struct {
@@ -88,6 +101,7 @@ type Run struct {
 	logf  *os.File
 	logCh chan Event
 
+	phases          []phaseState // P11 barrier bookkeeping (nil when no phases)
 	proxy           *switchyard.Proxy
 	restoreProvider func()
 	worktreeWS      string // worktree workspace id ("" if not created)
@@ -114,8 +128,13 @@ func New(crew *schema.Crew, opts Options) *Run {
 	}
 	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, logCh: make(chan Event, 512), checksDone: map[string]bool{}}
 	r.effectiveCwd = opts.Cwd
+	// P11: per-node phase index + barrier bookkeeping. No phases → -1 → the
+	// scheduler behaves exactly as before (single implicit phase).
 	for _, a := range crew.Agents {
-		r.Nodes[a.Name] = &NodeState{Name: a.Name, Status: "pending"}
+		r.Nodes[a.Name] = &NodeState{Name: a.Name, Status: "pending", PhaseIdx: crew.PhaseOf(a.Name)}
+	}
+	for i := range crew.Phases {
+		r.phases = append(r.phases, phaseState{name: crew.Phases[i].Name, nodes: append([]string{}, crew.Phases[i].Agents...)})
 	}
 	return r
 }
@@ -154,6 +173,7 @@ func (r *Run) writeStatusBridge() {
 		"total": len(r.Crew.Agents), "done": counts["done"],
 		"running": counts["running"], "blocked": counts["blocked"],
 		"failed": counts["failed"], "checks_failed": r.checksFailedCount(),
+		"phase": r.currentPhase(), // P11 ("" when the crew has no phases)
 	})
 	path := filepath.Join(r.Opts.Cwd, ".forseti", "crew-status.json")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
@@ -355,7 +375,9 @@ func (r *Run) Run(ctx context.Context) error {
 		go r.watchLoop(ctx, c, w)
 	}
 
-	// 7. wave scheduler: run nodes whose incoming edges are all satisfied
+	// 7. wave scheduler: run nodes whose incoming edges are all satisfied.
+	// P11 barrier: additionally, every node in earlier phases must be terminal
+	// (done/failed/skipped) before a phase's nodes become dispatchable.
 	visitedEdge := map[string]int{} // "from>to" → times used
 	satisfied := map[string]bool{}  // node → all incoming satisfied for this trigger
 	for _, n := range r.Nodes {
@@ -368,7 +390,7 @@ func (r *Run) Run(ctx context.Context) error {
 		r.mu.Lock()
 		for _, a := range r.Crew.Agents {
 			st := r.Nodes[a.Name]
-			if st.Status == "pending" && satisfied[a.Name] {
+			if st.Status == "pending" && satisfied[a.Name] && r.phaseUnlocked(st.PhaseIdx) {
 				ready = append(ready, st)
 			}
 		}
@@ -376,6 +398,7 @@ func (r *Run) Run(ctx context.Context) error {
 		if len(ready) == 0 {
 			break
 		}
+		r.emitPhaseStarts(ready)
 		var wg2 sync.WaitGroup
 		for _, st := range ready {
 			wg2.Add(1)
@@ -421,6 +444,7 @@ func (r *Run) Run(ctx context.Context) error {
 			}
 		}
 		r.mu.Unlock()
+		r.updatePhaseProgress()
 	}
 
 	// any node still pending (unreachable) → skipped
@@ -456,6 +480,90 @@ func (r *Run) Run(ctx context.Context) error {
 	r.finished = true // freeze the status bridge; teardown's remove sticks
 	r.emit(Event{Type: "run_end", Info: info})
 	return nil
+}
+
+// ---- P11 phase barrier helpers ----
+
+// phaseUnlocked (called with r.mu held): a node is dispatchable when every
+// earlier phase is fully terminal. PhaseIdx < 0 = no phases → always true.
+func (r *Run) phaseUnlocked(idx int) bool {
+	if idx <= 0 {
+		return true
+	}
+	for j := 0; j < idx && j < len(r.phases); j++ {
+		if !r.phases[j].done {
+			return false
+		}
+	}
+	return true
+}
+
+// emitPhaseStarts fires phase_start for each phase whose first node dispatches
+// with this wave (P11).
+func (r *Run) emitPhaseStarts(ready []*NodeState) {
+	if len(r.phases) == 0 {
+		return
+	}
+	var fired []phaseState
+	r.mu.Lock()
+	for _, st := range ready {
+		if st.PhaseIdx >= 0 && st.PhaseIdx < len(r.phases) && !r.phases[st.PhaseIdx].started {
+			r.phases[st.PhaseIdx].started = true
+			fired = append(fired, r.phases[st.PhaseIdx])
+		}
+	}
+	r.mu.Unlock()
+	for _, p := range fired {
+		r.emit(Event{Type: "phase_start", Phase: p.name,
+			Info: fmt.Sprintf("agents: %s", strings.Join(p.nodes, ", "))})
+	}
+}
+
+// updatePhaseProgress re-counts terminal nodes per phase after each wave;
+// a phase whose nodes are ALL terminal fires phase_done, releasing the next
+// phase's barrier (P11). blocked holds a phase open — surfaced, never
+// auto-answered (the run then ends with the later phases skipped).
+func (r *Run) updatePhaseProgress() {
+	if len(r.phases) == 0 {
+		return
+	}
+	terminal := map[string]bool{"done": true, "failed": true, "skipped": true}
+	var fired []phaseState
+	r.mu.Lock()
+	for j := range r.phases {
+		p := &r.phases[j]
+		if p.done {
+			continue
+		}
+		p.terminal = 0
+		for _, n := range p.nodes {
+			if terminal[r.Nodes[n].Status] {
+				p.terminal++
+			}
+		}
+		if p.terminal == len(p.nodes) {
+			p.done = true
+			fired = append(fired, *p)
+		}
+	}
+	r.mu.Unlock()
+	for _, p := range fired {
+		r.emit(Event{Type: "phase_done", Phase: p.name,
+			Info: fmt.Sprintf("%d/%d settled", p.terminal, len(p.nodes))})
+	}
+}
+
+// currentPhase is the phase the run is in: the first not-yet-done phase
+// ("" when no phases are declared or every phase finished).
+func (r *Run) currentPhase() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for j := range r.phases {
+		if !r.phases[j].done {
+			return r.phases[j].name
+		}
+	}
+	return ""
 }
 
 // openReviewPane splits a lazygit pane onto the crew tab (P7-3).
@@ -925,14 +1033,27 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	st.Started = time.Now()
 	st.Visits++
 	r.mu.Unlock()
-	r.emit(Event{Type: "node_start", Node: a.Name, Model: resolved, Info: "pane=" + st.PaneID})
+	startEv := Event{Type: "node_start", Node: a.Name, Model: resolved, Info: "pane=" + st.PaneID}
+	if st.PhaseIdx >= 0 && st.PhaseIdx < len(r.Crew.Phases) {
+		startEv.Phase = r.Crew.Phases[st.PhaseIdx].Name
+	}
+	r.emit(startEv)
 
 	// render prompt template with upstream outputs + a memory helper:
 	// {{ memory "query" }} recalls shared agent memory at render time
 	// (advisory context; empty string on any failure — never fails a run)
+	// P11: phase instructions prefix the prompt through the SAME render —
+	// instructions can reference upstream outputs and {{ memory }} exactly
+	// like the agent's own prompt can.
+	render := a.Prompt
+	if st.PhaseIdx >= 0 && st.PhaseIdx < len(r.Crew.Phases) {
+		if ins := strings.TrimSpace(r.Crew.Phases[st.PhaseIdx].Instructions); ins != "" {
+			render = ins + "\n\n" + a.Prompt
+		}
+	}
 	tpl, err := template.New(a.Name).Funcs(template.FuncMap{
 		"memory": func(q string) string { return r.recallMemory(a.Name, q) },
-	}).Parse(a.Prompt)
+	}).Parse(render)
 	if err != nil {
 		r.fail(a.Name, fmt.Sprintf("prompt template: %v", err))
 		return

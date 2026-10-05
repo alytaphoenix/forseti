@@ -459,7 +459,10 @@ local function crew_render(st)
   local glyph = "●"
   if (st.blocked or 0) > 0 then glyph = "!"
   elseif (st.failed or 0) > 0 then glyph = "✗" end
-  return string.format("crew %s %d/%d %s", st.crew or "?", st.done or 0, st.total or 0, glyph)
+  -- P11: the runner reports the current phase; phased crews show it inline
+  local ph = ""
+  if st.phase and st.phase ~= "" then ph = "[" .. st.phase .. "] " end
+  return string.format("crew %s %s%d/%d %s", st.crew or "?", ph, st.done or 0, st.total or 0, glyph)
 end
 
 ttt.set_interval(2000, function()

@@ -348,6 +348,81 @@ Lua polling (3 s cadence) remains sufficient for the Phase 1–4 status sidebar.
   verified live at 0.431 vs min_confidence 0.45 (skipped, distribution
   recorded).
 
+## S23 — memory-systems survey for v2 (Phase 12, 2026-10-05) ✅ resolved (survey, primary sources)
+
+Survey of Mem0 / Zep-Graphiti / Letta-MemGPT / LangMem / A-MEM + hybrid-fusion
+literature (arXiv full texts, OSS sources, official docs — URLs in the session
+notes). Findings for a <10k-row local SQLite service:
+
+- **Hybrid fusion = RRF, k=60** (Cormock SIGIR 2009; Zep's default reranker;
+  Elasticsearch rank_constant default 60; Weaviate/OpenSearch both ship it):
+  rank-only fusion `Σ 1/(60+rank_i)` — robust to incomparable BM25/cosine
+  scales, zero tuning (k flat 30–100 in the pilot). Weighted fusion (Weaviate
+  relativeScoreFusion, ~6% recall gain) requires per-leg min-max normalization
+  + coverage-asymmetry gotchas — upgrade path only, not the default.
+- **SQLite FTS5 mechanics** (official docs): external-content table
+  `content='memories', content_rowid='id'` + 3 triggers (insert/delete/update)
+  + one-time `INSERT INTO fts(fts) VALUES('rebuild')` backfill; `bm25()` is
+  lower=better (−1 sign convention), k1=1.2/b=0.75 hard-coded, `rank` column
+  faster for sorting; tokenizer `porter unicode61`; on delete/update write the
+  FTS index FIRST; REPLACE is unsupported on external-content tables.
+- **Supersede-not-delete (Zep)** is the highest-value portable idea: a fact
+  carries `created_at` + `valid_at`/`invalid_at` (+ optional `expired_at`);
+  contradiction sets `invalid_at` on the old row, history stays queryable,
+  `latest_only` reads filter `invalid_at IS NULL`. This REPLACES expensive
+  write-time adjudication: Mem0's current OSS "additive" model does exactly
+  this — ADD new facts freely, link them to contradicted old ones
+  (`linked_memory_ids`), resolve truth at read time; the paper-era
+  ADD/UPDATE/DELETE/NOOP tool-call flow is retired from `add()`.
+- **Mem0's recall scoring is fully published in OSS `scoring.py`** — the most
+  transplantable design: over-fetch `max(top_k×4, 60)` per leg; BM25
+  sigmoid-normalized with query-length-adaptive midpoint/steepness tables;
+  entity boost `similarity × 0.5 × 1/(1+0.001(n−1)²)` gated ≥0.5, ≤8 entities;
+  additive fusion divided by an adaptive `max_possible`; semantic gate
+  (threshold 0.1) applied BEFORE fusion (keyword can never rescue a
+  semantically-dead candidate).
+- **Write-quality prompt rules (Mem0 V3)** — the highest-leverage zero-infra
+  improvement: ground relative dates against the observation date, never
+  "current date"; preserve proper nouns/quantities verbatim; facts 15–80
+  words, self-contained; when in doubt extract (dedup handles redundancy).
+  Forseti note: writes come from agents themselves (no LLM inside the
+  service — a repo non-goal), so these rules belong in the pi tool
+  descriptions, not in a service-side extraction pipeline.
+- **Dedup (Mem0)**: MD5 exact-hash + semantic near-dup ≥ **0.95** (their
+  entity-dedup gate) → merge/update instead of insert.
+- **Scoring boosts (Generative Agents, arXiv 2304.03442 §4.1)**: `recency =
+  0.995^hours_since_last_access` (≈138 h half-life; time unit must be stated
+  explicitly) + importance (LLM 1–10 rated once at write) + relevance cosine;
+  min-max normalize all three, equal weights. **MemoryBank**: `R = e^(−t/S)`,
+  S += 1 and t→0 on recall (spacing effect) — use as a compaction criterion,
+  never hard delete. **LangMem** states the same intent (similarity +
+  importance + strength-from-recent-frequent-use) but publishes NO formula.
+- **A-MEM (NeurIPS 2025)**: embed the CONCATENATION of content + generated
+  context/keywords/tags (they use the SAME all-MiniLM-L6-v2); links = top-10
+  cosine neighbors, retrieval includes linked neighbors ("box" propagation);
+  ablation: link generation carries most of the gain, LLM evolution loop adds
+  the rest — the evolution loop (one LLM call per neighbor) is the part to
+  skip. No numeric thresholds published anywhere in it.
+- **Letta/MemGPT**: tiering is by context, not by DB ("root files in prompt,
+  indexed dirs out"); the efficiency rule for persist-vs-discard: *don't
+  store what a message search can recover — persist decisions, preferences,
+  corrections, navigational references; generalize, don't log.* No published
+  archival scoring (tool-mediated agent judgment). The popular "MemGPT
+  recency×importance×relevance weights" are NOT in the paper (product code,
+  unpublished) — don't cite them as published.
+- **Explicit overkill at this scale** (with receipts): graph DBs (Mem0 retired
+  their own external graph store; platform graph = schema-free co-occurrence),
+  typed triplets/hyper-edges/communities (Zep; their heavy derivation layers
+  cost ~600k tokens per 26k-token conversation and lagged availability —
+  Mem0 paper §4.5), cross-encoder rerankers as default (~150–200 ms, RRF
+  suffices), LLM-adjudicated ops on every write, background synthesis until
+  volume justifies it. Mem0's own telemetry calls >2000 memories "at scale" —
+  forseti is below every line they draw.
+- **Calibration caveat**: every published constant (0.95/0.5 gates, sigmoid
+  tables, decay band 0.3–1.5, threshold 0.1) is tuned for OpenAI/1024-d
+  embeddings; with 384-d MiniLM the distributions differ → keep ALL constants
+  in config, validate on our own probes before trusting any.
+
 ## S22 — memory runtime + opik viability (Phase 10, 2026-10-01) ✅ resolved (live)
 
 **S22a — memory runtime (in the laya venv):**

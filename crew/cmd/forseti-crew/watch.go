@@ -29,7 +29,9 @@ type watchModel struct {
 	started       map[string]time.Time
 	ended         map[string]time.Time
 	cost          map[string]float64
-	checks        []string // rendered check results
+	phase         map[string]string // P11: node → phase name (from node_start)
+	phaseOrder    []string          // P11: first-seen phase order
+	checks        []string          // rendered check results
 	summary       string
 	quitFlag      bool
 	lastTS        time.Time
@@ -55,7 +57,8 @@ func cmdWatch(args []string) {
 	}
 	m := &watchModel{path: p, follow: *follow, nodes: map[string]*runner.Event{},
 		status: map[string]string{}, started: map[string]time.Time{},
-		ended: map[string]time.Time{}, cost: map[string]float64{}}
+		ended: map[string]time.Time{}, cost: map[string]float64{},
+		phase: map[string]string{}}
 	m.replay()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
@@ -99,6 +102,14 @@ func (m *watchModel) fold(ev runner.Event) {
 	case "node_start":
 		m.status[ev.Node] = "running"
 		m.started[ev.Node] = ev.TS
+		if ev.Phase != "" { // P11: group rows under phase headers
+			if _, seen := m.phase[ev.Node]; !seen {
+				m.phase[ev.Node] = ev.Phase
+			}
+			if !contains(m.phaseOrder, ev.Phase) {
+				m.phaseOrder = append(m.phaseOrder, ev.Phase)
+			}
+		}
 		delete(m.ended, ev.Node)
 	case "node_done":
 		m.status[ev.Node] = "done"
@@ -165,7 +176,7 @@ func (m *watchModel) View() string {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	for _, n := range names {
+	row := func(n string) {
 		dur := ""
 		if st, ok := m.started[n]; ok {
 			end, ended := m.ended[n]
@@ -179,6 +190,21 @@ func (m *watchModel) View() string {
 			cost = fmt.Sprintf(" $%.4f", c)
 		}
 		b.WriteString(fmt.Sprintf(" %s %-14s %8s%s\n", statusGlyph[m.status[n]], n, dur, cost))
+	}
+	if len(m.phaseOrder) > 0 {
+		// P11: phased run — rows grouped under phase headers
+		for _, p := range m.phaseOrder {
+			b.WriteString(fmt.Sprintf("phase %s\n", p))
+			for _, n := range names {
+				if m.phase[n] == p {
+					row(n)
+				}
+			}
+		}
+	} else {
+		for _, n := range names {
+			row(n)
+		}
 	}
 	if len(m.checks) > 0 {
 		b.WriteString("\nchecks:\n")
@@ -201,4 +227,14 @@ func followTag(f bool) string {
 		return " [following]"
 	}
 	return ""
+}
+
+// contains is a tiny slice helper (P11 watch phase grouping).
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

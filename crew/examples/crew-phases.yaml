@@ -1,0 +1,56 @@
+# forseti crew — PHASED shape (P11): ordered work stages with instructions.
+# Each phase is a strict barrier: every node in phase N reaches a terminal
+# state (done/skipped/failed) before any phase N+1 node dispatches. Phase
+# instructions prefix each member agent's prompt at dispatch (upstream
+# outputs {{ .planner }} and {{ memory "q" }} work inside instructions too).
+# Run: forseti-crew run -f crew-phases.yaml --headless --session sandbox
+name: demo-phased-planner-builder
+
+agents:
+  - name: planner
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      Produce a numbered plan (max 5 steps, one line each) to add a file
+      named HELLO_CREW.md to the repo root containing the line
+      "crew pipeline works". End your reply with the single word PLAN_READY.
+
+  - name: builder
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      Execute this plan exactly, touching only what it names:
+
+      {{ .planner }}
+
+      When done, reply with the single word DONE.
+
+phases:
+  - name: research
+    instructions: |
+      You are in the RESEARCH phase. Read-only: do not create, edit, or
+      delete any file. Produce output the BUILD phase can execute without
+      re-reading the repo.
+    agents: [planner]
+
+  - name: build
+    instructions: |
+      You are in the BUILD phase. Implement exactly what the RESEARCH phase
+      produced. Run no commands beyond what the plan requires.
+    agents: [builder]
+
+edges:
+  - from: planner
+    to: builder
+    when: re:PLAN_READY
+
+# checks (6A-1) verify both the per-node contract and the phase hand-off
+checks:
+  - after: planner
+    run: "grep -q PLAN_READY .forseti/bus/planner.md"
+  - after: builder
+    run: "test -f HELLO_CREW.md && grep -q 'crew pipeline works' HELLO_CREW.md"
+
+watch:
+  - node: builder
+    match: "DONE"

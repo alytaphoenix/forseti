@@ -303,6 +303,46 @@ Spikes S22a/S22b resolved (see `docs/spikes.md`; Opik = documented no-go).
 | P10-4 opik exporter | ⏸ deferred (S22b no-go: no hosted key, docker down; exporter designed, zero runner deps) |
 | P10-5 eval gate | ✅ `scripts/memory-eval.sh` — 4/4 (paraphrase recall ×3 + secret-namespace isolation) |
 
+## Phase 11 — crew phases: planner work assignment — ✅ **implemented + verified live** (2026-10-05)
+
+User decisions: the planner = the crew builder TUI; strict barrier (all of
+phase N terminal before N+1 dispatches); failure/skip releases the barrier
+(`blocked` holds it — surfaced, never auto-answered); full vertical in one
+pass. No spikes needed — no new herdr/ttt/pi surface, pure crew work.
+
+| Task | Status |
+|---|---|
+| 11-1 schema: `Phase{Name, Instructions, Agents}` + `Crew.Phases` + validator (name rule, duplicate, unknown/double/unphased member, backward-phase edge) + `PhaseOf`/`Phase` helpers | ✅ schema tests green |
+| 11-2 runner: barrier gate in the wave scheduler (`phaseUnlocked`, terminal = done/failed/skipped; blocked holds), instruction injection (`instructions + "\n\n" + prompt` as ONE template render), `phase_start`/`phase_done` events, `phase` on `node_start` | ✅ unit tests + live |
+| 11-3 observability: `watch` groups rows under phase headers; `crew-status.json` gains `phase`; ttt badge renders `crew <name> [<phase>] <done>/<total>` | ✅ live (badge field additive) |
+| 11-4 TUI: `p` phase form (name/instructions/members), graph view grouped under `— phase N <name>`, meta tab phase line, save round-trips validation | ✅ driven in-pane via `scripts/crew-tui-drive.py` (incl. live rejection of an unphased agent) |
+| 11-5 example: `crew/examples/crew-phases.yaml` (halogen-pinned, 2 phases + checks) | ✅ validates; ran live |
+| 11-6 gate: `crew-smoke.sh` runs the phased crew as a second sandbox run + asserts barrier ordering from the JSONL (research phase_done before build phase_start) | ✅ **PASS** |
+| 11-7 docs: design.md Phase 11 as-built, this table, AGENTS.md crew bullet | ✅ |
+
+Boundaries (future items): phase-boundary checks (`after: phase:<name>`),
+agents in multiple phases, cross-phase loop-backs.
+
+## Phase 12 — memory system v2 — ✅ **implemented + verified live** (2026-10-05)
+
+User decisions: survey-only spike; all eight improvement areas; **RRF k=60**
+default fusion; associative-link expansion **default-on bounded**. Spike S23
+resolved (primary sources: arXiv full texts, Mem0 OSS source, official docs —
+`docs/spikes.md`).
+
+| Task | Status |
+|---|---|
+| 12-1 spike S23 | ✅ resolved (survey) — fusion=RRF k=60; supersede-not-delete (Zep); Mem0's published recall scoring + write-quality rules; A-MEM concat-embeddings + link propagation; Letta tiering-by-context; explicit overkill list with receipts |
+| 12-2 v2 design | ✅ user-confirmed before build (RRF; expansion default-on) |
+| 12-3 service v2 | ✅ `memory_serve.py` rewritten: FTS5 external-content index + triggers + rebuild backfill; hybrid RRF recall with semantic pre-gate; near-dup merge; explicit supersedes (fixed live: inverted semantics + heuristic swallowing conflicts); access reinforcement; schema migrated on start (`PRAGMA user_version` 1→2, 8 pre-existing rows preserved — verified live) |
+| 12-4 consumers | ✅ pi tools gain optional params (type/importance/supersedes/expires_at/links on write; type + include_superseded on recall); deployed to `~/.pi/agent/extensions/forseti.ts`; crew helper unchanged |
+| 12-5 eval gate | ✅ **11/11 PASS** — P10's four contracts + exact dedup, near-dup merge, hybrid keyword-leg recall, supersede default + history queryable, TTL, type filter + importance |
+| 12-6 embedding check | ✅ four 384-d candidates compared on the probe set — 5/5 ties → **KEEP INCUMBENT** (`scripts/memory-embed-eval.sh`, re-runnable) |
+| 12-7 docs | ✅ design.md Phase 12 as-built, this table, AGENTS.md memory bullet, spikes S23 |
+
+Boundaries (future items): write-time extraction pipeline; entity/graph
+store; history table for merged facts; memory remains advisory context.
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in

@@ -659,3 +659,138 @@ leaks across namespaces → 4/4 PASS; deterministic.
 - Memory is advisory context, never control flow.
 - The vault is the human's; agents write to the DB.
 - The service is user-invoked; clients degrade to hints.
+
+## Phase 11 — crew phases: planner work assignment (implemented 2026-10-05)
+
+The crew builder gains **phases**: ordered work stages, each with its own
+instructions and a member list. A phase is a strict barrier — every node in
+phase N must reach a terminal state (done/failed/skipped) before any phase N+1
+node dispatches. Inside a phase, the existing edge/wave logic is unchanged
+(parallel fan-out, `when:` gates, laya edges). A crew without `phases:`
+behaves exactly as before (single implicit phase). User decisions:
+builder-TUI surface, strict barrier, release-on-terminal, full vertical.
+
+### crew.yaml addition
+
+```yaml
+phases:                       # optional; order = list order
+  - name: research
+    instructions: |           # template prepended to member prompts
+      Read-only exploration. No edits. Record findings for the build phase.
+    agents: [explorer, analyst]
+  - name: build
+    instructions: |
+      Implement what research found. Run tests before declaring done.
+    agents: [coder, reviewer]
+```
+
+- **Instruction injection**: dispatch renders `instructions + "\n\n" + agent
+  prompt` as ONE template — instructions get `{{ .upstream }}` outputs and the
+  `{{ memory "query" }}` helper for free.
+- **Validation** (`internal/schema`): phase names unique + herdr name rule;
+  members must exist; each agent in **at most one** phase; with `phases:`
+  declared, unphased agents are an error; **edges to an earlier phase
+  rejected** (cross-phase loop-backs are a documented future item); cycles
+  within a phase keep the `max_visits` rule.
+- **Runner**: the wave scheduler's ready-check gates on `phaseUnlocked(idx)` —
+  every earlier phase fully terminal. `blocked` is NOT terminal (surfaced,
+  never auto-answered): a blocked node holds its phase, the run ends with
+  later phases skipped (same as today's blocked-node behavior).
+- **Events**: `phase_start` (first member dispatches), `phase_done` (last
+  member settles) in the JSONL run log; `node_start` carries `phase`.
+- **Observability**: `forseti-crew watch` groups rows under phase headers;
+  `crew-status.json` gains `phase` (first not-yet-done phase) and the ttt
+  badge renders `crew <name> [<phase>] <done>/<total>`.
+- **Builder TUI**: `p` in build mode opens the phase form (name,
+  instructions, comma-separated members — validated on save); graph view
+  groups nodes under `— phase N <name>` headers; node meta shows the phase.
+
+Gate: `scripts/crew-smoke.sh` runs the phased checked crew
+(`crew/examples/crew-phases.yaml`) as a second sandbox run and asserts the
+barrier from the run log (research `phase_done` before build `phase_start`).
+
+Verified live (2026-10-05, sandbox, `FORSETI_CREW_MODEL=opencode-go/glm-5.3-flash`):
+the phased run's log reads `phase_start research → planner done + check_pass →
+phase_done research (1/1) → phase_start build → builder done + check_pass →
+phase_done build → run_end done=2` — the build node dispatched only after
+research fully settled; both agents' scrollback contained their phase
+instructions (injection confirmed); gate **PASS** end-to-end. The TUI phase
+form was driven in a real pane (`scripts/crew-tui-drive.py`): form opens,
+phase added, **save correctly rejected an unphased agent** (validation-on-save),
+second phase added, saved file re-validates clean.
+
+Boundaries (Phase 11): phase-boundary checks (`after: phase:<name>`), agents
+in multiple phases, and cross-phase loop-backs are future items.
+
+## Phase 12 — memory system v2 (as-built 2026-10-05)
+
+Survey-driven upgrade of the shared memory service (S23 in `spikes.md`;
+primary sources: Mem0 OSS `scoring.py`, Zep/Graphiti paper + docs, Letta
+papers, LangMem source, A-MEM arXiv, RRF SIGIR 2009). User decisions:
+survey-only spike; all eight improvement areas; RRF k=60 as the default
+fusion; link expansion default-on bounded.
+
+### Retrieval — hybrid, RRF-fused (P12-3)
+
+- Two legs: sqlite-vec cosine (v1 unchanged) + **FTS5 BM25** (external-content
+  table `mem_fts`, `porter unicode61` tokenizer, official 3-trigger sync
+  pattern + one-time `rebuild` backfill). Both over-fetch `max(k×4, 60)`.
+- **Semantic pre-gate BEFORE fusion** (Mem0's ordering): candidates with
+  cosine < `min_score` (0.3 floor, unchanged) are dropped before the fuse —
+  the keyword leg can never rescue a semantically-dead candidate. FTS-only
+  hits carry `score: null` (lexical presence, no cosine).
+- **RRF, k=60** (`FORSETI_MEMORY_RRF_K`): rank-only fusion, robust to
+  incomparable BM25/cosine scales; SIGIR pilot shows k flat 30–100.
+- Soft boosts: `final = rrf_norm + W_RECENCY·0.995^hours_since_last_access +
+  W_IMPORTANCE·importance` (Generative Agents recency + writer importance;
+  all constants in env config — S23's calibration caveat: published constants
+  were tuned on 1024-d embeddings, not our 384-d MiniLM).
+- Recall bumps `access_count`/`last_access` fire-and-forget (MemoryBank
+  spacing effect: recalled memories persist longer).
+
+### Write path — heuristic gates, no LLM in the service
+
+- Exact dedup (MD5 hash within the caller's namespace) → return existing id.
+- **Near-dup merge**: cosine ≥ `FORSETI_MEMORY_DEDUP` (0.95, Mem0's gate) →
+  update the existing row (fresh ts, merged tags) instead of inserting.
+- **Explicit supersedes wins over every heuristic** (Zep semantics):
+  `supersedes: <id>` inserts the new fact as CURRENT and marks the old row
+  `superseded_by` — history stays queryable (`include_superseded`), and the
+  near-dup check is skipped for that write (a 14:00→15:00 contradiction is
+  ≥0.95 cosine — the heuristic must not swallow a declared conflict).
+- New optional write params: `type` (fact|episode|procedure|preference),
+  `importance` (0–1), `expires_at` (TTL), `links` (id array).
+- S23's write-quality rules (self-contained ~15–80-word statements, relative
+  dates grounded against the observation date, proper nouns verbatim) live in
+  the pi tool DESCRIPTIONS — agents write the facts; the service runs no
+  model (repo non-goal).
+
+### Consumers (P12-4)
+
+- `memory_write`: optional `type`/`importance`/`supersedes`/`expires_at`/
+  `links`; surfaces `dedup: exact|near` in the result.
+- `memory_recall`: optional `type` filter + `include_superseded`; renders
+  linked rows as `(linked from #id)`.
+- Crew helper `{{ memory "query" }}`: unchanged (additive API).
+
+### Backup (P12-5)
+
+`GET /export` → NDJSON dump (all rows, incl. superseded/expired);
+`POST /import {jsonl}` → re-embeds and skips existing ids (idempotent restore).
+
+### Evaluation
+
+- `scripts/memory-eval.sh` extended to **11/11**: the four P10 contracts
+  (paraphrase ×3 + namespace isolation) plus exact dedup, near-dup merge,
+  hybrid keyword-leg recall (bare identifier), supersede default + history
+  queryable, TTL, type filter + importance. Deterministic.
+- `scripts/memory-embed-eval.sh` (new, P12-6): bounded ranking comparison of
+  four 384-d candidates (all-MiniLM-L6-v2, BAAI/bge-small-en-v1.5,
+  thenlper/gte-small, intfloat/e5-small-v2 — all vec0-schema compatible) on
+  the probe set. **Result 2026-10-05: 5/5 ties → KEEP INCUMBENT** (swap rule:
+  only on a measurable win; re-embed migration would ship with the swap).
+
+Boundaries (Phase 12): no write-time extraction pipeline (future item when
+volume justifies an LLM pass); no entity/graph store (Mem0 retired their own
+— co-occurrence linking beat typed triplets in practice); history table for
+merged facts is a documented future item; memory stays advisory context.

@@ -135,8 +135,13 @@ func (m *model) metaView() string {
 	if a.Route != "" {
 		model = a.Route + " (routed pool)"
 	}
+	phase := "—"
+	if pi := m.crew.PhaseOf(a.Name); pi >= 0 {
+		phase = fmt.Sprintf("%d %s", pi+1, m.crew.Phases[pi].Name)
+	}
 	fmt.Fprintf(&b, "pane:      %s\n", st.PaneID)
 	fmt.Fprintf(&b, "model:     %s\n", model)
+	fmt.Fprintf(&b, "phase:     %s\n", phase)
 	fmt.Fprintf(&b, "status:    %s", st.Status)
 	if st.LiveStatus != "" && st.LiveStatus != st.Status {
 		fmt.Fprintf(&b, " (herdr: %s)", st.LiveStatus)
@@ -200,7 +205,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		m.mode = "build"
-		m.buildMsg = "a=add agent · e=add edge · R=add route · T=add tool · P=probe tools · A=adopt live · s=save · q=back"
+		m.buildMsg = "a=add agent · e=add edge · R=add route · p=add phase · T=add tool · P=probe tools · A=adopt live · s=save · q=back"
 	case "v":
 		m.mode = "view"
 	case "a":
@@ -218,6 +223,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "T":
 		if m.mode == "build" {
 			m.startToolForm()
+		}
+	case "p":
+		if m.mode == "build" {
+			m.startPhaseForm()
 		}
 	case "P":
 		if m.mode == "build" {
@@ -317,6 +326,17 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.crew.Routes = append(m.crew.Routes, rt)
 			m.buildMsg = fmt.Sprintf("route %s added (attach agents with route: %s)", vals[0], vals[0])
+		case "phase":
+			agents := []string{}
+			for _, s := range strings.Split(vals[2], ",") {
+				if s = strings.TrimSpace(s); s != "" {
+					agents = append(agents, s)
+				}
+			}
+			m.crew.Phases = append(m.crew.Phases, schema.Phase{
+				Name: vals[0], Instructions: vals[1], Agents: agents,
+			})
+			m.buildMsg = fmt.Sprintf("phase %s added (%s) — order = list order", vals[0], strings.Join(agents, ", "))
 		case "tool":
 			msg := m.saveTool(vals)
 			m.buildMsg = msg
@@ -344,6 +364,28 @@ func (m *model) startAgentForm() {
 		{label: "model", input: ti2},
 		{label: "prompt", input: ti3},
 		{label: "route", input: ti4},
+	}}
+}
+
+// startPhaseForm (P11): an ordered work stage with instructions. Agents are a
+// comma-separated member list; saveCrew's schema.Load round-trip validates
+// membership, name rules, and backward edges.
+func (m *model) startPhaseForm() {
+	names := []string{}
+	for _, a := range m.crew.Agents {
+		names = append(names, a.Name)
+	}
+	ti := textinput.New()
+	ti.Placeholder = "research"
+	ti.Focus()
+	ti2 := textinput.New()
+	ti2.Placeholder = "Read-only exploration. No edits. Record findings for the build phase."
+	ti3 := textinput.New()
+	ti3.Placeholder = "members: " + strings.Join(names, ", ")
+	m.form = &form{kind: "phase", fields: []formField{
+		{label: "name", input: ti},
+		{label: "instructions", input: ti2},
+		{label: "agents", input: ti3},
 	}}
 }
 
@@ -563,6 +605,37 @@ var statusGlyph = map[string]string{
 	"blocked": "!", "failed": "✗", "skipped": "–",
 }
 
+// agentRow renders one node row in the left pane (status glyph, name, model).
+func (m *model) agentRow(b *strings.Builder, i int) {
+	a := m.crew.Agents[i]
+	st := "pending"
+	live := ""
+	cost := ""
+	if m.run != nil {
+		if ns := m.run.Nodes[a.Name]; ns != nil {
+			st = ns.Status
+			live = ns.LiveStatus
+			if ns.CostUSD > 0 {
+				cost = fmt.Sprintf(" $%.4f", ns.CostUSD)
+			}
+		}
+	}
+	resolved := a.Model
+	if a.Route != "" {
+		resolved = "⇄" + a.Route
+	}
+	liveTag := ""
+	if live != "" && live != st {
+		liveTag = " (" + live + ")"
+	}
+	line := fmt.Sprintf("%s %s %s%s%s", statusGlyph[st], a.Name, resolved, cost, liveTag)
+	if i == m.selected%max(1, len(m.crew.Agents)) {
+		b.WriteString("▶ " + line + "\n")
+	} else {
+		b.WriteString("  " + line + "\n")
+	}
+}
+
 func (m *model) View() string {
 	if m.width == 0 {
 		return "loading…"
@@ -573,32 +646,28 @@ func (m *model) View() string {
 	var left strings.Builder
 	left.WriteString("CREW: " + m.crew.Name + " [" + m.mode + "]\n")
 	if m.mode == "view" {
-		for i, a := range m.crew.Agents {
-			st := "pending"
-			live := ""
-			cost := ""
-			if m.run != nil {
-				if ns := m.run.Nodes[a.Name]; ns != nil {
-					st = ns.Status
-					live = ns.LiveStatus
-					if ns.CostUSD > 0 {
-						cost = fmt.Sprintf(" $%.4f", ns.CostUSD)
+		// P11: phased crews group nodes under ordered phase headers
+		if len(m.crew.Phases) > 0 {
+			shown := map[string]bool{}
+			for pi, ph := range m.crew.Phases {
+				left.WriteString(fmt.Sprintf("— phase %d %s\n", pi+1, ph.Name))
+				for _, an := range ph.Agents {
+					for i, a := range m.crew.Agents {
+						if a.Name == an {
+							shown[an] = true
+							m.agentRow(&left, i)
+						}
 					}
 				}
 			}
-			resolved := a.Model
-			if a.Route != "" {
-				resolved = "⇄" + a.Route
+			for i, a := range m.crew.Agents { // stragglers (validated away, but render defensively)
+				if !shown[a.Name] {
+					m.agentRow(&left, i)
+				}
 			}
-			liveTag := ""
-			if live != "" && live != st {
-				liveTag = " (" + live + ")"
-			}
-			line := fmt.Sprintf("%s %s %s%s%s", statusGlyph[st], a.Name, resolved, cost, liveTag)
-			if i == m.selected%max(1, len(m.crew.Agents)) {
-				left.WriteString("▶ " + line + "\n")
-			} else {
-				left.WriteString("  " + line + "\n")
+		} else {
+			for i := range m.crew.Agents {
+				m.agentRow(&left, i)
 			}
 		}
 		for _, e := range m.crew.Edges {
@@ -618,6 +687,12 @@ func (m *model) View() string {
 			}
 			left.WriteString("  · " + a.Name + " (" + resolved + ")\n")
 		}
+		if len(m.crew.Phases) > 0 { // P11
+			left.WriteString("phases:\n")
+			for i, p := range m.crew.Phases {
+				left.WriteString(fmt.Sprintf("  · %d %s (%s)\n", i+1, p.Name, strings.Join(p.Agents, ", ")))
+			}
+		}
 		left.WriteString("edges:\n")
 		for _, e := range m.crew.Edges {
 			left.WriteString(fmt.Sprintf("  · %s→%s when=%s\n", e.From, e.To, e.When))
@@ -625,7 +700,7 @@ func (m *model) View() string {
 		for _, rt := range m.crew.Routes {
 			left.WriteString(fmt.Sprintf("  route · %s: efficient=%s capable=%s\n", rt.ID, rt.Efficient, rt.Capable))
 		}
-		left.WriteString("\na=add agent · e=add edge · R=add route · A=adopt live · s=save · q=back")
+		left.WriteString("\na=add agent · e=add edge · R=add route · p=add phase · A=adopt live · s=save · q=back")
 	}
 	if m.buildMsg != "" {
 		left.WriteString("\n" + m.buildMsg)

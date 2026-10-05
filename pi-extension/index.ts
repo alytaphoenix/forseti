@@ -278,11 +278,16 @@ export default function forseti(pi: ExtensionAPI) {
 		name: "memory_write",
 		label: "memory_write",
 		description:
-			"Store a durable fact/decision/finding in the shared agent memory service. Write REUSABLE knowledge: what was decided and why, where things live, gotchas discovered. Not for transient chatter or secrets.",
+			"Store a durable fact/decision/finding in the shared agent memory service. Write REUSABLE knowledge: what was decided and why, where things live, gotchas discovered. Not for transient chatter or secrets. Quality rules: one concise self-contained statement (~15–80 words); ground relative dates against today's observation date ('deploy window moves to 15:00 UTC on 2026-10-05', never 'last week'); preserve proper nouns and quantities verbatim. When a newer fact contradicts an older one, pass supersedes=<id> instead of relying on dedup.",
 		promptSnippet: "memory_write: persist a reusable fact for all agents.",
 		parameters: Type.Object({
 			text: Type.String({ description: "The fact, one concise statement" }),
 			tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags (e.g. [\"deploy\", \"gotcha\"])" })),
+			type: Type.Optional(Type.String({ description: "Memory kind: fact (default) | episode | procedure | preference" })),
+			importance: Type.Optional(Type.Number({ description: "0–1 importance (default 0.5); recall ranks on it" })),
+			supersedes: Type.Optional(Type.Number({ description: "Id of an older fact this one replaces (history kept, old hidden)" })),
+			expires_at: Type.Optional(Type.String({ description: "ISO timestamp after which the fact no longer recalls (transient notes)" })),
+			links: Type.Optional(Type.Array(Type.Number(), { description: "Ids of related facts (associative links)" })),
 		}),
 		async execute(_toolCallId, params) {
 			if (!params.text) return { content: [{ type: "text", text: "memory_write error: text required" }], isError: true };
@@ -291,11 +296,23 @@ export default function forseti(pi: ExtensionAPI) {
 				const res = await fetch(`${base}/write`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ agent: "shared", text: params.text, tags: params.tags ?? [], source: "pi" }),
+					body: JSON.stringify({
+						agent: "shared", text: params.text, tags: params.tags ?? [],
+						source: "pi",
+						...(params.type ? { type: params.type } : {}),
+						...(params.importance !== undefined ? { importance: params.importance } : {}),
+						...(params.supersedes !== undefined ? { supersedes: params.supersedes } : {}),
+						...(params.expires_at ? { expires_at: params.expires_at } : {}),
+						...(params.links ? { links: params.links } : {}),
+					}),
 				});
-				if (!res.ok) return { content: [{ type: "text", text: `memory_write: endpoint ${res.status}` }], isError: true };
+				if (!res.ok) {
+					const detail = await res.text().catch(() => "");
+					return { content: [{ type: "text", text: `memory_write: endpoint ${res.status} ${detail.slice(0, 120)}` }], isError: true };
+				}
 				const data: any = await res.json();
-				return { content: [{ type: "text", text: `remembered (#${data.id})` }], details: { ok: true, id: data.id } };
+				const note = data.dedup ? ` (deduped: ${data.dedup})` : "";
+				return { content: [{ type: "text", text: `remembered (#${data.id})${note}` }], details: { ok: true, id: data.id, dedup: data.dedup ?? null } };
 			} catch (e: any) {
 				return { content: [{ type: "text", text: `memory_write: endpoint unreachable (${e?.message ?? e}) — start it with: scripts/memory-serve.sh start` }], details: { ok: false } };
 			}
@@ -306,11 +323,13 @@ export default function forseti(pi: ExtensionAPI) {
 		name: "memory_recall",
 		label: "memory_recall",
 		description:
-			"Search the shared agent memory for facts relevant to a query (vector similarity). Use at task start to check for prior decisions/gotchas, or when context seems missing.",
+			"Search the shared agent memory for facts relevant to a query (hybrid: vector similarity + keyword/BM25, RRF-fused). Use at task start to check for prior decisions/gotchas, or when context seems missing. Paraphrase freely, but keep exact identifiers (tool/file/command names) in the query — the keyword leg finds them even when similarity is low.",
 		promptSnippet: "memory_recall: check prior agent knowledge by query.",
 		parameters: Type.Object({
 			query: Type.String({ description: "What to look for (paraphrase freely)" }),
 			k: Type.Optional(Type.Number({ description: "How many results (default 5)" })),
+			type: Type.Optional(Type.String({ description: "Filter by memory kind: fact | episode | procedure | preference" })),
+			include_superseded: Type.Optional(Type.Boolean({ description: "Include facts replaced by newer ones (default false)" })),
 		}),
 		async execute(_toolCallId, params) {
 			if (!params.query) return { content: [{ type: "text", text: "memory_recall error: query required" }], isError: true };
@@ -319,12 +338,19 @@ export default function forseti(pi: ExtensionAPI) {
 				const res = await fetch(`${base}/recall`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ query: params.query, agent: "shared", k: params.k ?? 5 }),
+					body: JSON.stringify({
+						query: params.query, agent: "shared", k: params.k ?? 5,
+						...(params.type ? { type: params.type } : {}),
+						...(params.include_superseded ? { include_superseded: true } : {}),
+					}),
 				});
 				if (!res.ok) return { content: [{ type: "text", text: `memory_recall: endpoint ${res.status}` }], isError: true };
 				const rows: any[] = await res.json();
 				if (!rows.length) return { content: [{ type: "text", text: "no memory matches" }], details: { ok: true, count: 0 } };
-				const text = rows.map((r) => `[${r.ts?.slice(0, 10)} ${r.score}] ${r.text}`).join("\n");
+				const text = rows.map((r) => {
+					const via = r.via ? ` (linked from #${r.via})` : "";
+					return `[${r.ts?.slice(0, 10)} ${r.score ?? "lexical"}${via}] ${r.text}`;
+				}).join("\n");
 				return { content: [{ type: "text", text }], details: { ok: true, count: rows.length } };
 			} catch (e: any) {
 				return { content: [{ type: "text", text: `memory_recall: endpoint unreachable (${e?.message ?? e}) — start it with: scripts/memory-serve.sh start` }], details: { ok: false } };
