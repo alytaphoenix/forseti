@@ -18,6 +18,6 @@
     "events.editor": true,
     "events.file": true,
     "system.env": true,
-    "system.exec": ["herdr", "git"]
+    "system.exec": ["herdr", "git", "open", "xdg-open"]
   }
 }

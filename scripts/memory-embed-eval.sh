@@ -60,7 +60,10 @@ for name, (ok, rows) in results.items():
     for r in rows:
         print(r)
 
-incumbent, inc_ok = results["all-MiniLM-L6-v2"]
+# P13-M21b: the tuple is (ok, rows) — the old unpack bound the ROWS to
+# inc_ok, masked only because the swap branch short-circuited; the new
+# floor check below exposed it (list < int TypeError).
+inc_ok, _inc_rows = results["all-MiniLM-L6-v2"]
 best_name = max(results, key=lambda n: results[n][0])
 best_ok = results[best_name][0]
 print()
@@ -69,6 +72,15 @@ if best_name != "all-MiniLM-L6-v2" and best_ok > inc_ok:
     print("Swap = FORSETI_MEMORY_MODEL env (models.json/venv already present) + re-embed migration.")
 else:
     print("KEEP INCUMBENT: no candidate beats all-MiniLM-L6-v2 on this probe set.")
+
+# P13-M21: this script ALWAYS exited 0 — useless as a signal. The exit code
+# now gates the INCUMBENT's sanity (floor 4/5): a silent venv/model regression
+# must fail the gate, while candidate tallies stay informational comparison.
+MIN_INCUMBENT = 4
+if inc_ok < MIN_INCUMBENT:
+    print(f"GATE FAIL: incumbent {inc_ok}/5 is below the {MIN_INCUMBENT}/5 sanity floor.")
+    sys.exit(1)
+print(f"incumbent sanity floor met ({inc_ok}/5 >= {MIN_INCUMBENT}/5)")
 sys.exit(0)
 EOF
 echo "memory-embed-eval: done"

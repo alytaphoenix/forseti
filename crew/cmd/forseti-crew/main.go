@@ -5,14 +5,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"forseti/crew/internal/runner"
@@ -97,18 +94,36 @@ func cmdValidate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	f := parseRun(fs, args)
 	if _, err := loadCrew(f.file); err != nil {
-		fmt.Fprintln(os.Stderr, "INVALID:", err)
+		// P13-B23: a missing file is a read error, not a crew validation verdict
+		if os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "cannot read:", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "INVALID:", err)
+		}
 		os.Exit(1)
 	}
-	fmt.Println("crew.yaml valid")
+	fmt.Println(f.file, "valid")
 }
 
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	f := parseRun(fs, args)
+	// P13-B23: stray positionals were silently ignored; timeout must be ≥ 1
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "run: unexpected arguments:", fs.Args())
+		os.Exit(2)
+	}
+	if f.timeout < 1 {
+		fmt.Fprintln(os.Stderr, "run: --timeout must be >= 1 (minutes)")
+		os.Exit(2)
+	}
 	crew, err := loadCrew(f.file)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "INVALID:", err)
+		if os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "cannot read:", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "INVALID:", err)
+		}
 		os.Exit(1)
 	}
 	cwd := f.cwd
@@ -150,40 +165,15 @@ func cmdRun(args []string) {
 		}
 		return
 	}
-	if err := runTUI(crew, opts); err != nil {
+	failed, err := runTUI(crew, opts, f.file)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "run error:", err)
 		os.Exit(1)
 	}
-	if hasFailedEvent(f.file, cwd) {
+	// P13-B3/B14: the verdict comes from the LIVE run — the post-hoc glob
+	// re-read a possibly-deleted (worktree) or wrong-second log, and a
+	// blocked-only run exited 0 here while headless exited 1.
+	if failed {
 		os.Exit(1)
 	}
-}
-
-// hasFailedEvent checks the newest run log for failures (TUI path exit code).
-func hasFailedEvent(file, cwd string) bool {
-	runDir := file
-	if !strings.HasSuffix(file, ".jsonl") {
-		// find newest run jsonl in .forseti/runs
-		matches, err := filepath.Glob(filepath.Join(cwd, ".forseti", "runs", "*.jsonl"))
-		if err != nil || len(matches) == 0 {
-			return false
-		}
-		runDir = matches[len(matches)-1]
-	}
-	f, err := os.Open(runDir)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	failed := false
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var ev runner.Event
-		if json.Unmarshal(sc.Bytes(), &ev) == nil {
-			if ev.Type == "node_failed" || ev.Type == "check_fail" {
-				failed = true
-			}
-		}
-	}
-	return failed
 }

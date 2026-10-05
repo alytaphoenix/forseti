@@ -35,16 +35,18 @@ local function herdr_cmd(args)
 end
 
 local function parse_agents(raw)
+  -- P13-B6: per-object parsing with the pi-kind filter ALWAYS applied. The
+  -- old fallback fired on key-order drift and captured EVERY agent (shell
+  -- panes included) as if it were a pi one — asks went to the wrong pane.
+  -- herdr 0.9.3 lists one flat object per agent, so {[^{}]*} splits safely.
   local pi = {}
-  -- kind-first (observed 0.9.3 key order); [^{}]- stays inside one flat object
-  for kind, status, name, ws in raw:gmatch(
-        '"agent":"([%w%-_]+)","agent_status":"([%w_]+)"[^{}]-"name":"([^"]+)"[^{}]-"workspace_id":"([^"]+)"') do
-    if kind == "pi" then pi[#pi + 1] = { name = name, status = status, workspace_id = ws } end
-  end
-  if #pi == 0 then -- fallback: reversed order (future-proof)
-    for name, status, ws in raw:gmatch(
-          '"name":"([^"]+)"[^{}]-"agent_status":"([%w_]+)"[^{}]-"workspace_id":"([^"]+)"') do
-      pi[#pi + 1] = { name = name, status = status or "unknown", workspace_id = ws }
+  for obj in raw:gmatch("{[^{}]*}") do
+    local kind = obj:match('"agent":"([%w%-_]+)"')
+    if kind == "pi" then
+      local name = obj:match('"name":"([^"]+)"')
+      local status = obj:match('"agent_status":"([%w_]+)"') or "unknown"
+      local ws = obj:match('"workspace_id":"([^"]+)"') or ""
+      if name then pi[#pi + 1] = { name = name, status = status, workspace_id = ws } end
     end
   end
   return pi
@@ -58,7 +60,10 @@ end
 
 local function resolve_agent()
   agents = pi_agents()
-  local mine = (pcall(sys.env, "HERDR_WORKSPACE_ID") and sys.env("HERDR_WORKSPACE_ID")) or ""
+  -- P13-B23: single-call guarded reads (the pcall-and-call idiom ran the
+  -- function twice per site — twice the subprocesses on the hot path)
+  local ok_env, env_ws = pcall(sys.env, "HERDR_WORKSPACE_ID")
+  local mine = (ok_env and env_ws) or ""
   if #agents == 0 then return nil, "no live pi agent — run forseti:open (herdr plugin) first" end
   local hits = {}
   for _, a in ipairs(agents) do
@@ -72,11 +77,14 @@ end
 
 -- --- editor context (what is the user looking at right now) ---------------
 
-local function write_context()
+local function write_context(reason)
   local ok_sel, path = pcall(editor.file_path)
   if not ok_sel or not path or path == "" then return end
   local now_secs = os.time()
-  if now_secs - last_ctx_write < 1 then return end -- throttle storms
+  -- P13-B22: throttle CURSOR storms only — file.open/file.save are rare and
+  -- meaningful; the shared 1 s window used to drop a save/open write right
+  -- after a cursor move (pi then read stale context for the next prompt)
+  if reason == "cursor" and now_secs - last_ctx_write < 1 then return end
   last_ctx_write = now_secs
   local data = { path = path, ts = now_secs }
   local pos_ok, cur = pcall(editor.cursor)
@@ -99,9 +107,12 @@ local function clip(s, n)
 end
 
 local function editor_snippet()
-  local path = (pcall(editor.file_path) and editor.file_path()) or "<unsaved buffer>"
-  local cur = (pcall(editor.cursor) and editor.cursor()) or { line = 1, col = 1 }
-  local sel = pcall(editor.selection) and editor.selection()
+  -- P13-B23: single-call guarded reads (see resolve_agent)
+  local ok1, path = pcall(editor.file_path)
+  local ok2, cur = pcall(editor.cursor)
+  local ok3, sel = pcall(editor.selection)
+  if not (ok1 and path) then path = "<unsaved buffer>" end
+  if not (ok2 and cur) then cur = { line = 1, col = 1 } end
   local snippet, loc
   if sel and sel.active then
     snippet = editor.selection_text()
@@ -167,32 +178,8 @@ local function jump()
   last_error = ""
 end
 
-local function review()
-  local content = fs.read(REVIEW_FILE)
-  if not content or content == "" then log_err("no review summary"); return end
-  local ok, data = pcall(json.decode, content)
-  if not ok or type(data) ~= "table" or type(data.files) ~= "table" or #data.files == 0 then
-    log_err("review.json has no files"); return
-  end
-  if ttt.open_tab then
-    ttt.open_tab({
-      title = "Forseti: Review",
-      render = function(panel)
-        panel:label("changes made by pi this turn:")
-        panel:label("")
-        for _, f in ipairs(data.files) do
-          panel:label(string.format("%s :%d", f.path or "?", tonumber(f.line) or 1))
-        end
-        panel:label("")
-        panel:label("(first change opened; use Forseti: Jump per file)")
-      end,
-    })
-  end
-  local first = data.files[1]
-  ttt.open_file(first.path, tonumber(first.line) or 1)
-end
-
--- --- Forseti: Review (turn summary from the pi side) ----------------------
+-- P13-B5: duplicate review() removed — an earlier copy shadowed this one and
+-- ttt.register always captured the LATER definition (silent maintenance trap).
 local function review()
   local content = fs.read(REVIEW_FILE)
   if not content or content == "" then log_err("no review summary at " .. REVIEW_FILE) return end
@@ -281,38 +268,31 @@ local function resolve_link(slug)
   return nil
 end
 
+-- P13-B2: the old extraction combined gmatch (captures only — the loop bound
+-- text=nil and find() would error) with span_at returning the span INCLUDING
+-- the [[ brackets (resolve_link("[[slug") never matched). Clean scan:
 local function wikilink_jump()
   local cur = editor.cursor()
   local line = editor.get_line(cur.line) or ""
   local col = cur.col
-  -- find the [[…]] whose span covers the cursor (byte scan; 1-based cols)
-  local best_s, best_text
-  for s, text in line:gmatch("%[%[(.-)%]%]") do
-    local e = line:find(text, s, true)
-    -- find() re-scans; recompute span properly below
-    local bs, be, inner = line:find("%[%[(.-)%]%]")
-    -- FALLBACK below; a precise span pass is done second
-    if not best_text then best_text = inner end -- first link this line (approximate)
-    best_s = bs
-  end
-  -- precise pass: longest prefix match
-  local span_s, span_e, inner = line:find("%[%[(.-)%]%]")
-  local function span_at(i)
-    local from = 1
-    while true do
-      local s, e = line:find("%[%[(.-)%]%]", from)
-      if not s then return nil end
-      if i >= s and i <= e + 0 then return s, e, line:match("^(.-)%]%]", s) end
-      from = s + 1
+  -- scan every link span; take the one covering the cursor, else the first
+  local link
+  local from = 1
+  while true do
+    local s, e = line:find("%[%[(.-)%]%]", from)
+    if not s then break end
+    if col >= s and col <= e then
+      link = line:sub(s + 2, e - 2)
+      break
     end
+    from = e + 1
   end
-  local s, e, link = span_at(col)
-  if not link then
-    for l2 in line:gmatch("%[%[(.-)%]%]") do link = l2 break end
-  end
-  if not link then log_err("cursor is not on a [[wikilink]]") return end
+  if not link then link = line:match("%[%[(.-)%]%]") end
+  if not link then log_err("cursor is not on a wikilink") return end
+  -- Obsidian alias syntax: slug|display resolves on the slug part
+  link = link:gsub("|.*$", "")
   local file = resolve_link(link)
-  if not file then log_err("[[" .. link .. "]] not found in vault (notes/? daily/? root)") return end
+  if not file then log_err("wikilink '" .. link .. "' not found in vault (notes/? daily/? root)") return end
   ttt.open_file(file, 1)
 end
 
@@ -329,7 +309,11 @@ local function backlinks()
         local f = dir .. "/" .. entry.name
         if f ~= path then
           local content = fs.read(f)
-          if content and (content:find("%[%[" .. stem .. "%]%]", 1, true) or content:find(stem, 1, true)) then
+          -- P13-B4: the wikilink-bracket variant used escaped-pattern text with
+          -- plain=true ("%[%[stem%]%]") and NEVER matched — the bare-stem plain
+          -- find was the only working leg (a [[link]] always contains the stem,
+          -- so one literal find is the honest, pattern-safe form)
+          if content and stem ~= "" and content:find(stem, 1, true) then
             hits[#hits + 1] = f
           end
         end
@@ -352,17 +336,27 @@ end
 
 local function open_obsidian()
   if not vault_ready() then log_err("vault not present — nothing to open") return end
-  local vname = VAULT:match("([^/]+)$")
+  -- P13-B24: nil-safe vault name (a trailing slash made match() return nil and
+  -- the concatenation threw) + encode # and & (they truncated the query)
+  local vname = VAULT:gsub("/+$", ""):match("([^/]+)$") or "vault"
   local rel = ""
-  local p = editor.file_path()
-  if p and p:sub(1, #VAULT + 1) == VAULT .. "/" then
+  local ok_p, p = pcall(editor.file_path)
+  if ok_p and p and p:sub(1, #VAULT + 1) == VAULT .. "/" then
     rel = p:sub(#VAULT + 2)
-    rel = rel:gsub("%%", "%%25"):gsub("%s", "%%20")
+    rel = rel:gsub("%%", "%%25"):gsub("%s", "%%20"):gsub("#", "%%23"):gsub("&", "%%26")
   end
   local uri = "obsidian://open?vault=" .. vname .. (rel ~= "" and (rel:find("^daily/") or rel:find("^notes/")) and "&file=" .. rel or "")
   -- macOS: `open <uri>`; linux fallback binary pointed at by $FORSETI_OPEN
-  local opener = sys.env("FORSETI_OPEN") ~= "" and sys.env("FORSETI_OPEN") or "open"
-  pcall(sys.exec, opener, { uri })
+  local ok_e, env_open = pcall(sys.env, "FORSETI_OPEN")
+  local opener = (ok_e and env_open and env_open ~= "") and env_open or "open"
+  -- P13-B3: check the exec result — an allowlist denial or missing binary
+  -- used to still report "opened in obsidian" in the status bar
+  local ok_x, res = pcall(sys.exec, opener, { uri })
+  if not ok_x or not res or (res.exit_code or 0) ~= 0 then
+    last_error = "obsidian open failed via " .. opener .. " (allowlist in plugin.ttt.json?)"
+    log_err(last_error)
+    return
+  end
   ttt.set_status_item("left", "ask", "opened in obsidian: " .. (rel ~= "" and rel or vname))
   ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
 end
@@ -421,9 +415,9 @@ end)
 -- IDE-awareness: keep context.json fresh for the pi side (Phase 2c-3)
 local events_ok, events = pcall(require, "ttt.events")
 if events_ok then
-  events.on("cursor.change", function(_path) write_context() end)
-  events.on("file.open", function(_path) write_context() end)
-  events.on("file.save", function(_path) write_context() end)
+  events.on("cursor.change", function(_path) write_context("cursor") end)
+  events.on("file.open", function(_path) write_context("open") end)
+  events.on("file.save", function(_path) write_context("save") end)
 else
   log_err("ttt.events not available; IDE context disabled")
 end

@@ -136,6 +136,12 @@ func (c *Client) Call(method string, params any, timeout time.Duration) (json.Ra
 	if err != nil {
 		return nil, err
 	}
+	// P13-B21: correlate the reply — a misrouted frame must not be accepted
+	// as the answer to a different request (dial-per-request makes it mostly
+	// theoretical today; the check makes it impossible tomorrow).
+	if reply.ID != "" && reply.ID != env.ID {
+		return nil, fmt.Errorf("%s: reply id %q does not match request %q", method, reply.ID, env.ID)
+	}
 	if reply.Error != nil {
 		return nil, reply.Error
 	}
@@ -165,9 +171,24 @@ type Event struct {
 type Subscription struct {
 	conn   net.Conn
 	Events chan Event
-	Err    error
+	errMu  sync.Mutex
+	err    error
 	closed chan struct{}
 	once   sync.Once
+}
+
+// Err reports the subscription's terminal error (nil while healthy).
+// P13-B21: mutex-guarded — the pump goroutine writes it while callers read.
+func (s *Subscription) Err() error {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return s.err
+}
+
+func (s *Subscription) setErr(err error) {
+	s.errMu.Lock()
+	s.err = err
+	s.errMu.Unlock()
 }
 
 // Subscribe opens a persistent subscription. The returned Subscription streams
@@ -225,7 +246,7 @@ func (s *Subscription) pump() {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue // idle keep-around
 			}
-			s.Err = err
+			s.setErr(err)
 			return
 		}
 		if len(line) == 0 {
@@ -237,7 +258,7 @@ func (s *Subscription) pump() {
 			Error *APIError `json:"error"`
 		}
 		if json.Unmarshal(line, &probe) == nil && probe.Error != nil {
-			s.Err = probe.Error
+			s.setErr(probe.Error)
 			return
 		}
 		var ev Event
@@ -353,13 +374,26 @@ func (c *Client) AgentPromptWait(name, text string, until []string, timeout time
 		} `json:"event"`
 	}
 	_ = json.Unmarshal(res, &out)
-	if st := out.Event.Data.AgentStatus; st != "" {
+		if st := out.Event.Data.AgentStatus; st != "" {
 		return st, nil
+	}
+	// herdr 0.9.3 live shape (crew-smoke 2026-10-05): the wait result rides
+	// as {"type":"agent_prompted","agent":{…,"agent_status":…}}
+	var prompted struct {
+		Type  string `json:"type"`
+		Agent struct {
+			AgentStatus string `json:"agent_status"`
+		} `json:"agent"`
+	}
+	if json.Unmarshal(res, &prompted) == nil && prompted.Agent.AgentStatus != "" {
+		return prompted.Agent.AgentStatus, nil
 	}
 	if out.Type == "wait_matched" {
 		return "idle", nil
 	}
-	return "idle", nil
+	// P13-B21: an unknown response frame must NOT silently count as "idle"
+	// (wire-shape drift surfaces as an error, not a false settle)
+	return "", fmt.Errorf("agent.prompt wait: unrecognised response shape %s", res)
 }
 
 // AgentFocus jumps the herdr UI to the pane hosting the named agent.

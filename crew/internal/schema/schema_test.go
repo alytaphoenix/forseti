@@ -26,14 +26,14 @@ edges:
 }
 
 func TestNameRule(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: Bad_Name, prompt: x}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: Bad_Name, prompt: x}\n"))
 	if err == nil || !strings.Contains(err.Error(), "herdr rule") {
 		t.Fatalf("want name-rule error, got %v", err)
 	}
 }
 
 func TestUnknownEdgeEndpoint(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nedges:\n  - {from: a, to: ghost}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nedges:\n  - {from: a, to: ghost}\n"))
 	if err == nil || !strings.Contains(err.Error(), "unknown to") {
 		t.Fatalf("want unknown-to error, got %v", err)
 	}
@@ -41,10 +41,13 @@ func TestUnknownEdgeEndpoint(t *testing.T) {
 
 func TestUnboundedCycleRejected(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
+  - {name: c, prompt: entry}
   - {name: a, prompt: x}
   - {name: b, prompt: y}
 edges:
+  - {from: c, to: a}
   - {from: a, to: b}
   - {from: b, to: a}
 `))
@@ -54,28 +57,122 @@ edges:
 }
 
 func TestBoundedCycleOK(t *testing.T) {
-	_, err := Load([]byte(`
+	c, err := Load([]byte(`
+name: t
 agents:
+  - {name: c, prompt: entry}
   - {name: a, prompt: x}
   - {name: b, prompt: y}
 edges:
+  - {from: c, to: a}
   - {from: a, to: b}
   - {from: b, to: a, max_visits: 2}
 `))
 	if err != nil {
 		t.Fatalf("bounded cycle should be valid, got %v", err)
 	}
+	if got := c.Entry(); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("entry = %v, want [c]", got)
+	}
+}
+
+func TestNoEntryRejected(t *testing.T) {
+	// P13 BUG-03: an all-cycle crew (no agent without incoming edges) can
+	// never start — must fail validation, not silently run nothing.
+	_, err := Load([]byte(`
+name: t
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+edges:
+  - {from: a, to: b, max_visits: 2}
+  - {from: b, to: a, max_visits: 2}
+`))
+	if err == nil || !strings.Contains(err.Error(), "no entry node") {
+		t.Fatalf("want no-entry error, got %v", err)
+	}
+}
+
+func TestDuplicateEdgeRejected(t *testing.T) {
+	// P13 BUG-12: duplicate (from,to) edges collide on the scheduler's
+	// "from>to" key — a guaranteed skip-event/dispatch confusion at runtime.
+	_, err := Load([]byte(`
+name: t
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+edges:
+  - {from: a, to: b}
+  - {from: a, to: b}
+`))
+	if err == nil || !strings.Contains(err.Error(), "duplicate edge") {
+		t.Fatalf("want duplicate-edge error, got %v", err)
+	}
+}
+
+func TestSelfLoopWithMaxVisitsOK(t *testing.T) {
+	// P13 BUG-22: the error text always promised self-loops are legal WITH
+	// max_visits (and the P13 scheduler re-arm makes them meaningful). A
+	// self-loop-only crew still needs an entry (BUG-03) — the loop is a retry
+	// mechanism on a node that is also reachable from an entry.
+	if _, err := Load([]byte(`
+name: t
+agents:
+  - {name: c, prompt: entry}
+  - {name: a, prompt: x}
+edges:
+  - {from: c, to: a}
+  - {from: a, to: a, max_visits: 2}
+`)); err != nil {
+		t.Fatalf("self-loop with max_visits should be valid, got %v", err)
+	}
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nedges:\n  - {from: a, to: a}\n"))
+	if err == nil || !strings.Contains(err.Error(), "self-loop") {
+		t.Fatalf("want self-loop error, got %v", err)
+	}
+}
+
+func TestCrewNameRule(t *testing.T) {
+	// P13 BUG-21: the crew name lands in run-log filenames — path-unsafe or
+	// empty names must fail validation.
+	_, err := Load([]byte("name: \"bad/name\"\nagents:\n  - {name: a, prompt: x}\n"))
+	if err == nil || !strings.Contains(err.Error(), "crew name") {
+		t.Fatalf("want crew-name error, got %v", err)
+	}
+	_, err = Load([]byte("name: \"\"\nagents:\n  - {name: a, prompt: x}\n"))
+	if err == nil || !strings.Contains(err.Error(), "crew name") {
+		t.Fatalf("want empty-crew-name error, got %v", err)
+	}
+}
+
+func TestUnrelatedEdgeDoesNotBoundCycle(t *testing.T) {
+	// P13 BUG-11: an edge that merely TOUCHES a cycle (one endpoint inside)
+	// must not satisfy the cycle's max_visits boundedness requirement.
+	_, err := Load([]byte(`
+name: t
+agents:
+  - {name: c, prompt: entry}
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+edges:
+  - {from: c, to: a, max_visits: 1}
+  - {from: a, to: b}
+  - {from: b, to: a}
+`))
+	if err == nil || !strings.Contains(err.Error(), "max_visits") {
+		t.Fatalf("want max_visits error (touching edge must not bound the cycle), got %v", err)
+	}
 }
 
 func TestBadWhenRegex(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"re:[(\"}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"re:[(\"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "bad regex") {
 		t.Fatalf("want bad regex error, got %v", err)
 	}
 }
 
 func TestDefaultKindAndWhen(t *testing.T) {
-	c, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b}\n"))
+	c, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b}\n"))
 	if err != nil {
 		t.Fatalf("want valid, got %v", err)
 	}
@@ -89,6 +186,7 @@ func TestDefaultKindAndWhen(t *testing.T) {
 
 func TestChecksValid(t *testing.T) {
 	c, err := Load([]byte(`
+name: t
 agents:
   - {name: planner, model: m, prompt: plan}
 checks:
@@ -103,21 +201,22 @@ checks:
 }
 
 func TestCheckUnknownAfter(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nchecks:\n  - {after: ghost, run: \"true\"}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nchecks:\n  - {after: ghost, run: \"true\"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "not an agent") {
 		t.Fatalf("want unknown-after error, got %v", err)
 	}
 }
 
 func TestCheckEmptyRun(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nchecks:\n  - {after: a, run: \"  \"}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nchecks:\n  - {after: a, run: \"  \"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "empty run") {
 		t.Fatalf("want empty-run error, got %v", err)
 	}
 }
 
 func TestRouteDefaults(t *testing.T) {
-	c, err := Load([]byte(`
+	c, err := Load([]byte(`name: t
+
 routes:
   - id: auto-pool
     efficient: halogen/halogen-qwen3.8-flash-next
@@ -138,7 +237,8 @@ agents:
 }
 
 func TestRouteModelMutuallyExclusive(t *testing.T) {
-	_, err := Load([]byte(`
+	_, err := Load([]byte(`name: t
+
 routes:
   - {id: r1, efficient: e, capable: c}
 agents:
@@ -150,35 +250,36 @@ agents:
 }
 
 func TestRouteUnknownRef(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, route: nosuch, prompt: x}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, route: nosuch, prompt: x}\n"))
 	if err == nil || !strings.Contains(err.Error(), "unknown route") {
 		t.Fatalf("want unknown-route error, got %v", err)
 	}
 }
 
 func TestRouteMissingPool(t *testing.T) {
-	_, err := Load([]byte("routes:\n  - {id: r1, efficient: e}\nagents:\n  - {name: a, model: m, prompt: x}\n"))
+	_, err := Load([]byte("name: t\nroutes:\n  - {id: r1, efficient: e}\nagents:\n  - {name: a, model: m, prompt: x}\n"))
 	if err == nil || !strings.Contains(err.Error(), "required") {
 		t.Fatalf("want missing-pool error, got %v", err)
 	}
 }
 
 func TestWatchValidation(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: ghost, match: \"x\"}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: ghost, match: \"x\"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "not an agent") {
 		t.Fatalf("want unknown-node error, got %v", err)
 	}
-	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: a, match: \"[(\"}\n"))
+	_, err = Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: a, match: \"[(\"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "bad regex") {
 		t.Fatalf("want bad regex error, got %v", err)
 	}
-	if _, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: a, match: \"TESTS FAILED\"}\n")); err != nil {
+	if _, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nwatch:\n  - {node: a, match: \"TESTS FAILED\"}\n")); err != nil {
 		t.Fatalf("valid watch rejected: %v", err)
 	}
 }
 
 func TestLayaEdgeGate(t *testing.T) {
 	c, err := Load([]byte(`
+name: t
 agents:
   - {name: triage, model: m, prompt: plan}
   - {name: builder, model: m, prompt: build}
@@ -201,15 +302,15 @@ edges:
 }
 
 func TestLayaEdgeValidation(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:\"}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:\"}\n"))
 	if err == nil || !strings.Contains(err.Error(), "empty laya instructions") {
 		t.Fatalf("want empty-instructions error, got %v", err)
 	}
-	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, min_confidence: 0.8}\n"))
+	_, err = Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, min_confidence: 0.8}\n"))
 	if err == nil || !strings.Contains(err.Error(), "only apply to laya") {
 		t.Fatalf("want min_confidence-scope error, got %v", err)
 	}
-	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:ship it\", min_confidence: 2}\n"))
+	_, err = Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b, when: \"laya:choice:ship it\", min_confidence: 2}\n"))
 	if err == nil || !strings.Contains(err.Error(), "(0,1]") {
 		t.Fatalf("want min_confidence-range error, got %v", err)
 	}
@@ -217,6 +318,7 @@ func TestLayaEdgeValidation(t *testing.T) {
 
 func TestPhasesValid(t *testing.T) {
 	c, err := Load([]byte(`
+name: t
 agents:
   - {name: explorer, prompt: explore}
   - {name: coder, prompt: "build {{ .explorer }}"}
@@ -245,7 +347,7 @@ edges:
 }
 
 func TestNoPhasesBackcompat(t *testing.T) {
-	c, err := Load([]byte("agents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b}\n"))
+	c, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\n  - {name: b, prompt: y}\nedges:\n  - {from: a, to: b}\n"))
 	if err != nil {
 		t.Fatalf("phase-less crew must stay valid, got %v", err)
 	}
@@ -256,6 +358,7 @@ func TestNoPhasesBackcompat(t *testing.T) {
 
 func TestPhaseDuplicateName(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
   - {name: b, prompt: y}
@@ -270,6 +373,7 @@ phases:
 
 func TestPhaseNameRule(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
 phases:
@@ -282,6 +386,7 @@ phases:
 
 func TestPhaseUnknownAgent(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
 phases:
@@ -294,6 +399,7 @@ phases:
 
 func TestPhaseDoubleMembership(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
   - {name: b, prompt: y}
@@ -308,6 +414,7 @@ phases:
 
 func TestPhaseUnphasedAgentRejected(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
   - {name: b, prompt: y}
@@ -320,11 +427,11 @@ phases:
 }
 
 func TestPhaseEmptyFields(t *testing.T) {
-	_, err := Load([]byte("agents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, agents: [a]}\n"))
+	_, err := Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, agents: [a]}\n"))
 	if err == nil || !strings.Contains(err.Error(), "empty instructions") {
 		t.Fatalf("want empty-instructions error, got %v", err)
 	}
-	_, err = Load([]byte("agents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, instructions: do}\n"))
+	_, err = Load([]byte("name: t\nagents:\n  - {name: a, prompt: x}\nphases:\n  - {name: p, instructions: do}\n"))
 	if err == nil || !strings.Contains(err.Error(), "no agents") {
 		t.Fatalf("want no-agents error, got %v", err)
 	}
@@ -332,6 +439,7 @@ func TestPhaseEmptyFields(t *testing.T) {
 
 func TestPhaseBackwardEdge(t *testing.T) {
 	_, err := Load([]byte(`
+name: t
 agents:
   - {name: a, prompt: x}
   - {name: b, prompt: y}

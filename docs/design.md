@@ -794,3 +794,79 @@ Boundaries (Phase 12): no write-time extraction pipeline (future item when
 volume justifies an LLM pass); no entity/graph store (Mem0 retired their own
 — co-occurrence linking beat typed triplets in practice); history table for
 merged facts is a documented future item; memory stays advisory context.
+
+## Phase 13 — full-repo bug review & scheduler semantics (as-built 2026-10-05)
+
+Four review agents over the whole repo; every confirmed bug fixed and re-verified
+(full table + verification evidence: docs/spikes.md S24). The changes that alter
+contract or semantics — mechanical fixes are in the code and the spike record:
+
+### Scheduler semantics (crew/internal/runner)
+
+- **Fan-in is AND**: a node dispatches only when EVERY incoming edge has fired
+  (`when:` satisfied). A missed edge (gate not matched) marks the edge and the
+  target is `skipped` — transitively for pure-downstream targets.
+- **Back edges gate re-dispatch only**: cycle back edges (target can reach the
+  source; computed by `schema.BackEdges()`) are ignored for the INITIAL readiness
+  check — strict AND over them deadlocks every cycle by construction. Once the
+  target has run, its back edges participate like any edge: a firing back edge
+  **re-arms** a settled target to pending, bounded by `max_visits` (N allowed
+  fires; the skip event lands on attempt N+1). Self-loops are the same
+  mechanism on an entry-reachable node (a self-loop-only crew has no entry and
+  is rejected).
+- **Entry validation**: a crew with no entry node (every node has an incoming
+  edge) is rejected at `Validate()`; so are duplicate `(from,to)` edges (they
+  collided on the scheduler's edge key) and invalid crew names
+  (`schema.ValidName`: `[a-z][a-z0-9_-]{0,31}` — names reach run-log filenames
+  and view sources).
+- **No emit under lock**: skip/fail bookkeeping collects events under `r.mu` and
+  emits after unlocking (emit → status bridge → … was a reentrancy hazard).
+- `Run.Snapshot()` returns VALUE copies; `Run.NodeSnapshot()` single-node read.
+  The TUI never dereferences a shared `*NodeState` the runner is writing.
+
+### Event + verdict contract
+
+- New event types: `check_skip` (after-node skipped → the check is skipped —
+  NOT a failure; only a failed after-node sets `check_fail`) and `teardown`
+  (teardown notes/failures; they must never emit `run_end`/`node_failed` — a
+  second `run_end` used to overwrite watch's summary and defeat its exit code).
+- Exit verdict (TUI + headless `watch`, identical rules): failure = any failed
+  node, or a `check_fail` event, or a **blocked** node (a blocked run needs a
+  human — exit nonzero) — blocked also forces KeepTab + KeepWorktree so the
+  state survives for takeover.
+- The empty-settle re-prompt guard is LAN-box-only (`halogen`/`valhalla` in the
+  resolved model) — on healthy models it false-positived on every
+  short-prompt/short-answer node (double cost).
+
+### Client fixes worth remembering
+
+- herdrd: the live 0.9.3 `agent.prompt` + `wait` response is
+  `{"type":"agent_prompted","agent":{…,"agent_status":…}}` — parse it; an
+  unknown shape is an ERROR now (B21 caught itself: the first P13 smoke run
+  failed loudly instead of false-settling).
+- switchyard: shared 2 s `http.Client`; restore = delete the `switchyard` key
+  from a FRESH read of models.json (never byte-restore); stale-pre-entry probe
+  sweeps dead prior runs and refuses live ones.
+- forseti-tools: executor failures set `isError`; args pass `ValidateArgs` on
+  BOTH the MCP and CLI paths; unquoted `{{ .param }}` in shell templates is a
+  Load-time refusal (injection via model-supplied values).
+
+### Gates (post-P13 state)
+
+- `go build/vet/test ./...` green (new scheduler unit tests incl.
+  `TestNodeReadyFanInAND`, `TestFireEdgeReArmsSettledTarget`).
+- `scripts/memory-eval.sh` — SELF-CONTAINED now (throwaway service, private
+  port, scratch SQLite; no shared-DB pollution): **13/13** incl. two new
+  error-path probes (forget namespace guard → 404 + row survives; `k=0` → 422).
+- `scripts/memory-embed-eval.sh` — real gate: incumbent sanity floor 4/5 drives
+  the exit code (was always 0; a swapped tuple-unpack hid behind short-circuit).
+- `scripts/laya-eval.sh` 9/9; `scripts/crew-smoke.sh` PASS (checked + phased
+  crews) with `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next` — the halogen
+  registry is gone (box rebranded) and the opencode-go key is out of funds.
+- `scripts/vault-init.sh` — daily template renders via `__TODAY__` (Lua),
+  stamping touches fresh-created files only, portable in-place sed, legacy
+  `PLACEHOLDERDATE` templates migrated (live vault repaired).
+
+Boundaries (Phase 13): the review's deferred items (memory `/clear`, auto-links
+at write, history audit table, importance-boost calibration, shared-DB probe-row
+cleanup, laya-in-memory) are planned as 12.5/12.6 — see the handoff plan file.

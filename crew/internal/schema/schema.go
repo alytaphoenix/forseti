@@ -16,6 +16,10 @@ import (
 // nameRule mirrors herdr's live-agent naming: [a-z][a-z0-9_-]{0,31}.
 var nameRule = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
+// ValidName reports whether name satisfies the shared naming rule (agents,
+// phases, crew names — the TUI forms validate with it too).
+func ValidName(name string) bool { return nameRule.MatchString(name) }
+
 var validStatuses = map[string]bool{
 	"idle": true, "working": true, "blocked": true, "done": true, "unknown": true,
 }
@@ -120,6 +124,11 @@ var validRouteTypes = map[string]bool{"stage_router": true}
 var validPickers = map[string]bool{"efficient_first": true, "capable_first": true}
 
 func (c *Crew) Validate() error {
+	// P13 BUG-21: the crew name lands in run-log filenames and herdr view/tab
+	// sources — empty or path-unsafe names broke log creation silently.
+	if !nameRule.MatchString(c.Name) {
+		return fmt.Errorf("crew name %q violates herdr rule [a-z][a-z0-9_-]{0,31} (it names run logs and view sources)", c.Name)
+	}
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("crew has no agents")
 	}
@@ -245,7 +254,9 @@ func (c *Crew) Validate() error {
 		if !seen[e.To] {
 			return fmt.Errorf("edge %d: unknown to %q", i, e.To)
 		}
-		if e.From == e.To {
+		if e.From == e.To && e.MaxVisits == 0 {
+			// P13 BUG-22: a self-loop WITH max_visits is legal (the error text
+			// always promised it; the P13 scheduler re-arms make it meaningful)
 			return fmt.Errorf("edge %d: self-loop on %q needs max_visits", i, e.From)
 		}
 		if e.When == "" {
@@ -281,7 +292,33 @@ func (c *Crew) Validate() error {
 			}
 		}
 	}
-	// cycles require at least one bounded edge inside each cycle
+	// P13 BUG-12: duplicate (from,to) edges are a typo class that collides on
+	// the scheduler's "from>to" key — reject at validation.
+	edgeSeen := map[string]bool{}
+	for i, e := range c.Edges {
+		key := e.From + ">" + e.To
+		if edgeSeen[key] {
+			return fmt.Errorf("edge %d: duplicate edge %s (same from→to declared twice)", i, key)
+		}
+		edgeSeen[key] = true
+	}
+	// P13 BUG-03: a crew whose every node has an incoming edge has NO entry —
+	// nothing can ever start (fan-in AND semantics); fail loudly at validation.
+	incomingCount := map[string]int{}
+	for _, e := range c.Edges {
+		incomingCount[e.To]++
+	}
+	entry := false
+	for _, a := range c.Agents {
+		if incomingCount[a.Name] == 0 {
+			entry = true
+			break
+		}
+	}
+	if !entry {
+		return fmt.Errorf("crew has no entry node (every agent has an incoming edge) — nothing can start; an all-cycle crew needs an entry agent with no incoming edges")
+	}
+	// cycles require at least one bounded edge ON each cycle
 	for _, cyc := range c.findCycles() {
 		bounded := false
 		for _, e := range c.Edges {
@@ -297,9 +334,12 @@ func (c *Crew) Validate() error {
 	return nil
 }
 
+// inCycle (P13 BUG-11): true only for edges ON the cycle — both endpoints in
+// the cycle AND consecutive along it. The old any-endpoint test let an
+// unrelated touching edge satisfy the boundedness requirement.
 func inCycle(cyc []string, e Edge) bool {
-	for _, n := range cyc {
-		if n == e.From || n == e.To {
+	for i, n := range cyc {
+		if e.From == n && e.To == cyc[(i+1)%len(cyc)] {
 			return true
 		}
 	}
@@ -367,6 +407,46 @@ func (c *Crew) Entry() []string {
 		}
 	}
 	return out
+}
+
+// BackEdges returns "from>to" keys of edges that close a directed cycle (the
+// target can reach the source — self-loops included). P13: these are cycle
+// RE-ENTRY edges — the scheduler does not require them for INITIAL dispatch
+// (strict fan-in AND over a back edge would deadlock every cycle: the target
+// would wait for an edge that can only fire after the target itself ran).
+func (c *Crew) BackEdges() map[string]bool {
+	adj := map[string][]string{}
+	for _, e := range c.Edges {
+		adj[e.From] = append(adj[e.From], e.To)
+	}
+	out := map[string]bool{}
+	for _, e := range c.Edges {
+		if reaches(adj, e.To, e.From) {
+			out[e.From+">"+e.To] = true
+		}
+	}
+	return out
+}
+
+// reaches reports whether `to` is reachable from `from` (small graphs; the
+// trivial self case is true only when a real edge loops back).
+func reaches(adj map[string][]string, from, to string) bool {
+	seen := map[string]bool{}
+	stack := []string{from}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, m := range adj[n] {
+			if m == to {
+				return true
+			}
+			if !seen[m] {
+				seen[m] = true
+				stack = append(stack, m)
+			}
+		}
+	}
+	return false
 }
 
 // Agent looks up an agent by name.

@@ -343,6 +343,33 @@ resolved (primary sources: arXiv full texts, Mem0 OSS source, official docs —
 Boundaries (future items): write-time extraction pipeline; entity/graph
 store; history table for merged facts; memory remains advisory context.
 
+## Phase 13 — full-repo bug review — ✅ **implemented + gates green** (2026-10-05)
+
+User instruction: review the whole repo, fix ALL confirmed bugs, then commit+push.
+Four read-only review agents (memory service; Go runner+schema; pi/ttt/shell;
+Go cmd+clients); every finding adjudicated, fixed, re-verified. Record:
+docs/spikes.md S24; semantics as-built: docs/design.md Phase 13.
+
+| Task | Status |
+|---|---|
+| 13-1 scheduler | ✅ fan-in **AND** + edge fire/miss bookkeeping + back-edge re-dispatch (`schema.BackEdges`); no emit under lock; µs run-log names; Snapshot value copies; unit tests incl. `TestNodeReadyFanInAND`/`TestFireEdgeReArmsSettledTarget` |
+| 13-2 schema | ✅ rejects entry-less crews, duplicate (from,to) edges, invalid crew names (`ValidName`); `inCycle` consecutive-endpoints fix; self-loop allowed only with `max_visits` |
+| 13-3 runner contract | ✅ `check_skip` + `teardown` events; blocked at run end → KeepTab+KeepWorktree + nonzero verdict (TUI ≡ watch); empty-settle retry box-only (halogen/valhalla) |
+| 13-4 clients | ✅ herdrd: `agent_prompted` live shape + unknown-shape error, reply-ID correlation, subscription mutex; switchyard: 2 s client, key-delete restore w/ ownership check, stale-pre-entry sweep, quoted TOML keys |
+| 13-5 forseti-tools | ✅ isError on executor failure, http-probe body match, `ValidateArgs` serve+cli, unquoted-`{{ .param }}` lint, dup tool names, `in.Err()` on stdin |
+| 13-6 cmd/forseti-crew | ✅ event-based exit verdict (blocked+checks), saveCrew writes -f path, watch check-reset per replay, runewidth pad/height clamp, display order + phase headers, ctrl+c/shift+tab, tool probe off the event loop, phase-form validation, NArg/timeout arg guards |
+| 13-7 memory service | ✅ M0–M22 (see S24): forget namespace guard, BEGIN IMMEDIATE dedup, gate applies to FTS-only ids, extra=forbid, un-supersede on forget, export `_meta` + import validation, DIM/model lock, schema v3 (FTS `AFTER UPDATE OF text`) — memory-eval **13/13** |
+| 13-8 serve scripts | ✅ stop=pid-death + identity check + boot nonce + guarded `adopt()` (live-verified restarts + laya adoption; laya-eval 9/9) |
+| 13-9 pi extension | ✅ fetch timeouts everywhere, `Type.Integer` ids/lines/k, JSON-encoded frontmatter + `notes/` mkdir, `pendingEdits.clear()` per turn, dead code out; deployed to `~/.pi/agent/extensions/forseti.ts` |
+| 13-10 ttt plugin | ✅ wikilink span scan, backlinks literal find, per-object pi-kind agent filter, throttle cursor-only, obsidian nil-vault/URI/exec-result guards, manifest `open`+`xdg-open`; duplicate `review()` removed; deployed by COPY |
+| 13-11 herdr-plugin scripts | ✅ `squote`/`json_escape` guards (pane-run commands, state files, jump handoff), repo/vault state written BEFORE reuse-exit, lazygit templates use sprig `quote` |
+| 13-12 dev scripts | ✅ crew-smoke: mktemp scratch + trap, failure diagnostics; crew-tui-drive: repo-relative BIN, saved-<path> match, rmtree on PASS; vault-init: `__TODAY__` daily template + fresh-only stamp + portable sed + legacy migration (live vault repaired) |
+| 13-13 gates self-contained | ✅ memory-eval spawns its own service (scratch DB, private port) — no shared-DB pollution; embed-eval exit code gates incumbent floor (4/5) |
+| 13-14 final gates | ✅ go build/vet/test; memory-eval 13/13; laya-eval 9/9; embed-eval 5/5+floor; **crew-smoke PASS** (checked+phased, `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next`) |
+
+Deliberate skip: memory-service `closing()` refactor (CPython refcounts already
+close per-request conns; churn without observed failure).
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in

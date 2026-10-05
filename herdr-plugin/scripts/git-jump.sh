@@ -15,6 +15,8 @@ esac
 
 state_dir="${FORSETI_TTT_STATE:-$HOME/.config/ttt/plugins/forseti}"
 mkdir -p "$state_dir" 2>/dev/null || true
-printf '{"path":"%s","line":1}\n' "$abs" > "$state_dir/jump.json"
+# P13-B15: paths with \ or " would corrupt the handoff JSON
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+printf '{"path":"%s","line":1}\n' "$(json_escape "$abs")" > "$state_dir/jump.json"
 
 curl -s -m 5 -X POST --data 'exec "Forseti: Jump"' http://127.0.0.1:4242/exec >/dev/null 2>&1 || true

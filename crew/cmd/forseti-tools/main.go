@@ -157,7 +157,16 @@ func cmdServe() {
 					continue
 				}
 			}
-			res, err := spec.Call(context.Background(), args)
+			// P13-B13: arguments are validated against the declared properties —
+		// model-supplied values used to flow into executors unchecked.
+		if err := spec.ValidateArgs(args); err != nil {
+			reply(id, map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "tool rejected arguments: " + err.Error()}},
+				"isError": true,
+			})
+			continue
+		}
+		res, err := spec.Call(context.Background(), args)
 			if err != nil {
 				reply(id, map[string]any{
 					"content": []map[string]any{{"type": "text", "text": "tool error: " + err.Error()}},
@@ -180,10 +189,11 @@ func cmdServe() {
 			if text == "" {
 				text = fmt.Sprintf("ok (exit %d)", res.ExitCode)
 			}
-			isErr := spec.Executor.Type == "http" && (res.Status < 200 || res.Status > 299)
-			if isErr && res.ExitCode == 0 {
-				res.ExitCode = 1
-			}
+			// P13-B6: a shell executor's non-zero exit IS an error — the model
+			// used to receive isError:false for a failed command and reason on
+			// garbage (the dead ExitCode mutation is gone too).
+			isErr := (spec.Executor.Type == "http" && (res.Status < 200 || res.Status > 299)) ||
+				(spec.Executor.Type == "shell" && res.ExitCode != 0)
 			reply(id, map[string]any{
 				"content": []map[string]any{{"type": "text", "text": text}},
 				"isError": isErr,
@@ -193,6 +203,12 @@ func cmdServe() {
 				rpcErr(id, -32601, "method not found: "+req.Method)
 			}
 		}
+	}
+	// P13-B12: a line > 1 MiB made the Scanner fail SILENTLY (exit 0, the MCP
+	// server just vanished mid-session) — surface it instead of exiting clean.
+	if err := in.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, "forseti-tools: stdin:", err)
+		os.Exit(1)
 	}
 }
 
@@ -259,6 +275,12 @@ func cmdCall(args []string) {
 			fmt.Fprintln(os.Stderr, "bad args json:", err)
 			os.Exit(2)
 		}
+	}
+	// P13-B13: same argument validation as the MCP path (a call rejected
+	// over the wire must not succeed through the CLI back door)
+	if err := spec.ValidateArgs(argsMap); err != nil {
+		fmt.Fprintln(os.Stderr, "rejected arguments:", err)
+		os.Exit(2)
 	}
 	res, err := spec.Call(context.Background(), argsMap)
 	if err != nil {

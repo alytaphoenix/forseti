@@ -458,3 +458,58 @@ notes). Findings for a <10k-row local SQLite service:
 - pi extension surfaces verified: factory + lifecycle rules, `tool_call`/`tool_result`
   events with toolName+input (edit inputs carry path + old/new strings),
   `registerCommand`, TS via jiti, project-local install needs `-a`.
+
+## S24 — P13 full-repo bug review (Phase 13, 2026-10-05) ✅ resolved (live + test)
+
+Four read-only review agents over the whole repo (memory service; Go runner+schema;
+pi/ttt/shell surfaces; Go cmd+clients). Every finding was adjudicated, fixed, and
+re-verified (unit test, live probe, or gate). The non-obvious ones — the rest are
+mechanical (missing timeouts, unchecked errors, dead code):
+
+| ID | Area | Finding | Fix | Verified |
+|---|---|---|---|---|
+| BUG-05 | scheduler | fan-in was OR-any: a diamond target dispatched on its FIRST parent | explicit AND (`nodeReady` waits for every incoming edge); `fireEdge`/`missEdge` bookkeeping | unit `TestNodeReadyFanInAND` |
+| BUG-02 | scheduler | a re-firing edge into a settled node was dropped → `max_visits` cycles could never loop | `fireEdge` re-arms a done/skipped target to pending (bounded by `max_visits`) | unit `TestFireEdgeReArmsSettledTarget` |
+| — | scheduler | **fan-in AND + cycles deadlock by construction**: a back edge (target can reach source) can only fire after its own target ran | `schema.BackEdges()` (reachability DFS); `nodeReady` skips back edges for INITIAL dispatch — they gate re-dispatch only | unit tests + `crew/examples` all validate |
+| BUG-01 | scheduler | `emit` called under `r.mu` → reentrancy (emit→statusBridge→…) | skip events collected under lock, emitted after unlock | unit (skip drain) |
+| BUG-09 | runner | a run ending `blocked` tore down the tab/worktree — the human had nothing to take over | blocked forces KeepTab + KeepWorktree | code read + smoke |
+| BUG-25 | checks | a check whose after-node was skipped counted `check_fail` | `check_skip` event; only a genuinely failed after-node sets fail | smoke (checks crew live) |
+| BUG-11 | schema | `inCycle` matched any edge TOUCHING a cycle → an unrelated max_visits edge satisfied the bound | `inCycle` = both endpoints consecutive on the cycle | unit `TestUnrelatedEdgeDoesNotBoundCycle` |
+| BUG-12/03 | schema | duplicate (from,to) edges collided on the scheduler key; an all-cycle crew had no entry and silently ran nothing | both rejected at `Validate()` | unit `TestDuplicateEdgeRejected`/`TestNoEntryRejected` |
+| BUG-21 | schema | crew `name` was unchecked → landed in run-log filenames + view sources | `Validate()` enforces `[a-z][a-z0-9_-]{0,31}` (exported as `schema.ValidName`) | unit `TestCrewNameRule` |
+| B21 | herdrd | `AgentPromptWait` returned `"idle"` for ANY unrecognised response (wire drift = false settle) | parse the observed 0.9.3 `agent_prompted` shape; unknown shape → error | **caught by crew-smoke** (first run failed loudly, fix verified on re-run) |
+| B10 | switchyard | `http.Get` on the default client (no deadline) → a wedged proxy hangs a run forever | shared `hc = &http.Client{Timeout: 2s}` | code |
+| B9 | switchyard | byte-restore of `models.json` clobbered edits made mid-run; no guard vs a concurrent crew | restore = remove the `switchyard` KEY (re-read fresh); refuse a live pre-existing entry, sweep a dead (stale-port) one | code |
+| B22 | switchyard | `[llm_clients.%s]` with a dotted provider id silently became a nested TOML table | quoted table key `%q` | code |
+| B6/B7/B13 | toolspec | non-2xx HTTP set a dead `ExitCode` instead of `isError`; the http probe matched `expect_contains` against empty stdout; model-supplied tool args reached executors unchecked | shell+http both set `isError`; http probe matches on `res.Body`; `ValidateArgs` (declared-type + reject-undeclared) on serve AND cli | code |
+| B13 | toolspec | a `{{ .repo }}` shell template interpolated a model value UNQUOTED (`repo="; rm -rf ~"` = execution) | `lintUnquotedParams` refuses it at Load (must write `{{ q .repo }}`) | code |
+| M4 | memory | semantic min_score gate unioned with the FTS leg → a 0.05-cosine lexical twin took full dual-leg credit | only FTS-ONLY ids bypass the gate | live probe + eval |
+| M7 | memory | two concurrent identical writes raced past the dedup SELECT → permanent twins | `BEGIN IMMEDIATE` around dedup+insert (also supersedes target mark) | live |
+| M10 | memory | forgetting a superseding row orphaned its predecessor (`superseded_by` dangled at a deleted id) | forget un-supersedes children | live probe (predecessor visible again) |
+| M1 | memory | `/forget` had no namespace guard (any caller could delete any row) | 404 unless owner-or-shared; `agent` field added | live probe + eval row |
+| M14 | memory | extra request fields were silently dropped (the links-lost incident mechanism) | `model_config = ConfigDict(extra="forbid")` on all requests | live probe (422) |
+| M16 | memory | `/export`→`/import` across two embedding models mixed vector spaces silently | `_meta` header (model+dim); mismatched restore 422s | live probe |
+| M2 | serve | `stop` waited on `/health` to fail, not the process to die → restart spawned a corpse against a dying server; `kill -0` on a recycled pid killed a bystander | wait pid-death; `ps` identity check; `/health` boot nonce | two back-to-back restarts, each nonce-verified |
+| — | serve | a healthy server with a lost/empty pidfile was unmanageable (old `rm -f` bug class) | `adopt()`: manage it only on a UNIQUE pgrep of the exact venv/script path | live (adopted the unowned laya, eval 9/9) |
+| M21 | gates | embed-eval always exited 0 (and had a swapped tuple-unpack hidden by short-circuiting) | incumbent sanity floor 4/5 gates the exit code | live 5/5 → exit 0 |
+| — | vault-init | daily template was date-STAMPED at scaffold (PLACEHOLDERDATE) but Lua daily_note substitutes `__TODAY__` → every daily note got a stale/literal date | daily template ships `__TODAY__`; stamp fresh-created-only; legacy `PLACEHOLDERDATE` daily template migrated | live (scaffold + migrate + real vault repaired) |
+
+Skipped deliberately: memory-service `closing()` refactor of per-request
+connections — CPython refcounting already closes them deterministically; the
+change was churn without an observed failure.
+
+**Contract additions this phase** (all as-built in the code, this is the record):
+- `Event.Type` gained `check_skip` (after-node skipped → check skipped, not failed)
+  and `teardown` (teardown's own notes/failures — a second `run_end` used to
+  overwrite watch's summary + defeat its exit code).
+- `schema.BackEdges()` — the scheduler's initial-vs-re-entry distinction.
+- `schema.ValidName()` — shared by crew-name validation and the TUI phase form.
+- `Run.Snapshot()` returns VALUE copies (+ new `Run.NodeSnapshot`) so the TUI
+  never reads a shared `*NodeState` the runner is writing.
+- Blocked node at run end forces KeepTab + KeepWorktree.
+- The LAN decision/model box (192.168.0.142) rebranded **halogen → valhalla**
+  (registry now `valhalla/valhalla-flash-next` + a 27b); the opencode-go key is
+  out of funds. The crew empty-settle guard matches `valhalla` too; E2E gates
+  run `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next`.
+- memory-eval is SELF-CONTAINED (scratch service on a private port + scratch
+  SQLite; 13/13 with two new error-path probes: forget namespace guard, k=0→422).

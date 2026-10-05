@@ -139,7 +139,9 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 	var clients strings.Builder
 	for _, p := range names {
 		prov := reg.Providers[p]
-		fmt.Fprintf(&clients, "\n[llm_clients.%s]\nformat = \"openai_chat\"\nbase_url = %q\n", p, prov.BaseURL)
+		// P13-B22: quoted table keys — a provider id containing '.' (e.g.
+		// "open.ai") silently became a NESTED TOML table and corrupted the config
+		fmt.Fprintf(&clients, "\n[llm_clients.%q]\nformat = \"openai_chat\"\nbase_url = %q\n", p, prov.BaseURL)
 		if prov.APIKey != "" {
 			val, err := apiKeyValue(prov.APIKey)
 			if err != nil {
@@ -200,7 +202,7 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	for time.Now().Before(deadline) {
 		if p.alive() {
-			resp, err := http.Get(base + "/health")
+		resp, err := hc.Get(base + "/health")
 			if err == nil {
 				resp.Body.Close()
 				if resp.StatusCode == 200 {
@@ -249,8 +251,17 @@ func (p *Proxy) ProviderEntry(routeIDs []string) map[string]any {
 	}
 }
 
+// hc bounds every switchyard HTTP call (P13-B10: the default client with no
+// deadline could hang a run forever on a half-open server — the 15 s health
+// loop only checked its deadline BETWEEN blocking calls).
+var hc = &http.Client{Timeout: 2 * time.Second}
+
 // MaterializeProvider writes the switchyard provider into ~/.pi/agent/models.json
-// and returns a restore function putting the previous bytes back.
+// and returns a restore function.
+// P13-B9: restore REMOVES the "switchyard" key (never byte-restores) — a
+// crash mid-run used to leave a dead provider pointing at a dead port, and a
+// byte-restore clobbered any models.json edit made during the run. A stale
+// entry from a previously crashed run is detected (port probe) and swept.
 func (p *Proxy) MaterializeProvider(routeIDs []string) (func(), error) {
 	path, err := piModelsPath()
 	if err != nil {
@@ -268,6 +279,14 @@ func (p *Proxy) MaterializeProvider(routeIDs []string) (func(), error) {
 	if !ok {
 		return nil, fmt.Errorf("pi models.json has no providers map")
 	}
+	if prev, exists := prov["switchyard"]; exists {
+		if dead := prevStale(prev); dead {
+			// sweep: a leftover from a crashed run (dead port) — overwrite
+			delete(prov, "switchyard")
+		} else {
+			return nil, fmt.Errorf("pi models.json already has a LIVE switchyard provider — another crew run may be active; refusing to stomp it")
+		}
+	}
 	prov["switchyard"] = p.ProviderEntry(routeIDs)
 	out, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
@@ -277,14 +296,51 @@ func (p *Proxy) MaterializeProvider(routeIDs []string) (func(), error) {
 		return nil, err
 	}
 	restore := func() {
-		_ = os.WriteFile(path, orig, 0o644)
+		// key-removal restore: unmarshal fresh (the user may have edited the
+		// file during the run), delete our key, write back.
+		if fresh, err := os.ReadFile(path); err == nil {
+			var reg2 map[string]any
+			if json.Unmarshal(fresh, &reg2) == nil {
+				if prov2, ok := reg2["providers"].(map[string]any); ok {
+					if ours, _ := prov2["switchyard"].(map[string]any); ours != nil {
+						if baseUrl, _ := ours["baseUrl"].(string); baseUrl == fmt.Sprintf("http://127.0.0.1:%d/v1", p.Port) {
+							delete(prov2, "switchyard")
+							if b, err := json.MarshalIndent(reg2, "", "  "); err == nil {
+								_ = os.WriteFile(path, b, 0o644)
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+		_ = os.WriteFile(path, orig, 0o644) // fallback: original bytes
 	}
 	return restore, nil
 }
 
+// prevStale probes a pre-existing switchyard entry: healthy → false (live
+// owner), unreachable → true (husk from a crashed run, safe to sweep).
+func prevStale(prev any) bool {
+	m, ok := prev.(map[string]any)
+	if !ok {
+		return true
+	}
+	baseUrl, _ := m["baseUrl"].(string)
+	if baseUrl == "" {
+		return true
+	}
+	resp, err := hc.Get(strings.TrimSuffix(baseUrl, "/") + "/models")
+	if err != nil {
+		return true
+	}
+	resp.Body.Close()
+	return resp.StatusCode >= 500
+}
+
 // Stats fetches GET /v1/stats.
 func (p *Proxy) Stats() (map[string]any, error) {
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/stats", p.Port))
+	resp, err := hc.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/stats", p.Port))
 	if err != nil {
 		return nil, err
 	}

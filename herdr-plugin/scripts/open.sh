@@ -13,6 +13,12 @@ EDITOR_LABEL="${FORSETI_EDITOR_LABEL:-forseti}"
 
 # --- helpers -------------------------------------------------------------
 
+# P13-B15: a path/dir containing spaces or quotes used to desugar the command
+# TYPED into a pane (pane run is not exec — the pane's shell re-parses it).
+squote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# P13-B15: minimal JSON string escaping for state files (paths with \ or ")
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
 json_field() {
   # grep/sed JSON extraction, mirroring ttt.editor's parser (no jq dependency).
   printf '%s' "$1" \
@@ -47,7 +53,17 @@ if [ -n "${HERDR_PLUGIN_CONTEXT_JSON:-}" ]; then
 fi
 dir="${TTT_TARGET_DIR:-${dir:-.}}"
 
-# --- 2. idempotency: reuse a live pi agent instead of double-spawning ----
+# --- 2. ttt-side state files (vault + crew bridge) -------------------------
+# P13-B16: written BEFORE the reuse-exit below — reusing a live agent with
+# stale vault/repo state used to leave the Lua badge + vault features pointed
+# at the previous invocation's paths.
+VAULT_ROOT="${FORSETI_VAULT:-$HOME/forseti}"
+printf '{"vault":"%s"}\n' "$(json_escape "$VAULT_ROOT")" \
+  > "$HOME/.config/ttt/plugins/forseti/vault.json" 2>/dev/null || true
+printf '{"repo":"%s"}\n' "$(json_escape "$dir")" \
+  > "$HOME/.config/ttt/plugins/forseti/repo.json" 2>/dev/null || true
+
+# --- 3. idempotency: reuse a live pi agent instead of double-spawning ----
 
 agents=$(herdr_json agent list)
 live=$(printf '%s' "$agents" \
@@ -69,20 +85,10 @@ fi
 
 # --- 4. dedicated tab: ttt in the root pane ------------------------------
 
-# vault root rides along as a second workspace root + env var; a state file in
-# the plugin dir makes it readable by the Lua side (sys.env proved unreliable
-# for arbitrary vars inside the sandbox).
-VAULT_ROOT="${FORSETI_VAULT:-$HOME/forseti}"
+# vault root rides along as a second workspace root (state files already
+# written in step 2 — before the reuse-exit).
 extra_roots=""
 [ -d "$VAULT_ROOT" ] && extra_roots="$VAULT_ROOT"
-if [ -d "$VAULT_ROOT" ]; then
-  printf '{"vault":"%s"}\n' "$VAULT_ROOT" \
-    > "$HOME/.config/ttt/plugins/forseti/vault.json" 2>/dev/null || true
-fi
-# repo path for the crew status bridge (6B-5): the Lua side reads
-# <repo>/.forseti/crew-status.json through the fs sandbox
-printf '{"repo":"%s"}\n' "$dir" \
-  > "$HOME/.config/ttt/plugins/forseti/repo.json" 2>/dev/null || true
 
 created=$(herdr_json tab create --cwd "$dir" --label "$EDITOR_LABEL" \
   --env "FORSETI_VAULT=$VAULT_ROOT" --no-focus)
@@ -103,7 +109,9 @@ fi
 # ttt gets the target dir as an explicit PATH argument (P1-1: pane run's shell
 # may not inherit the tab's --cwd; a bare ttt opened 'untitled'), plus the
 # vault as a second workspace root when present.
-herdr_json pane run "$root_pane" "ttt $listen_args $dir $extra_roots" >/dev/null
+run_cmd="ttt $listen_args $(squote "$dir")"
+[ -n "$extra_roots" ] && run_cmd="$run_cmd $(squote "$extra_roots")"
+herdr_json pane run "$root_pane" "$run_cmd" >/dev/null
 
 # --- 5. pi pane: split right, then let herdr launch+ready pi itself ------
 

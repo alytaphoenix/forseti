@@ -15,6 +15,12 @@ EDITOR_LABEL="${FORSETI_EDITOR_LABEL:-forseti}"
 
 # --- helpers (mirrors open.sh; no jq dependency) ---------------------------
 
+# P13-B15: quote paths for the command TYPED into a pane (pane run is not
+# exec — the pane's shell re-parses it; a repo path with spaces desugared)
+squote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# P13-B15: minimal JSON string escaping for emitted summaries
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
 json_field() {
   printf '%s' "$1" \
     | grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
@@ -84,12 +90,12 @@ customCommands:
     context: 'files'
     description: 'Open in forseti (ttt)'
     loadingText: 'Opening in ttt…'
-    command: '$_scripts_abs/git-jump.sh "{{.SelectedFile.Name}}"'
+    command: '$_scripts_abs/git-jump.sh {{.SelectedFile.Name | quote}}'
   - key: '<c-y>'
     context: 'files'
     description: 'Ask pi about this file'
     loadingText: 'Asking pi…'
-    command: '$_scripts_abs/pi-ask.sh --file "{{.SelectedFile.Name}}" "review this file in the current working tree"'
+    command: '$_scripts_abs/pi-ask.sh --file {{.SelectedFile.Name | quote}} "review this file in the current working tree"'
 # <<< forseti <<<
 EOF
 }
@@ -149,6 +155,6 @@ else
   [ -n "$target" ] || { printf '{"forseti":"pane split failed: %s"}\n' "$split"; exit 1; }
 fi
 
-herdr_json pane run "$target" "lazygit -p $dir" >/dev/null
+herdr_json pane run "$target" "lazygit -p $(squote "$dir")" >/dev/null
 herdr_json tab focus "$tab_id" >/dev/null
-printf '{"forseti":"created","git_pane":"%s","tab":"%s","cwd":"%s"}\n' "$target" "$tab_id" "$dir"
+printf '{"forseti":"created","git_pane":"%s","tab":"%s","cwd":"%s"}\n' "$target" "$tab_id" "$(json_escape "$dir")"

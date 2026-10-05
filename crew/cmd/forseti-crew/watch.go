@@ -24,14 +24,14 @@ type watchModel struct {
 	path          string
 	follow        bool
 	crewName      string
-	nodes         map[string]*runner.Event // node → last significant event
 	status        map[string]string
 	started       map[string]time.Time
 	ended         map[string]time.Time
 	cost          map[string]float64
 	phase         map[string]string // P11: node → phase name (from node_start)
 	phaseOrder    []string          // P11: first-seen phase order
-	checks        []string          // rendered check results
+	checks        []string          // rendered check results (P13-B1: reset per replay)
+	failed        bool              // P13-B14: event-based verdict (not summary text)
 	summary       string
 	quitFlag      bool
 	lastTS        time.Time
@@ -55,7 +55,7 @@ func cmdWatch(args []string) {
 		sort.Strings(matches)
 		p = matches[len(matches)-1]
 	}
-	m := &watchModel{path: p, follow: *follow, nodes: map[string]*runner.Event{},
+	m := &watchModel{path: p, follow: *follow,
 		status: map[string]string{}, started: map[string]time.Time{},
 		ended: map[string]time.Time{}, cost: map[string]float64{},
 		phase: map[string]string{}}
@@ -65,12 +65,17 @@ func cmdWatch(args []string) {
 		fmt.Fprintln(os.Stderr, "watch:", err)
 		os.Exit(1)
 	}
-	if strings.Contains(m.summary, "failed") || strings.Contains(m.summary, "checks_failed") {
+	// P13-B14: the verdict is event-based (node_failed/node_blocked/check_fail)
+	// — the old summary-substring check missed blocked-only runs and could be
+	// overwritten by a teardown note. Blocked counts, matching headless/TUI.
+	if m.failed {
 		os.Exit(1)
 	}
 }
 
-// replay reads the whole file and folds events into state.
+// replay reads the whole file and folds events into state. P13-B1: state is
+// REBUILT from scratch each replay (follow ticks re-fold the whole file) —
+// the checks list used to append forever, growing ~300 lines per minute.
 func (m *watchModel) replay() {
 	f, err := os.Open(m.path)
 	if err != nil {
@@ -80,6 +85,8 @@ func (m *watchModel) replay() {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+	m.checks = m.checks[:0] // P13-B1
+	m.failed = false
 	for sc.Scan() {
 		var ev runner.Event
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
@@ -122,13 +129,16 @@ func (m *watchModel) fold(ev runner.Event) {
 	case "node_blocked":
 		m.status[ev.Node] = "blocked"
 		m.ended[ev.Node] = ev.TS
+		m.failed = true // P13-B14: blocked counts (headless parity)
 	case "node_failed":
 		m.status[ev.Node] = "failed"
 		m.ended[ev.Node] = ev.TS
+		m.failed = true
 	case "check_pass", "check_fail":
 		mark := "✓"
 		if ev.Type == "check_fail" {
 			mark = "✗"
+			m.failed = true // P13-B14
 		}
 		m.checks = append(m.checks, fmt.Sprintf("%s %s %s", mark, ev.Node, ev.Info))
 	case "run_end":

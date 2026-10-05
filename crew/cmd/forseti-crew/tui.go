@@ -15,6 +15,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-runewidth"
 	"gopkg.in/yaml.v3"
 
 	"forseti/crew/internal/herdrd"
@@ -25,6 +26,16 @@ import (
 
 type logMsg struct{ s string }
 type monitorTick struct{}
+
+type monitorReadMsg struct { // P13-B11: AgentRead off the event loop
+	node string
+	text string
+	ok   bool
+}
+
+type toolsProbeMsg struct{ msg string } // P13-B11: probe subprocess off the loop
+
+type runDoneMsg struct{ summary string } // P13-B8: run completion via message
 
 type formField struct {
 	label string
@@ -43,6 +54,7 @@ type model struct {
 	run    *runner.Run
 	client *herdrd.Client
 	prog   *tea.Program
+	path   string // P13-B2: where -f loaded the crew from; save goes HERE
 
 	selected      int
 	log           []string
@@ -56,12 +68,29 @@ type model struct {
 	running       bool
 }
 
-func runTUI(crew *schema.Crew, opts runner.Options) error {
-	m := &model{crew: crew, opts: opts, mode: "view"}
+func runTUI(crew *schema.Crew, opts runner.Options, path string) (bool, error) {
+	if path == "" {
+		path = "crew.yaml"
+	}
+	m := &model{crew: crew, opts: opts, mode: "view", path: path}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.prog = p
 	_, err := p.Run()
-	return err
+	// P13-B3/B14: the exit verdict comes from the LIVE run state (blocked
+	// counts, matching the headless contract) — never a post-hoc log glob
+	// (worktree logs are deleted; same-second logs mislead).
+	failed := false
+	if m.run != nil {
+		for _, st := range m.run.Snapshot() {
+			if st.Status == "failed" || st.Status == "blocked" {
+				failed = true
+			}
+		}
+		if m.run.ChecksFailed() {
+			failed = true
+		}
+	}
+	return failed, err
 }
 
 func (m *model) Init() tea.Cmd {
@@ -91,43 +120,73 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case monitorTick:
 		return m.updateMonitor()
+	case monitorReadMsg: // P13-B11: AgentRead ran off the event loop
+		if msg.ok {
+			m.monitor, m.monitorNode = msg.text, msg.node
+		}
+		return m, nil
+	case toolsProbeMsg: // P13-B11: tools validate ran off the event loop
+		m.buildMsg = msg.msg
+		return m, nil
+	case runDoneMsg: // P13-B8: run completion mutates state only via messages
+		m.running = false
+		m.log = append(m.log, "run finished: "+msg.summary)
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
+// selectedName is the agent the selection points at (display order — B16).
+func (m *model) selectedName() string {
+	order := m.displayOrder()
+	if len(order) == 0 {
+		return ""
+	}
+	return m.crew.Agents[order[m.selected%len(order)]].Name
+}
+
 func (m *model) updateMonitor() (tea.Model, tea.Cmd) {
-	if m.client != nil && len(m.crew.Agents) > 0 && m.run != nil {
-		name := m.crew.Agents[m.selected%len(m.crew.Agents)].Name
-		if st := m.run.Nodes[name]; st != nil {
+	var cmd tea.Cmd
+	if m.client != nil && m.run != nil {
+		name := m.selectedName()
+		if st, ok := m.run.NodeSnapshot(name); ok { // P13-B8: value copy, no shared-pointer reads
 			switch {
 			case st.Status == "running":
-				if txt, err := m.client.AgentRead(name, "recent_unwrapped", 200); err == nil {
-					m.monitor, m.monitorNode = txt, name
+				// P13-B11: the socket read runs OFF the event loop (a stalled
+				// herdr used to freeze the whole TUI for up to 15 s per tick)
+				client, node := m.client, name
+				cmd = func() tea.Msg {
+					txt, err := client.AgentRead(node, "recent_unwrapped", 200)
+					if err != nil {
+						return monitorReadMsg{node: node, ok: false}
+					}
+					return monitorReadMsg{node: node, text: txt, ok: true}
 				}
 			case m.monitorNode != name && st.Output != "":
 				m.monitor, m.monitorNode = st.Output, name
 			}
 		}
 	}
-	return m, m.monitorTick()
+	return m, tea.Batch(m.monitorTick(), cmd)
 }
 
 // metaView renders the 6C-2 meta tab for the selected node.
 func (m *model) metaView() string {
-	name := "—"
-	if len(m.crew.Agents) > 0 {
-		name = m.crew.Agents[m.selected%len(m.crew.Agents)].Name
+	name := m.selectedName() // P13-B16: display order, not declaration order
+	if name == "" {
+		name = "—"
 	}
 	var b strings.Builder
 	b.WriteString("META: " + name + "\n\n")
 	a := m.crew.Agent(name)
-	var st *runner.NodeState
+	var st runner.NodeState
+	hasSt := false
 	if m.run != nil {
-		st = m.run.Nodes[name]
+		st, hasSt = m.run.NodeSnapshot(name) // P13-B8: value copy
 	}
-	if st == nil || a == nil {
+	if !hasSt || a == nil {
 		b.WriteString("(no run yet — press r to start)")
 		return b.String()
 	}
@@ -178,13 +237,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "j", "down":
-		if len(m.crew.Agents) > 0 {
-			m.selected = (m.selected + 1) % len(m.crew.Agents)
+		if n := len(m.displayOrder()); n > 0 { // P13-B16: navigate display order
+			m.selected = (m.selected + 1) % n
 			m.monitorNode = ""
 		}
 	case "k", "up":
-		if len(m.crew.Agents) > 0 {
-			m.selected = (m.selected - 1 + len(m.crew.Agents)) % len(m.crew.Agents)
+		if n := len(m.displayOrder()); n > 0 {
+			m.selected = (m.selected - 1 + n) % n
 			m.monitorNode = ""
 		}
 	case "r":
@@ -196,12 +255,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		// focus the REAL herdr pane of the selected node (human-in-the-loop:
 		// takeover happens in the actual pane, never inside the monitor)
-		if m.client != nil && len(m.crew.Agents) > 0 {
-			name := m.crew.Agents[m.selected%len(m.crew.Agents)].Name
-			if err := m.client.AgentFocus(name); err != nil {
-				return m.logf("focus %s: %v", name, err), nil
+		if m.client != nil {
+			if name := m.selectedName(); name != "" {
+				if err := m.client.AgentFocus(name); err != nil {
+					return m.logf("focus %s: %v", name, err), nil
+				}
+				return m.logf("focused real pane: %s", name), nil
 			}
-			return m.logf("focused real pane: %s", name), nil
 		}
 	case "b":
 		m.mode = "build"
@@ -230,7 +290,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "P":
 		if m.mode == "build" {
-			m.probeTools()
+			return m, m.probeToolsCmd() // P13-B11: subprocess off the event loop
 		}
 	case "A":
 		if m.mode == "build" {
@@ -264,13 +324,14 @@ func (m *model) startRun() (tea.Model, tea.Cmd) {
 		prog.Send(logMsg{s: fmt.Sprintf("[%s] %s %s", ev.Type, ev.Node, ev.Info)})
 	}
 	m.run.Opts.OnEvent = m.opts.OnEvent
+	run := m.run
 	go func() {
-		err := m.run.Run(context.Background())
-		if err != nil {
+		if err := run.Run(context.Background()); err != nil {
 			prog.Send(logMsg{s: "run error: " + err.Error()})
 		}
-		prog.Send(logMsg{s: "run finished: " + m.run.Summary()})
-		m.running = false
+		// P13-B8: completion mutates model state only via a message — the
+		// goroutine used to write m.running unsynchronized
+		prog.Send(runDoneMsg{summary: run.Summary()})
 	}()
 	return m.logf("run started (%d agents)", len(fresh.Agents)), m.monitorTick()
 }
@@ -288,6 +349,15 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.form = nil
+		return m, nil
+	case "ctrl+c": // P13-B17: ctrl+c was swallowed while a form was open
+		return m, tea.Quit
+	case "shift+tab": // P13-B17: back one field (tab only moved forward)
+		if f.step > 0 {
+			f.step--
+			f.fields[f.step].input.Focus()
+			return m, nil
+		}
 		return m, nil
 	case "enter", "tab":
 		if f.step+1 < len(f.fields) {
@@ -315,9 +385,12 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.buildMsg = fmt.Sprintf("edge %s→%s added (when=%s)", vals[0], vals[1], vals[2])
 		case "route":
 			conf := 0.5
-			fmt.Sscanf(vals[4], "%g", &conf)
-			if vals[4] == "" {
-				conf = 0.5
+			if strings.TrimSpace(vals[4]) != "" {
+				if n, err := fmt.Sscanf(vals[4], "%g", &conf); n != 1 || err != nil { // P13-B18: no silent garbage
+					m.buildMsg = "route confidence must be a number 0–1 (got " + vals[4] + ")"
+					m.form = nil
+					return m, nil
+				}
 			}
 			rt := schema.Route{ID: vals[0], Efficient: vals[1], Capable: vals[2],
 				Picker: vals[3], Confidence: conf}
@@ -327,16 +400,58 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.crew.Routes = append(m.crew.Routes, rt)
 			m.buildMsg = fmt.Sprintf("route %s added (attach agents with route: %s)", vals[0], vals[0])
 		case "phase":
+			// P13-B18: validate on submit — name rule, members exist,
+			// not already phased, no duplicate member (saveCrew also
+			// round-trips, but the user needs the pointer at submit time)
+			name := strings.TrimSpace(vals[0])
+			if !schema.ValidName(name) {
+				m.buildMsg = "phase name must match [a-z][a-z0-9_-]{0,31} (got " + vals[0] + ")"
+				m.form = nil
+				return m, nil
+			}
+			if strings.TrimSpace(vals[1]) == "" {
+				m.buildMsg = "phase " + name + ": instructions required"
+				m.form = nil
+				return m, nil
+			}
 			agents := []string{}
+			seenMem := map[string]bool{}
 			for _, s := range strings.Split(vals[2], ",") {
 				if s = strings.TrimSpace(s); s != "" {
+					if seenMem[s] {
+						m.buildMsg = "phase " + name + ": member " + s + " listed twice"
+						m.form = nil
+						return m, nil
+					}
+					seenMem[s] = true
 					agents = append(agents, s)
 				}
 			}
+			if len(agents) == 0 {
+				m.buildMsg = "phase " + name + ": at least one member agent required"
+				m.form = nil
+				return m, nil
+			}
+			for _, s := range agents {
+				if m.crew.Agent(s) == nil {
+					m.buildMsg = "phase " + name + ": unknown agent " + s
+					m.form = nil
+					return m, nil
+				}
+				for _, p := range m.crew.Phases {
+					for _, existing := range p.Agents {
+						if existing == s {
+							m.buildMsg = "agent " + s + " is already in phase " + p.Name
+							m.form = nil
+							return m, nil
+						}
+					}
+				}
+			}
 			m.crew.Phases = append(m.crew.Phases, schema.Phase{
-				Name: vals[0], Instructions: vals[1], Agents: agents,
+				Name: name, Instructions: vals[1], Agents: agents,
 			})
-			m.buildMsg = fmt.Sprintf("phase %s added (%s) — order = list order", vals[0], strings.Join(agents, ", "))
+			m.buildMsg = fmt.Sprintf("phase %s added (%s) — order = list order", name, strings.Join(agents, ", "))
 		case "tool":
 			msg := m.saveTool(vals)
 			m.buildMsg = msg
@@ -482,21 +597,21 @@ func toolParamSpec(s string) map[string]any {
 	return props
 }
 
-// probeTools runs every spec in the tools dir and surfaces the tally.
-func (m *model) probeTools() {
-	if _, err := os.Stat(toolsDir()); err != nil {
-		m.buildMsg = "no tools dir: " + toolsDir()
-		return
+// probeToolsCmd (P13-B11) runs the tools validate subprocess OFF the event
+// loop — it used to block Update for the sum of every probe's timeout.
+func (m *model) probeToolsCmd() tea.Cmd {
+	bin, dir := toolsBin(), toolsDir()
+	return func() tea.Msg {
+		if _, err := os.Stat(dir); err != nil {
+			return toolsProbeMsg{msg: "no tools dir: " + dir}
+		}
+		out, err := exec.Command(bin, "validate").CombinedOutput()
+		msg := strings.TrimSpace(string(out))
+		if err != nil {
+			return toolsProbeMsg{msg: "probe FAIL: " + msg}
+		}
+		return toolsProbeMsg{msg: msg}
 	}
-	// run the shim's validate (reuses the gates; the TUI stays thin)
-	cmd := exec.Command(toolsBin(), "validate")
-	out, err := cmd.CombinedOutput()
-	msg := strings.TrimSpace(string(out))
-	if err != nil {
-		m.buildMsg = "probe FAIL: " + msg
-		return
-	}
-	m.buildMsg = msg
 }
 
 func toolsDir() string {
@@ -591,11 +706,18 @@ func (m *model) saveCrew() {
 		m.buildMsg = "invalid, not saved: " + err.Error()
 		return
 	}
-	if err := os.WriteFile("crew.yaml", data, 0o644); err != nil {
+	// P13-B2: save goes where -f loaded the crew from — the hardcoded
+	// "crew.yaml" used to overwrite the wrong file (root default) while the
+	// user believed they were editing the -f crew.
+	path := m.path
+	if path == "" {
+		path = "crew.yaml"
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		m.buildMsg = "save: " + err.Error()
 		return
 	}
-	m.buildMsg = "saved crew.yaml"
+	m.buildMsg = "saved " + path
 }
 
 // ---- view ----
@@ -605,14 +727,45 @@ var statusGlyph = map[string]string{
 	"blocked": "!", "failed": "✗", "skipped": "–",
 }
 
+// displayOrder (P13-B16): agent indices in DISPLAY order — phase-grouped
+// when phases exist, else declaration order. j/k and the ▶ marker both use
+// it (the marker used to jump non-linearly when declaration ≠ phase order).
+func (m *model) displayOrder() []int {
+	if len(m.crew.Phases) == 0 {
+		out := make([]int, len(m.crew.Agents))
+		for i := range m.crew.Agents {
+			out[i] = i
+		}
+		return out
+	}
+	var out []int
+	seen := map[int]bool{}
+	for pi := range m.crew.Phases {
+		for _, name := range m.crew.Phases[pi].Agents {
+			for i, a := range m.crew.Agents {
+				if a.Name == name && !seen[i] { // renders each agent ONCE
+					seen[i] = true
+					out = append(out, i)
+				}
+			}
+		}
+	}
+	for i := range m.crew.Agents { // stragglers (validated away, render defensively)
+		if !seen[i] {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // agentRow renders one node row in the left pane (status glyph, name, model).
-func (m *model) agentRow(b *strings.Builder, i int) {
+func (m *model) agentRow(b *strings.Builder, i int, selectedName string) {
 	a := m.crew.Agents[i]
 	st := "pending"
 	live := ""
 	cost := ""
 	if m.run != nil {
-		if ns := m.run.Nodes[a.Name]; ns != nil {
+		if ns, ok := m.run.NodeSnapshot(a.Name); ok { // P13-B8: value copy
 			st = ns.Status
 			live = ns.LiveStatus
 			if ns.CostUSD > 0 {
@@ -629,7 +782,7 @@ func (m *model) agentRow(b *strings.Builder, i int) {
 		liveTag = " (" + live + ")"
 	}
 	line := fmt.Sprintf("%s %s %s%s%s", statusGlyph[st], a.Name, resolved, cost, liveTag)
-	if i == m.selected%max(1, len(m.crew.Agents)) {
+	if a.Name == selectedName {
 		b.WriteString("▶ " + line + "\n")
 	} else {
 		b.WriteString("  " + line + "\n")
@@ -646,28 +799,26 @@ func (m *model) View() string {
 	var left strings.Builder
 	left.WriteString("CREW: " + m.crew.Name + " [" + m.mode + "]\n")
 	if m.mode == "view" {
-		// P11: phased crews group nodes under ordered phase headers
+		// P13-B16: rows render in display order; the ▶ marker follows the
+		// same order j/k walks (phase-grouped when phases exist).
+		selected := m.selectedName()
+		order := m.displayOrder()
 		if len(m.crew.Phases) > 0 {
-			shown := map[string]bool{}
-			for pi, ph := range m.crew.Phases {
-				left.WriteString(fmt.Sprintf("— phase %d %s\n", pi+1, ph.Name))
-				for _, an := range ph.Agents {
-					for i, a := range m.crew.Agents {
-						if a.Name == an {
-							shown[an] = true
-							m.agentRow(&left, i)
-						}
+			// P11: phased crews group nodes under ordered phase headers —
+			// headers emit at phase boundaries along the display order
+			last := -99
+			for _, i := range order {
+				if pi := m.crew.PhaseOf(m.crew.Agents[i].Name); pi != last {
+					if pi >= 0 {
+						left.WriteString(fmt.Sprintf("— phase %d %s\n", pi+1, m.crew.Phases[pi].Name))
 					}
+					last = pi
 				}
-			}
-			for i, a := range m.crew.Agents { // stragglers (validated away, but render defensively)
-				if !shown[a.Name] {
-					m.agentRow(&left, i)
-				}
+				m.agentRow(&left, i, selected)
 			}
 		} else {
-			for i := range m.crew.Agents {
-				m.agentRow(&left, i)
+			for _, i := range order {
+				m.agentRow(&left, i, selected)
 			}
 		}
 		for _, e := range m.crew.Edges {
@@ -716,11 +867,22 @@ func (m *model) View() string {
 		mon = "MONITOR: (select a running node to tail)"
 	}
 
-	leftLines := padLines(left.String(), m.height-2)
-	rightLines := padLines(mon, m.height-2)
-	if len(rightLines) > m.height-2 {
-		rightLines = rightLines[len(rightLines)-(m.height-2):]
+	// P13-B4: clamp the pane height — a 1-row terminal made m.height-2
+	// negative and the tail slice panicked the whole TUI.
+	viewH := m.height - 2
+	if viewH < 1 {
+		viewH = 1
 	}
+	// P13-B19: BOTH panes clip to the last viewH lines (only the right one
+	// used to, so the selected row + help could scroll off-screen).
+	clip := func(ls []string) []string {
+		if len(ls) > viewH {
+			return ls[len(ls)-viewH:]
+		}
+		return ls
+	}
+	leftLines := clip(padLines(left.String(), viewH))
+	rightLines := clip(padLines(mon, viewH))
 
 	var out strings.Builder
 	for i := range leftLines {
@@ -739,11 +901,14 @@ func (m *model) View() string {
 	return out.String()
 }
 
+// pad pads to a DISPLAY width (P13-B5: byte length zigzagged the separator
+// column — every row carries a multi-byte glyph like ● or ✓).
 func pad(s string, w int) string {
-	if len(s) >= w {
+	if d := runewidth.StringWidth(s); d >= w {
 		return s
+	} else {
+		return s + strings.Repeat(" ", w-d)
 	}
-	return s + strings.Repeat(" ", w-len(s))
 }
 
 func padLines(s string, n int) []string {
@@ -754,12 +919,11 @@ func padLines(s string, n int) []string {
 	return ls
 }
 
+// truncate cuts at a display-width boundary (P13-B5: s[:w] could split a
+// multi-byte rune mid-sequence — mojibake at the pane edge).
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	if len(s) <= w {
-		return s
-	}
-	return s[:w]
+	return runewidth.Truncate(s, w, "")
 }

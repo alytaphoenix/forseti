@@ -10,3 +10,4 @@
 .pi/sessions/
 crew/bin/
 .forseti/
+__pycache__/

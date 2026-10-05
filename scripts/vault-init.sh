@@ -18,6 +18,13 @@ write_if_absent() { # write_if_absent <path> <content-from-stdin>
   fi
 }
 
+# P13-B17: the date stamp below must not touch pre-existing files (a re-run
+# used to overwrite every vault file's created:). Existence must be probed
+# BEFORE the heredocs — tracking inside write_if_absent can't work because
+# `cat | write_if_absent` runs it in a subshell.
+_stamp_ever=""; [ -e "$VAULT/_templates/evergreen.md" ] || _stamp_ever=1
+_stamp_index=""; [ -e "$VAULT/index.md" ] || _stamp_index=1
+
 printf 'forseti vault: %s\n' "$VAULT"
 
 cat << 'TPL' | write_if_absent "$VAULT/_templates/evergreen.md"
@@ -33,10 +40,14 @@ tags: []
 <!-- evergreen note: one idea, statement-shaped title, dense [[links]] -->
 TPL
 
+# The daily template keeps the __TODAY__ token (NOT stamped): the ttt Lua
+# daily_note() renderer substitutes it when the note is created. The old
+# PLACEHOLDERDATE form meant every daily note got the scaffold date — or the
+# literal token — because Lua's gsub looked for __TODAY__ (P13-B17).
 cat << 'TPL' | write_if_absent "$VAULT/_templates/daily.md"
 ---
-title: PLACEHOLDERDATE
-created: PLACEHOLDERDATE
+title: __TODAY__
+created: __TODAY__
 type: daily
 ---
 
@@ -63,11 +74,22 @@ cat << 'EOF' | write_if_absent "$VAULT/.gitignore"
 .trash/
 EOF
 
-# stamp today's date into fresh templates
-for f in "$VAULT/_templates/evergreen.md" "$VAULT/_templates/daily.md"; do
-  [ -f "$f" ] && sed -i '' "s/PLACEHOLDERDATE/$TODAY/g" "$f"
-done
-[ -f "$VAULT/index.md" ] && sed -i '' "s/PLACEHOLDERDATE/$TODAY/" "$VAULT/index.md" 2>/dev/null || true
+# Stamp today's date into FRESHLY CREATED files only (P13-B17), with a
+# portable in-place edit (P13-B18: `sed -i ''` is BSD-only).
+stamp() { # stamp <path>
+  sed "s/PLACEHOLDERDATE/$TODAY/g" "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+[ -n "$_stamp_ever" ] && stamp "$VAULT/_templates/evergreen.md"
+[ -n "$_stamp_index" ] && stamp "$VAULT/index.md"
+# Legacy migration (P13-B17): vaults scaffolded before this fix carry a
+# PLACEHOLDERDATE the Lua side never substitutes (it looks for __TODAY__).
+# Retargeting that token is not a user-content overwrite — nothing the user
+# writes contains it.
+_daily_tpl="$VAULT/_templates/daily.md"
+if [ -f "$_daily_tpl" ] && grep -q PLACEHOLDERDATE "$_daily_tpl"; then
+  sed "s/PLACEHOLDERDATE/__TODAY__/g" "$_daily_tpl" > "$_daily_tpl.tmp" && mv "$_daily_tpl.tmp" "$_daily_tpl"
+  printf '  migrated daily template → __TODAY__\n'
+fi
 
 if [ ! -d "$VAULT/.git" ]; then
   (cd "$VAULT" && git init -q && git add -A && git commit -qm "forseti vault scaffold" ) \

@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -75,6 +76,8 @@ func Dir() string {
 }
 
 // LoadDir loads every *.yaml/*.yml in dir (sorted by name).
+// P13-B24: duplicate tool names across files are rejected (tools/list used
+// to advertise the tool twice; find silently picked the first).
 func LoadDir(dir string) ([]*Spec, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -84,6 +87,7 @@ func LoadDir(dir string) ([]*Spec, error) {
 		return nil, err
 	}
 	var out []*Spec
+	seen := map[string]string{}
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || (!strings.HasSuffix(n, ".yaml") && !strings.HasSuffix(n, ".yml")) {
@@ -97,6 +101,10 @@ func LoadDir(dir string) ([]*Spec, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", n, err)
 		}
+		if prev, dup := seen[s.Name]; dup {
+			return nil, fmt.Errorf("duplicate tool name %q in %s and %s", s.Name, prev, n)
+		}
+		seen[s.Name] = n
 		out = append(out, s)
 	}
 	return out, nil
@@ -130,14 +138,32 @@ func (s *Spec) Validate() error {
 	if t, _ := schema["type"].(string); t != "object" {
 		return fmt.Errorf("parameters.type must be \"object\" (MCP tools take an arguments object)")
 	}
+	// P13-B24: properties must be a MAP whenever present — a non-map only
+	// surfaced (as a silent nil) when a probe declared args.
+	if p, ok := schema["properties"]; ok {
+		if _, ok := p.(map[string]any); !ok {
+			return fmt.Errorf("parameters.properties must be a map")
+		}
+	}
 	switch s.Executor.Type {
 	case "shell":
 		if strings.TrimSpace(s.Executor.Run) == "" {
 			return fmt.Errorf("executor.run required for shell")
 		}
+		// P13-B13: a shell template referencing a declared param OUTSIDE
+		// {{ q .param }} is an injection hole — the model supplies the value;
+		// refuse it at Load so quoting is the only path for parameters.
+		if err := lintUnquotedParams(s.Executor.Run, s.declaredParams()); err != nil {
+			return fmt.Errorf("executor.run: %w", err)
+		}
 	case "http":
 		if strings.TrimSpace(s.Executor.URL) == "" {
 			return fmt.Errorf("executor.url required for http")
+		}
+		if s.Probe != nil && !s.Probe.Skip && s.Probe.ExpectExit != 0 {
+			// P13-B24: the http executor checks status only — expect_exit is
+			// silently meaningless and misleads the author
+			return fmt.Errorf("probe.expect_exit is meaningless for http executors (expect a 2xx status + expect_contains)")
 		}
 	default:
 		return fmt.Errorf("executor.type %q unsupported (v1: shell|http)", s.Executor.Type)
@@ -160,6 +186,70 @@ func (s *Spec) Validate() error {
 // shQuote single-quotes a value for safe shell interpolation.
 func shQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", `'\''`) + "'"
+}
+
+// declaredParams returns the declared parameter names (P13-B13).
+func (s *Spec) declaredParams() []string {
+	props, _ := s.Parameters["properties"].(map[string]any)
+	out := make([]string, 0, len(props))
+	for k := range props {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// lintUnquotedParams refuses shell templates that reference a declared
+// parameter outside {{ q .param }} (P13-B13): the model supplies the value,
+// so an unquoted {{ .repo }} with repo="; rm -rf ~" is arbitrary execution.
+// A bare {{ .param }} (no function call) is exactly that hole.
+func lintUnquotedParams(tmpl string, params []string) error {
+	for _, p := range params {
+		// matches {{ .p }} / {{.p}} but NOT {{ q .p }}
+		re := regexp.MustCompile(`\{\{\s*\.(` + regexp.QuoteMeta(p) + `)\s*\}\}`)
+		if re.MatchString(tmpl) {
+			return fmt.Errorf("parameter %q is interpolated UNQUOTED ({{ .%s }}) — use {{ q .%s }}; the model supplies this value", p, p, p)
+		}
+	}
+	return nil
+}
+
+// ValidateArgs checks model-supplied call arguments against the declared
+// properties (P13-B13): declared types are enforced and undeclared keys are
+// rejected — args used to flow into the executor unchecked.
+func (s *Spec) ValidateArgs(args map[string]any) error {
+	props, ok := s.Parameters["properties"].(map[string]any)
+	if !ok {
+		props = map[string]any{}
+	}
+	for k, v := range args {
+		p, ok := props[k]
+		if !ok {
+			return fmt.Errorf("argument %q is not declared in parameters", k)
+		}
+		spec, _ := p.(map[string]any)
+		want, _ := spec["type"].(string)
+		if want == "" {
+			continue
+		}
+		got := ""
+		switch v.(type) {
+		case string:
+			got = "string"
+		case bool:
+			got = "boolean"
+		case float64, int:
+			got = "number"
+		case []any:
+			got = "array"
+		case map[string]any:
+			got = "object"
+		}
+		if want != got {
+			return fmt.Errorf("argument %q must be %s, got %s", k, want, got)
+		}
+	}
+	return nil
 }
 
 // expand renders a text/template with the args map; funcs: q (shell-quote).
@@ -273,6 +363,9 @@ func (s *Spec) RunProbe(ctx context.Context) (string, error) {
 	}
 	combined := res.Stdout + res.Stderr
 	if s.Executor.Type == "http" {
+		// P13-B7: the http executor fills Body only — the old combined
+		// (stdout+stderr) was always empty, so any expect_contains failed
+		combined = res.Body
 		if res.Status < 200 || res.Status > 299 {
 			return "", fmt.Errorf("probe status %d: %s", res.Status, trunc(combined))
 		}

@@ -17,7 +17,7 @@
 // edit tool firstChangedLine, x-opencode-session header).
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -40,8 +40,10 @@ interface ForsetiContext {
 
 async function tttExec(script: string): Promise<boolean> {
 	try {
-		const res = await fetch(TTT_EXEC_URL, { method: "POST", body: script });
+		const res = await fetch(TTT_EXEC_URL, { method: "POST", body: script, signal: AbortSignal.timeout(5000) });
 		listenerWarned = false;
+		// drain the body so undici releases the socket (P13 hardening)
+		await res.text().catch(() => {});
 		return res.ok;
 	} catch {
 		listenerWarned = true;
@@ -68,7 +70,9 @@ async function pushJump(
 async function writeJump(file: string, line?: number, endLine?: number): Promise<void> {
 	await writeFile(
 		JUMP_FILE,
-		JSON.stringify({ path: file, line, endLine, at: new Date().toISOString() }),
+		// end_line: the Lua consumer reads snake_case (P13-B1: camelCase drifted
+		// and silently dropped the selection highlight end)
+		JSON.stringify({ path: file, line, end_line: endLine, at: new Date().toISOString() }),
 		"utf8",
 	);
 }
@@ -80,11 +84,6 @@ export default function forseti(pi: ExtensionAPI) {
 	let lastPush = 0;
 	const turnEdits: { path: string; line?: number }[] = [];
 	const pendingEdits = new Map<string, string>();
-	let startOfTurn = Date.now();
-
-	function jumpsSince(since: number, _e?: unknown): unknown {
-		return review ? undefined : undefined; // collector uses pendingEdits map instead
-	}
 
 	// ---- commands -----------------------------------------------------------
 	pi.registerCommand("ttt", {
@@ -101,6 +100,7 @@ export default function forseti(pi: ExtensionAPI) {
 				return;
 			}
 			if (sub === "follow") {
+				if (mode === "status") { ctx.ui.notify(`forseti: follow ${follow ? "ON" : "OFF"}`, "info"); return; }
 				follow = mode === "on" || mode === "true";
 				if (follow && review) {
 					follow = false;
@@ -111,12 +111,14 @@ export default function forseti(pi: ExtensionAPI) {
 				return;
 			}
 			if (sub === "review") {
+				if (mode === "status") { ctx.ui.notify(`forseti: review ${review ? "ON" : "OFF"}`, "info"); return; }
 				review = mode === "on" || mode === "true";
 				if (review) follow = false; // review supersedes per-edit jumps
 				ctx.ui.notify(`forseti: review ${review ? "ON" : "OFF"} (summary opens at turn end)`, "info");
 				return;
 			}
 			if (sub === "context") {
+				if (mode === "status") { ctx.ui.notify(`forseti: editor context in prompts ${contextMode ? "ON" : "OFF"}`, "info"); return; }
 				contextMode = mode === "on" || mode === "true";
 				ctx.ui.notify(`forseti: editor context in prompts ${contextMode ? "ON" : "OFF"}`, "info");
 				return;
@@ -140,14 +142,18 @@ export default function forseti(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const sub = (args.trim().split(/\s+/)[0] ?? "agents").toLowerCase();
 			if (sub === "agents") {
-				const { stdout } = await pi.exec("herdr", ["agent", "list"]);
-				const list = JSON.parse(stdout ?? "{}").result?.agents ?? [];
-				ctx.ui.notify(
-					list.length === 0
-						? "herdr: no live agents"
-						: list.map((a: { name: string; agent: string; agent_status: string }) => `${a.name} (${a.agent}): ${a.agent_status}`).join("\n"),
-					"info",
-				);
+				try {
+					const { stdout } = await pi.exec("herdr", ["agent", "list"]);
+					const list = JSON.parse(stdout ?? "{}").result?.agents ?? [];
+					ctx.ui.notify(
+						list.length === 0
+							? "herdr: no live agents"
+							: list.map((a: { name: string; agent: string; agent_status: string }) => `${a.name} (${a.agent}): ${a.agent_status}`).join("\n"),
+						"info",
+					);
+				} catch (e) {
+					ctx.ui.notify(`forseti: herdr unreachable (${e instanceof Error ? e.message : String(e)}) — is the server running?`, "error");
+				}
 			} else {
 				ctx.ui.notify("forseti: /herd agents (read-only v1)", "info");
 			}
@@ -181,8 +187,10 @@ export default function forseti(pi: ExtensionAPI) {
 		promptSnippet: "Open a file in the ttt editor pane for the user to see.",
 		parameters: Type.Object({
 			path: Type.String({ description: "File path (absolute or workspace-relative)" }),
-			line: Type.Optional(Type.Number({ description: "1-based line to jump to" })),
-			end: Type.Optional(Type.Number({ description: "1-based end line to highlight" })),
+			// P13-B14: integer kinds — Type.Number let a float through and the
+			// editor line arithmetic produced non-integer rows
+			line: Type.Optional(Type.Integer({ description: "1-based line to jump to" })),
+			end: Type.Optional(Type.Integer({ description: "1-based end line to highlight" })),
 		}),
 		async execute(_toolCallId, params) {
 			if (!params.path) return { content: [{ type: "text", text: "ttt_open error: path required" }], isError: true };
@@ -250,6 +258,7 @@ export default function forseti(pi: ExtensionAPI) {
 				const res = await fetch(`${base}/v1/systemone`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					signal: AbortSignal.timeout(10000), // P13-B13: never hang a turn on a wedged endpoint
 					body: JSON.stringify({
 						state: { input: params.input },
 						questions: {
@@ -285,9 +294,9 @@ export default function forseti(pi: ExtensionAPI) {
 			tags: Type.Optional(Type.Array(Type.String(), { description: "Optional tags (e.g. [\"deploy\", \"gotcha\"])" })),
 			type: Type.Optional(Type.String({ description: "Memory kind: fact (default) | episode | procedure | preference" })),
 			importance: Type.Optional(Type.Number({ description: "0–1 importance (default 0.5); recall ranks on it" })),
-			supersedes: Type.Optional(Type.Number({ description: "Id of an older fact this one replaces (history kept, old hidden)" })),
+			supersedes: Type.Optional(Type.Integer({ description: "Id of an older fact this one replaces (history kept, old hidden)" })),
 			expires_at: Type.Optional(Type.String({ description: "ISO timestamp after which the fact no longer recalls (transient notes)" })),
-			links: Type.Optional(Type.Array(Type.Number(), { description: "Ids of related facts (associative links)" })),
+			links: Type.Optional(Type.Array(Type.Integer(), { description: "Ids of related facts (associative links)" })),
 		}),
 		async execute(_toolCallId, params) {
 			if (!params.text) return { content: [{ type: "text", text: "memory_write error: text required" }], isError: true };
@@ -296,6 +305,9 @@ export default function forseti(pi: ExtensionAPI) {
 				const res = await fetch(`${base}/write`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					// P13-B13: bounded timeout — an unresponsive service used to
+					// hang the tool call (and the whole turn) forever
+					signal: AbortSignal.timeout(30000),
 					body: JSON.stringify({
 						agent: "shared", text: params.text, tags: params.tags ?? [],
 						source: "pi",
@@ -327,7 +339,7 @@ export default function forseti(pi: ExtensionAPI) {
 		promptSnippet: "memory_recall: check prior agent knowledge by query.",
 		parameters: Type.Object({
 			query: Type.String({ description: "What to look for (paraphrase freely)" }),
-			k: Type.Optional(Type.Number({ description: "How many results (default 5)" })),
+			k: Type.Optional(Type.Integer({ description: "How many results (default 5)" })),
 			type: Type.Optional(Type.String({ description: "Filter by memory kind: fact | episode | procedure | preference" })),
 			include_superseded: Type.Optional(Type.Boolean({ description: "Include facts replaced by newer ones (default false)" })),
 		}),
@@ -338,6 +350,7 @@ export default function forseti(pi: ExtensionAPI) {
 				const res = await fetch(`${base}/recall`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
+					signal: AbortSignal.timeout(30000), // P13-B13: bounded like /write
 					body: JSON.stringify({
 						query: params.query, agent: "shared", k: params.k ?? 5,
 						...(params.type ? { type: params.type } : {}),
@@ -361,6 +374,9 @@ export default function forseti(pi: ExtensionAPI) {
 	// ---- Phase 2d-2: review mode --------------------------------------------
 	pi.on("turn_start", async () => {
 		turnEdits.length = 0;
+		// P13-B26: an interrupted turn leaves tool_execution_start entries with
+		// no matching end — clear so a stale file can't ride into the next review
+		pendingEdits.clear();
 	});
 
 	pi.on("tool_execution_start", async (event) => {
@@ -426,9 +442,7 @@ export default function forseti(pi: ExtensionAPI) {
 			.slice(0, 80);
 	}
 
-	function inVault(abs: string): boolean {
-		return abs.startsWith(path.join(VAULT, path.sep));
-	}
+	// P13-B21: dead inVault() helper removed (no call sites after the /ttt rework)
 
 	pi.registerTool({
 		name: "vault_search",
@@ -467,9 +481,15 @@ export default function forseti(pi: ExtensionAPI) {
 				await readFile(file, "utf8");
 				return { content: [{ type: "text", text: `note already exists: ${file}` }], details: { ok: false, exists: true } };
 			} catch { /* fresh */ }
+			// P13-B25: JSON-encode the title in the frontmatter — a title with a
+			// colon or newline used to corrupt the YAML block (Obsidian properties).
+			// JSON double-quoted scalars are valid YAML double-quoted scalars.
+			// P13-B25: mkdir notes/ first — vault_note on a fresh machine died
+			// ENOENT when vault-init had never run.
+			const safeTitle = JSON.stringify(params.title);
 			const front = [
 				"---",
-				`title: ${params.title}`,
+				`title: ${safeTitle}`,
 				`created: ${new Date().toISOString().slice(0, 10)}`,
 				"type: evergreen",
 				"tags: []",
@@ -478,7 +498,12 @@ export default function forseti(pi: ExtensionAPI) {
 				`# ${params.title}`,
 				"",
 			].join("\n");
-			await writeFile(file, front + (params.body ? params.body + "\n" : ""), "utf8");
+			try {
+				await mkdir(path.join(VAULT, "notes"), { recursive: true });
+				await writeFile(file, front + (params.body ? params.body + "\n" : ""), "utf8");
+			} catch (e: any) {
+				return { content: [{ type: "text", text: `vault_note write failed: ${e?.message ?? e} (vault at ${VAULT} — run vault-init?)` }], isError: true };
+			}
 			await writeJump(file);
 			await tttExec('exec "Forseti: Jump"');
 			return { content: [{ type: "text", text: `created [[${slug}]] → ${file} (opened in ttt)` }], details: { ok: true } };
