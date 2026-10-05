@@ -36,6 +36,7 @@ import os
 import re
 import sqlite3
 import threading
+import urllib.request
 from datetime import datetime, timezone
 
 import sqlite_vec
@@ -63,6 +64,19 @@ LINK_MAX = int(os.environ.get("FORSETI_MEMORY_LINK_MAX", "10"))  # bounded box e
 AUTOLINK_SIM = float(os.environ.get("FORSETI_MEMORY_AUTOLINK_SIM", "0.7"))
 AUTOLINK_MAX = int(os.environ.get("FORSETI_MEMORY_AUTOLINK_MAX", "10"))
 AUTOLINK_ON = os.environ.get("FORSETI_MEMORY_AUTOLINK", "1") != "0"
+# P12.6: laya (local decision endpoint) adjudicates the near-dup GRAY BAND and
+# classifies omitted types. Advisory only: every failure path degrades to the
+# P12 heuristics — a write must never fail because laya is down.
+LAYA_ON = os.environ.get("FORSETI_MEMORY_LAYA", "1") != "0"
+LAYA_URL = os.environ.get("FORSETI_LAYA_URL", "http://127.0.0.1:8751")
+LAYA_PROB = float(os.environ.get("FORSETI_MEMORY_LAYA_PROB", "0.65"))
+# Gate on P(top label), NOT laya's `confidence` field: that one is calibrated
+# for binary routing (P8) and discounts these rubrics to ~0.1 even when the
+# argmax is right. S25 (spikes): on our probe set the top probability cleanly
+# separates definite cases (p >= 0.67) from genuinely ambiguous ones
+# (p ~= 0.50-0.51, coin flips), so p >= 0.65 abstains exactly when unsure.
+LAYA_BAND = float(os.environ.get("FORSETI_MEMORY_LAYA_BAND", "0.7"))  # conflict-candidate floor
+LAYA_TOPK = int(os.environ.get("FORSETI_MEMORY_LAYA_TOPK", "3"))
 BOOT_ID = os.environ.get("FORSETI_MEMORY_BOOT_ID", "")  # serve-script liveness nonce (M2)
 
 # P13 boot-time validation (agent-1 hardening): bad env constants fail FAST
@@ -71,8 +85,10 @@ if RRF_K <= 0:
     raise SystemExit(f"FORSETI_MEMORY_RRF_K must be > 0 (got {RRF_K})")
 if not 0 <= DEDUP_SIM <= 1 or not 0 <= RECENCY_DECAY <= 1:
     raise SystemExit("FORSETI_MEMORY_DEDUP / RECENCY_DECAY must be in [0,1]")
-if W_RECENCY < 0 or W_IMPORTANCE < 0 or LINK_MAX < 0:
+if W_RECENCY < 0 or W_IMPORTANCE < 0 or LINK_MAX < 0:  # P12.6 dials too (M-rule: fail fast)
     raise SystemExit("FORSETI_MEMORY_W_RECENCY / W_IMPORTANCE / LINK_MAX must be >= 0")
+if not 0 <= LAYA_PROB <= 1 or not 0 <= LAYA_BAND <= 1:
+    raise SystemExit("FORSETI_MEMORY_LAYA_PROB / LAYA_BAND must be in [0,1]")
 
 VALID_TYPES = {"fact", "episode", "procedure", "preference"}
 
@@ -276,6 +292,52 @@ def _autolinks(conn, near, req_agent, exclude):
     return out
 
 
+RELATE_INSTR = ("Compare the NEW memory against the EXISTING memory about the "
+                "same subject. Did any value (date, number, name, decision) change?")
+RELATE_CRITERIA = {
+    "same": "every value (date, number, name, decision) is unchanged — the NEW "
+            "text only restates the EXISTING memory in different words",
+    "changed": "a value changed — the NEW text updates the EXISTING memory "
+               "(a date moved, a number differs, a name or decision was replaced)",
+}
+TYPE_CRITERIA = {
+    "fact": "a stable truth about the world, a system, or a name/quantity",
+    "episode": "something that happened: a dated event, interaction, or outcome",
+    "procedure": "how to do something: steps, commands, or a workflow",
+    "preference": "a stated preference, style rule, or team convention",
+}
+
+
+def _laya_choice(name, instructions, criteria, state_text):
+    """P12.6: one laya choice decision -> label, or None (= abstain/down).
+    NEVER raises: laya is advisory and a memory write must not fail because of
+    it (the endpoint is a warm-~21 ms local box, but treat every timeout or
+    shape surprise as abstention and let the heuristics decide).
+    Lock discipline: call OUTSIDE the write transaction (M6 rule)."""
+    if not LAYA_ON:
+        return None
+    try:
+        body = json.dumps({
+            "state": {"input": state_text},
+            "questions": {name: {"type": "choice", "instructions": instructions,
+                                 "criteria": criteria}},
+        }).encode()
+        req = urllib.request.Request(LAYA_URL + "/v1/systemone", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            out = json.loads(resp.read().decode())
+        ans = out["answers"][name]
+        probs = ans.get("probabilities") or {}
+        if not probs:
+            return None
+        label = max(probs, key=probs.get)
+        if float(probs[label]) < LAYA_PROB:
+            return None  # near coin-flip for this rubric — abstain
+        return label
+    except Exception:
+        return None
+
+
 app = FastAPI(title="forseti-memory")
 
 
@@ -288,7 +350,7 @@ class WriteReq(BaseModel):
     tags: list[str] = []
     source: Optional[str] = None
     run: Optional[str] = None
-    type: str = "fact"          # fact|episode|procedure|preference
+    type: Optional[str] = None  # fact|episode|procedure|preference; omitted → laya classifies (P12.6), abstain → fact
     importance: float = 0.5     # 0–1
     supersedes: Optional[int] = None  # id of the fact this one replaces
     expires_at: Optional[str] = None  # ISO timestamp
@@ -329,7 +391,7 @@ def health():
 
 @app.post("/write")
 def write(req: WriteReq):
-    if req.type not in VALID_TYPES:
+    if req.type is not None and req.type not in VALID_TYPES:  # P12.6: omitted type → classified below
         raise HTTPException(status_code=422, detail=f"type must be one of {sorted(VALID_TYPES)}")
     if not 0 <= req.importance <= 1:
         raise HTTPException(status_code=422, detail="importance must be in [0,1]")
@@ -342,6 +404,12 @@ def write(req: WriteReq):
     conn = db()
     ts = now_iso()
     digest = md5(req.text)
+    # P12.6: omitted type → laya classifies it (abstain/down → fact). Runs
+    # before any transaction: no network under the write lock (M6 rule).
+    mtype = req.type if req.type is not None else (
+        _laya_choice("mtype", "Which kind of memory is the NEW text?",
+                     TYPE_CRITERIA, req.text)
+        or "fact")
 
     # explicit supersedes (Zep semantics) wins over every heuristic: insert the
     # new fact as current and mark the OLD row superseded (history queryable).
@@ -382,7 +450,7 @@ def write(req: WriteReq):
             " importance, superseded_by, expires_at, links) VALUES"
             " (?,?,?,?,?,?,?,?,?,NULL,?,?)",
             (ts, req.agent, req.run, req.source, json.dumps(req.tags), req.text,
-             digest, req.type, req.importance, req.expires_at, json.dumps(links)),
+             digest, mtype, req.importance, req.expires_at, json.dumps(links)),
         )
         mem_id = cur.lastrowid
         conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, mem_id))
@@ -401,7 +469,33 @@ def write(req: WriteReq):
               ref=mem_id)
         conn.commit()
         return {"id": mem_id, "ts": ts, "supersedes": req.supersedes,
-                "auto_links": auto}
+                "auto_links": auto, "type": mtype}
+
+    # P12.6: candidate pool + laya gray-band verdicts BEFORE the write
+    # transaction (M6 lock discipline — no vec query + network round-trips
+    # inside BEGIN IMMEDIATE). The pool also feeds the M19 merge loop and the
+    # P12.5-B auto-links below, so it is fetched once here.
+    near = conn.execute(
+        "SELECT mem_id, distance FROM mem_vec WHERE embedding MATCH ? AND k = ?"
+        " ORDER BY distance",
+        (emb, 100),
+    ).fetchall()
+    verdicts = {}
+    if LAYA_ON:
+        asked = 0
+        for mem_id, distance in near:
+            if asked >= LAYA_TOPK or 1.0 - float(distance) < LAYA_BAND:
+                break  # ascending distance: everything further is below the band
+            r = conn.execute(
+                "SELECT agent, superseded_by, expires_at, text FROM memories WHERE id = ?",
+                (mem_id,),
+            ).fetchone()
+            if not r or r[0] != req.agent or r[1] is not None or _expired(r[2]):
+                continue
+            pair = f"NEW: {req.text}\nEXISTING: {r[3]}"
+            verdicts[mem_id] = _laya_choice("relate", RELATE_INSTR,
+                                            RELATE_CRITERIA, pair)
+            asked += 1
 
     # P13-M7: BEGIN IMMEDIATE around dedup-check + insert — two concurrent
     # identical writes used to race past the SELECT and insert permanent twins.
@@ -421,29 +515,25 @@ def write(req: WriteReq):
     if row and not _expired(row[1]):
         old_tags = json.loads(row[2])
         merged_meta = sorted(set(old_tags) | set(req.tags))
-        if (row[3] != req.type or row[4] != req.importance or merged_meta != old_tags):
+        if (row[3] != mtype or row[4] != req.importance or merged_meta != old_tags):
             conn.execute(
                 "UPDATE memories SET ts = ?, type = ?, importance = ?, tags = ? WHERE id = ?",
-                (ts, req.type, req.importance, json.dumps(merged_meta), row[0]),
+                (ts, mtype, req.importance, json.dumps(merged_meta), row[0]),
             )
         else:
             conn.execute("UPDATE memories SET ts = ? WHERE id = ?", (ts, row[0]))
         conn.commit()
-        return {"id": row[0], "ts": ts, "dedup": "exact"}
+        return {"id": row[0], "ts": ts, "dedup": "exact", "type": mtype}
 
     # near-dup merge (Mem0's 0.95 gate, inside the caller's namespace): update
     # the existing row instead of accreting near-identical facts.
     # P13-M2: only CURRENT rows are merge candidates — merging into an expired
     # row kept its expires_at and the refreshed fact stayed dead (hit live).
     # P13-M19: pool widened (global top-100) — a small global pool missed
-    # in-namespace twins when other namespaces were denser.
+    # in-namespace twins when other namespaces were denser. (P12.6: fetched
+    # pre-transaction above; verdicts reuse it.)
     # P13-M12: the merge carries links too (the caller's links were dropped).
-    near = conn.execute(
-        "SELECT mem_id, distance FROM mem_vec WHERE embedding MATCH ? AND k = ?"
-        " ORDER BY distance",
-        (emb, 100),
-    ).fetchall()
-    for mem_id, distance in near:
+    for mem_id, distance in near:    # ascending distance
         r = conn.execute(
             "SELECT agent, superseded_by, expires_at FROM memories WHERE id = ?", (mem_id,)
         ).fetchone()
@@ -458,7 +548,7 @@ def write(req: WriteReq):
             conn.execute(
                 "UPDATE memories SET ts = ?, text = ?, hash = ?, tags = ?,"
                 " type = ?, importance = ?, links = ? WHERE id = ?",
-                (ts, req.text, digest, json.dumps(merged), req.type, req.importance,
+                (ts, req.text, digest, json.dumps(merged), mtype, req.importance,
                  json.dumps(req.links), mem_id),
             )
             conn.execute("DELETE FROM mem_vec WHERE mem_id = ?", (mem_id,))
@@ -468,7 +558,70 @@ def write(req: WriteReq):
             _hist(conn, mem_id, req.agent, "merge", actor=req.agent,
                   old=old_row[1], new=req.text)
             conn.commit()
-            return {"id": mem_id, "ts": ts, "dedup": "near"}
+            return {"id": mem_id, "ts": ts, "dedup": "near", "type": mtype}
+
+    # P12.6: gray-band adjudication (laya) for candidates the 0.95 heuristic
+    # left undecided. Verdicts were computed OUTSIDE this transaction — the
+    # candidate state is RECHECKED here; a stale verdict is dropped, never
+    # trusted over the DB. same → merge; changed → auto-supersede
+    # (history kept, same lineage semantics as explicit supersedes);
+    # no verdict (band miss / abstain / laya down) → insert (+auto-links).
+    for mem_id, distance in near:
+        verdict = verdicts.get(mem_id)
+        if verdict not in ("same", "changed"):
+            continue
+        if 1.0 - float(distance) < LAYA_BAND:
+            break
+        r = conn.execute(
+            "SELECT superseded_by, expires_at, tags, text FROM memories WHERE id = ?",
+            (mem_id,),
+        ).fetchone()
+        if not r or r[0] is not None or _expired(r[1]):
+            continue
+        if verdict == "same":
+            merged2 = sorted(set(json.loads(r[2])) | set(req.tags))
+            conn.execute(
+                "UPDATE memories SET ts = ?, text = ?, hash = ?, tags = ?,"
+                " type = ?, importance = ?, links = ? WHERE id = ?",
+                (ts, req.text, digest, json.dumps(merged2), mtype, req.importance,
+                 json.dumps(req.links), mem_id),
+            )
+            conn.execute("DELETE FROM mem_vec WHERE mem_id = ?", (mem_id,))
+            conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, mem_id))
+            _hist(conn, mem_id, req.agent, "merge", actor=req.agent,
+                  old=r[3], new=req.text)
+            conn.commit()
+            return {"id": mem_id, "ts": ts, "dedup": "laya-merge", "type": mtype}
+        if verdict == "changed":
+            auto = []
+            if AUTOLINK_ON:
+                auto = _autolinks(conn, near, req.agent, exclude=None)
+            auto = [i for i in auto if i != mem_id]
+            links2 = sorted(set(req.links) | set(auto))
+            cur = conn.execute(
+                "INSERT INTO memories(ts, agent, run, source, tags, text, hash, type,"
+                " importance, superseded_by, expires_at, links)"
+                " VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
+                (ts, req.agent, req.run, req.source, json.dumps(req.tags), req.text,
+                 digest, mtype, req.importance, req.expires_at, json.dumps(links2)),
+            )
+            new_id = cur.lastrowid
+            conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, new_id))
+            marked = conn.execute(
+                "UPDATE memories SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL",
+                (new_id, mem_id),
+            ).rowcount
+            # marked != 1: a concurrent write superseded the old row mid-flight;
+            # our row stays current (no lineage edge) — the next write against
+            # this band sees the fresh state and re-adjudicates.
+            _hist(conn, new_id, req.agent, "add", actor=req.agent, new=req.text,
+                  ref=mem_id if marked == 1 else None)
+            if marked == 1:
+                _hist(conn, mem_id, req.agent, "supersede", actor=req.agent, ref=new_id)
+            conn.commit()
+            return {"id": new_id, "ts": ts, "auto_links": auto,
+                    "supersedes": mem_id if marked == 1 else None,
+                    "laya": "changed", "type": mtype}
 
     # P12.5-B: auto-link the top visible candidates from the M19 pool
     # (band [AUTOLINK_SIM, DEDUP_SIM) — closer would have merged). Exact-dup
@@ -482,13 +635,13 @@ def write(req: WriteReq):
         " importance, superseded_by, expires_at, links)"
         " VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
         (ts, req.agent, req.run, req.source, json.dumps(req.tags), req.text,
-         digest, req.type, req.importance, req.expires_at, json.dumps(links)),
+         digest, mtype, req.importance, req.expires_at, json.dumps(links)),
     )
     mem_id = cur.lastrowid
     conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, mem_id))
     _hist(conn, mem_id, req.agent, "add", actor=req.agent, new=req.text)  # P12.5-C
     conn.commit()
-    return {"id": mem_id, "ts": ts, "auto_links": auto}
+    return {"id": mem_id, "ts": ts, "auto_links": auto, "type": mtype}
 
 
 def _visible(conn, mem_id, req, since_dt=None):

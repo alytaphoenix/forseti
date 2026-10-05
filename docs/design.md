@@ -869,4 +869,61 @@ contract or semantics — mechanical fixes are in the code and the spike record:
 
 Boundaries (Phase 13): the review's deferred items (memory `/clear`, auto-links
 at write, history audit table, importance-boost calibration, shared-DB probe-row
-cleanup, laya-in-memory) are planned as 12.5/12.6 — see the handoff plan file.
+cleanup, laya-in-memory) shipped immediately after as 12.5/12.6 (as-built below).
+
+## Phase 12.5 + 12.6 — memory hardening & laya gray zone (as-built 2026-10-05)
+
+12.5 (hardening, all four items):
+
+- `POST /clear {agent, confirm}` namespace cleanup: rows hard-delete like
+  /forget (per-row `delete` audit) and rows whose `superseded_by` pointed at a
+  cleared row are REVIVED (batched M10 rule) — a clear can never strand
+  private facts behind a deleted superseder. Clearing `shared` requires
+  `confirm:true`. `GET /namespaces` for ops. One-off cleanup ran live:
+  106 → 4 rows (all eval/v2probe/p13 debris removed, every real memory kept).
+- Auto-links on every INSERT path: top-10 candidates with cosine in
+  [AUTOLINK_SIM 0.7, DEDUP_SIM) drawn ONLY from the caller's read-visibility
+  set — a shared row never links a private fact (that would leak the private
+  row's existence through box expansion). Dead (superseded/expired) rows are
+  never linked. `auto_links` rides in the write response.
+- `history` audit table = **schema v4** (pre-v4 rows backfilled with `add`):
+  events add|merge|supersede|delete|revive commit INSIDE the mutation
+  transaction (history and mutation are atomic). `GET /history?memory_id=` is
+  namespace-guarded. A merge's destroyed statement survives as `old_text`;
+  a forgotten row's last text survives as a `delete` event. Imports stay
+  silent — audit covers live mutations; restore does not replay history.
+- Boost calibration probes (12.5-D) exposed a REAL ranking bug: recall
+  truncated at k in RRF order and ranked on the boosted `final` only after
+  — importance and recency could never reorder anything the contract said
+  they do. As-built: boost every visible candidate, sort, then truncate.
+
+12.6 (laya in memory, advisory-only): the near-dup GRAY BAND [0.7, 0.95) is
+where the ≥0.95 heuristic is silent and the merge-vs-supersede question is
+real. Verdicts come from laya (`/v1/systemone`, choice question) computed
+BEFORE `BEGIN IMMEDIATE` (M6 lock discipline); inside the transaction the
+candidate state is RECHECKED — a stale verdict is dropped, never trusted over
+the DB. `same` → merge (audit `merge` with old text); `changed` →
+auto-supersede (lineage + both audit events; the marking UPDATE is race-
+guarded like the explicit path, the loser's row simply stays current);
+abstain / laya-down → exactly the P12 heuristics. A write NEVER fails
+because laya is unreachable (2 s timeout per call, top-3 candidates max).
+
+The question is deliberately BINARY (`same`|`changed`): a 3-way
+reworded/conflicting/different framing mislabeled value-changes as
+"different"; the 0.7 band already excludes unrelated facts (measurements:
+spikes S25). Gate = P(top label) ≥ 0.65, NOT laya's `confidence` field
+(binary-routing calibration discounts rubrics to ~0.1–0.3 when argmax is
+right). Empirical separation (S25): definite pairs p ∈ [0.677, 0.97],
+genuinely-ambiguous same-slot pairs p ∈ [0.504, 0.513]; borderline live case
+p = 0.642 → abstain (old fact survives, auto-linked). Omitted `type` is
+classified the same way (abstain → `fact`, which the measured abstentions
+make the correct default).
+
+Dials: `FORSETI_MEMORY_LAYA` (off switch), `FORSETI_LAYA_URL`,
+`FORSETI_MEMORY_LAYA_PROB` / `_BAND` / `_TOPK`. Response observability:
+`dedup: laya-merge`, `laya: "changed"`, `auto_links`, `type` on every write.
+
+Gates: memory-eval **23/23** (16 P12/P13 + 7 P12.5 rows + 3 conditional P12.6
+rows — SKIP-not-fail and excluded from the total when laya is down);
+laya-eval 9/9 unaffected; degradation probe (laya URL black-holed) and a live
+shared-service smoke (conflict → supersede → history → clear) both PASS.

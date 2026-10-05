@@ -19,6 +19,8 @@ WORKDIR="$(mktemp -d)"
 EVAL_PORT="${FORSETI_MEMORY_EVAL_PORT:-8762}"
 URL="http://127.0.0.1:$EVAL_PORT"
 FORSETI_MEMORY_DB="$WORKDIR/eval.db" FORSETI_MEMORY_PORT="$EVAL_PORT" \
+  FORSETI_MEMORY_LAYA="${FORSETI_MEMORY_LAYA:-1}" \
+  FORSETI_LAYA_URL="${FORSETI_LAYA_URL:-http://127.0.0.1:8751}" \
   "$VENV/bin/python" "$(pwd)/crew/memory/memory_serve.py" > "$WORKDIR/serve.log" 2>&1 &
 EVAL_PID=$!
 cleanup() {
@@ -45,10 +47,11 @@ curl -s -m 3 "$URL/health" | grep -q '"status":"ok"' || {
 
 NS="eval-probe-$$"   # unique per run — no cross-contamination
 
-"$VENV/bin/python" - "$URL" "$NS" "$WORKDIR/eval.db" << 'EOF'
+LAYA_URL_PROBE="${FORSETI_LAYA_URL:-http://127.0.0.1:8751}"
+"$VENV/bin/python" - "$URL" "$NS" "$WORKDIR/eval.db" "$LAYA_URL_PROBE" << 'EOF'
 import json, sys, urllib.request
 
-url, ns, dbpath = sys.argv[1], sys.argv[2], sys.argv[3]
+url, ns, dbpath, laya_url = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 def get(path):
     with urllib.request.urlopen(url + path, timeout=60) as resp:
@@ -156,11 +159,13 @@ ok += passed
 
 # ---- P12.5 probes (A clear / B auto-links / C history audit / D boosts) ----
 
-# B: auto-links — a related-but-not-duplicate fact links its neighbour at write
+# B: auto-links — a related-but-not-duplicate fact links its neighbour at
+# write. The pair is the measured laya-abstention case (same slot, different
+# aspect: cos 0.75, laya p~0.50 < gate), so it stays two rows and links.
 a1 = post("/write", {"agent": ns,
                      "text": "the api gateway rate limit is 500 requests per minute"})
 a2 = post("/write", {"agent": ns,
-                     "text": "the api gateway throttles inbound traffic to 500 requests each minute"})
+                     "text": "the api gateway rate limit applies per tenant"})
 passed = a2["id"] != a1["id"] and a1["id"] in a2.get("auto_links", [])
 mark = "PASS" if passed else "FAIL"
 print(f"  [{mark}] auto-links on write (related fact links neighbour)")
@@ -204,10 +209,10 @@ ok += passed
 
 # A: /clear removes exactly one namespace; /namespaces agrees
 cs = ns + "-clear"
-post("/write", {"agent": cs, "text": "scratch fact alpha for the clear probe"})
-post("/write", {"agent": cs, "text": "scratch fact beta for the clear probe"})
+post("/write", {"agent": cs, "text": "the clear probe namespace stores widget inventory counts"})
+post("/write", {"agent": cs, "text": "the clear probe namespace logs warehouse crane maintenance"})
 cres = post("/clear", {"agent": cs})
-left = post("/recall", {"query": "scratch fact alpha beta", "agent": cs, "k": 5})
+left = post("/recall", {"query": "clear probe namespace widget crane", "agent": cs, "k": 5})
 listed = any(n["agent"] == cs for n in get("/namespaces")["namespaces"])
 passed = cres.get("cleared") == 2 and left == [] and not listed and post("/recall", {"query": "release train freezes", "agent": ns, "k": 5}) != []
 mark = "PASS" if passed else "FAIL"
@@ -249,6 +254,53 @@ mark = "PASS" if passed else "FAIL"
 print(f"  [{mark}] recall reinforcement (access_count bumped, last_access set)")
 ok += passed
 
+# ---- P12.6 probes (laya in memory) — skip-not-fail when laya is down ----
+laya_up = False
+try:
+    with urllib.request.urlopen(laya_url + "/health", timeout=3) as r:
+        laya_up = json.loads(r.read().decode()).get("status") == "ok"
+except Exception:
+    pass
+
+laya_extra = 0
+if not laya_up:
+    print("  [SKIP] laya auto-supersede of an undeclared conflict — endpoint down")
+    print("  [SKIP] laya/gray-band reword merges — endpoint down")
+    print("  [SKIP] laya type auto-classification — endpoint down")
+else:
+    laya_extra = 3
+    # conflict: a value changed and nobody declared it — laya adjudicates the
+    # gray band and the stale fact is SUPERSEDED (not merged, not a twin)
+    x1 = post("/write", {"agent": ns, "text": "the deploy freeze window is tuesday morning"})
+    x2 = post("/write", {"agent": ns, "text": "the deploy freeze window moved to wednesday morning"})
+    cur = post("/recall", {"query": "when is the deploy freeze window", "agent": ns, "k": 5})
+    hist = get(f"/history?memory_id={x1["id"]}&agent={ns}")
+    passed = (x2.get("supersedes") == x1["id"]
+              and all(r["id"] != x1["id"] for r in cur)
+              and any(h["event"] == "supersede" for h in hist))
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] laya auto-supersede of an undeclared conflict"
+          f" -> dedup={x2.get("dedup")} supersedes={x2.get("supersedes")}")
+    ok += passed
+
+    # reword inside the gray band -> merge (same id), whichever layer decided
+    y1 = post("/write", {"agent": ns, "text": "the incident commander for october is dana"})
+    y2 = post("/write", {"agent": ns, "text": "dana is this october's incident commander"})
+    passed = y2["id"] == y1["id"]
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] laya/gray-band reword merges (same id)"
+          f" -> dedup={y2.get("dedup")}")
+    ok += passed
+
+    # type auto-classification: omitted type, clearly procedural text
+    z1 = post("/write", {"agent": ns,
+                         "text": "to redeploy the gateway, run make build then kubectl rollout restart deployment/gateway"})
+    passed = z1.get("type") == "procedure"
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] laya type auto-classification (procedure)"
+          f" -> type={z1.get("type")}")
+    ok += passed
+
 # ---- P13 probes: error-path contracts (the fixes as assertions) ----
 import urllib.error
 def post_status(path, payload):
@@ -277,7 +329,7 @@ mark = "PASS" if passed else "FAIL"
 print(f"  [{mark}] recall k>=1 contract (k=0 → 422)")
 ok += passed
 
-total = len(probes) + 17
+total = len(probes) + 17 + laya_extra
 print(f"{ok}/{total} probes passed")
 sys.exit(0 if ok == total else 1)
 EOF

@@ -513,3 +513,40 @@ change was churn without an observed failure.
   run `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next`.
 - memory-eval is SELF-CONTAINED (scratch service on a private port + scratch
   SQLite; 13/13 with two new error-path probes: forget namespace guard, k=0→422).
+
+## S25 — laya as the memory gray-zone adjudicator (Phase 12.6, 2026-10-05) ✅ resolved (live measurement)
+
+Verified against the local laya 0.3.22 `/v1/systemone` endpoint (healthy, warm
+~21 ms). The gray band [0.7, 0.95) asks “merge the restatement or supersede the
+stale value?” — how to pose that to a decision endpoint turned out to matter:
+
+- **3-way relation rubrics mislabel**: `reworded|conflicting|different` on
+  “freeze window tuesday morning” → “moved to wednesday morning” answered
+  `different` (p 0.67, conf 0.28). The 0.7 similarity band already excludes
+  unrelated facts, so the question is BINARY (`same`|`changed`) with criteria
+  naming the slots (“did any date/number/name/decision change”): 5/5 argmax
+  on labeled pairs (3 conflicts + 2 restatements), including a 500→900
+  rate-limit pair the 3-way framing got wrong.
+- **laya’s `confidence` field is unusable as a gate for rubric questions**:
+  it reads 0.09–0.27 exactly when the top-probability label is right
+  (0.68–0.80). It is calibrated for the binary-routing use (P8); gating on
+  conf ≥ 0.5 means laya never fires here.
+- **P(top label) is the honest abstention dial**: measured separation — clean
+  pairs p ∈ [0.677, 0.97]; genuinely-ambiguous same-slot/different-aspect
+  pairs (“rate limit is 500 rpm” vs “applies per tenant”) p ∈ [0.504,
+  0.513] — coin flips. Gate p ≥ 0.65 (`FORSETI_MEMORY_LAYA_PROB`) takes every
+  clean case and drops every ambiguous one. Borderline live case (“cutline
+  thursday 18:00” → “moved to friday 12:00”, TWO values moved): p = 0.642
+  → abstained (verified on the shared service: old fact survived, got
+  auto-linked, awaits a confident write or explicit supersedes).
+- **Type classification** (4 labels): procedure p 0.893, preference p 0.959,
+  episode p 0.881 fire; an “is named” fact-like text scored p 0.443 → abstain
+  → `fact` default (empirically the right label — abstention is benign here).
+- Lock discipline: pool fetch + laya round-trips happen BEFORE
+  `BEGIN IMMEDIATE`; inside the txn the candidate’s live state is rechecked
+  and a stale verdict dropped (DB beats cache).
+- Eval-design consequence: probe texts must be picked with the band in mind
+  — “alpha/beta” reads as a value slot (auto-superseded), same-value
+  paraphrases read `same` (merged). The auto-links probe now uses a measured
+  abstention pair (cos 0.75, p ~0.50); the /clear probe uses unrelated topics
+  (cos ~0.38) so it tests /clear, not the gray band.

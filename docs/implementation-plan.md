@@ -370,6 +370,25 @@ docs/spikes.md S24; semantics as-built: docs/design.md Phase 13.
 Deliberate skip: memory-service `closing()` refactor (CPython refcounts already
 close per-request conns; churn without observed failure).
 
+## Phase 12.5 — memory hardening — ✅ **implemented + verified live** (2026-10-05)
+
+| item | status |
+|---|---|
+| 12.5-A `/clear` + `/namespaces` | ✅ `shared` needs `confirm:true`; rows whose superseder was cleared are REVIVED; one-off shared-DB cleanup 106→4 rows (all probe debris gone, real memories kept) |
+| 12.5-B auto-links on write | ✅ top-10 visible candidates, cosine [0.7, 0.95), every INSERT path; shared rows never link private ones (existence leak) |
+| 12.5-C history audit (schema v4) | ✅ add/merge/supersede/delete/revive commit INSIDE the mutation txn; `GET /history?memory_id=` namespace-guarded; pre-v4 rows backfilled with `add` |
+| 12.5-D boost calibration | ✅ probes FOUND a real bug: recall truncated at k in RRF order BEFORE boost-ranking (importance/recency were decorative, contract said otherwise) — now boost→sort→truncate; +recency-reinforcement probe |
+
+## Phase 12.6 — laya in memory — ✅ **implemented + verified live** (2026-10-05)
+
+| item | status |
+|---|---|
+| 12.6-1 gray-band conflicts | ✅ binary value-changed? verdict per top-3 in-band candidate, computed OUTSIDE the write txn: `same`→merge, `changed`→auto-supersede (M9-guarded), abstain/down→pure P12 heuristics |
+| 12.6-2 type auto-classification | ✅ omitted `type` → fact/episode/procedure/preference (abstain→fact); explicit types unchanged |
+| 12.6-3 gate calibration | ✅ gate = P(top label) ≥ 0.65 (`FORSETI_MEMORY_LAYA_PROB`); laya's `confidence` field proven unusable for rubrics (S25: 0.09–0.27 while argmax right) |
+| 12.6-4 degradation | ✅ laya-down probe: writes succeed with heuristic behavior preserved (auto-links + 0.95 merge + fact default) |
+| 12.6-5 gates | ✅ memory-eval **23/23** (3 laya rows SKIP-not-fail when laya is down, total adapts); laya-eval 9/9; live shared-service smoke: auto-supersede + /history + /clear |
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in
