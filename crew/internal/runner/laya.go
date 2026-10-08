@@ -134,12 +134,17 @@ func NewMemoryClient() *MemoryClient {
 }
 
 // Recall returns rows (map form: id/ts/agent/text/score) or an error when the
-// service is unreachable.
-func (c *MemoryClient) Recall(query, agent string, k int) ([]map[string]any, error) {
+// service is unreachable. crew (P14) widens visibility to the crew namespace
+// (empty = personal + shared only).
+func (c *MemoryClient) Recall(query, agent string, k int, crew string) ([]map[string]any, error) {
 	if k <= 0 {
 		k = 3
 	}
-	body, _ := json.Marshal(map[string]any{"query": query, "agent": agent, "k": k})
+	payload := map[string]any{"query": query, "agent": agent, "k": k}
+	if crew != "" {
+		payload["crew"] = crew
+	}
+	body, _ := json.Marshal(payload)
 	resp, err := c.HTTP.Post(c.BaseURL+"/recall", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("memory endpoint unreachable (%s): %w", c.BaseURL, err)
@@ -153,6 +158,34 @@ func (c *MemoryClient) Recall(query, agent string, k int) ([]map[string]any, err
 		return nil, err
 	}
 	return rows, nil
+}
+
+// Write posts a node's output back to the crew memory namespace (P14 auto-
+// write). The service stores the row under crew-<crew>. Advisory: the runner
+// fires this off the hot path; errors are logged, never fatal to the run.
+func (c *MemoryClient) Write(text, crew, run, source string, tags []string) (int, error) {
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+	body, _ := json.Marshal(map[string]any{
+		"agent": "crew-" + crew, "crew": crew, "text": text,
+		"run": run, "source": source, "tags": tags,
+	})
+	resp, err := c.HTTP.Post(c.BaseURL+"/write", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return 0, fmt.Errorf("memory endpoint unreachable (%s): %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("memory write %d", resp.StatusCode)
+	}
+	var out struct {
+		ID int `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.ID, nil
 }
 
 // edgeIsLaya is a schema helper alias (kept here so runner code reads plain).

@@ -389,6 +389,16 @@ close per-request conns; churn without observed failure).
 | 12.6-4 degradation | ✅ laya-down probe: writes succeed with heuristic behavior preserved (auto-links + 0.95 merge + fact default) |
 | 12.6-5 gates | ✅ memory-eval **23/23** (3 laya rows SKIP-not-fail when laya is down, total adapts); laya-eval 9/9; live shared-service smoke: auto-supersede + /history + /clear |
 
+## Phase 14 — MemTree hierarchy + crew memory integration — ✅ **implemented + gates green** (2026-10-07)
+
+| item | status |
+|---|---|
+| 14-1 MemTree port | memtree.py: theta(d) descent insert, collapsed-tree recall resolving internal hits to descendant leaves, living-children recompute on merge/forget (paper facts + deviations: spikes S26) |
+| 14-2 schema v5 | tree_nodes + memories.parent_id + tree_vec (vec0), in-txn backfill of pre-v5 rows, GET /tree, export _tree lines; kill switch FORSETI_MEMTREE=0 |
+| 14-3 aggregation | heuristic default; FORSETI_MEMTREE_AGG=llm advisory valhalla fold (8 s cap; any failure falls back; writes never block) |
+| 14-4 crew wiring | memory: block (namespace/auto_recall/recall_k/auto_write/write_max_chars) + per-agent memory: off / memory_query; auto-recall at dispatch, auto-write on node_done (event memory_write); .forseti/memory-crew + FORSETI_MEMORY_CREW |
+| 14-5 gates | memory-eval 28/28 (5 new P14 rows); Go suite green (schema memory tests + MemoryClient payload tests); example crew/examples/crew-memory.yaml validates |
+
 ## Phases 0–5 implementation complete — status 2026-09-30
 
 All five phases executed and verified live (see per-phase tables above; spikes in

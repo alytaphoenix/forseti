@@ -36,6 +36,7 @@ import (
 	"syscall"
 	"text/template"
 	"time"
+	"unicode/utf8"
 
 	"forseti/crew/internal/herdrd"
 	"forseti/crew/internal/schema"
@@ -45,7 +46,7 @@ import (
 // Event is a run-log record (also streamed to the TUI).
 type Event struct {
 	TS      time.Time `json:"ts"`
-	Type    string    `json:"type"` // run_start|phase_start|phase_done|node_start|node_done|node_retry|node_blocked|node_failed|node_status|edge_skip|check_pass|check_fail|check_skip|pattern_matched|route_decision|laya_decision|memory_recall|teardown|run_end
+	Type    string    `json:"type"` // run_start|phase_start|phase_done|node_start|node_done|node_retry|node_blocked|node_failed|node_status|edge_skip|check_pass|check_fail|check_skip|pattern_matched|route_decision|laya_decision|memory_recall|memory_write|teardown|run_end
 	Node    string    `json:"node,omitempty"`
 	Phase   string    `json:"phase,omitempty"` // phase name on phase events (P11)
 	Info    string    `json:"info,omitempty"`
@@ -113,6 +114,7 @@ type Run struct {
 	finished        atomic.Bool // P13 BUG-17: freeze the status bridge (read from stream goroutines)
 	laya            *LayaClient
 	memory          *MemoryClient
+	runID           string // P14: stable per-run id stamped on memory writes
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -129,6 +131,7 @@ func New(crew *schema.Crew, opts Options) *Run {
 		opts.KeepWorktree = true
 	}
 	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, checksDone: map[string]bool{}}
+	r.runID = time.Now().UTC().Format("20060102-150405") // P14: memory-write provenance
 	r.effectiveCwd = opts.Cwd
 	r.backEdges = crew.BackEdges() // P13: cycle re-entry edges
 	// P11: per-node phase index + barrier bookkeeping. No phases → -1 → the
@@ -247,6 +250,18 @@ func (r *Run) Run(ctx context.Context) error {
 		return err
 	}
 	runDir := filepath.Join(r.effectiveCwd, ".forseti", "runs")
+	// P14 memory hand-off: build the client once (auto-write goroutines then
+	// only read the pointer) and drop .forseti/memory-crew so pi panes — which
+	// get no per-pane env through the herdr socket API (S26) — can resolve
+	// their crew namespace for memory_write / memory_recall.
+	if mem := r.Crew.Memory; mem != nil {
+		r.memory = NewMemoryClient()
+		ns := r.MemoryNS()
+		path := filepath.Join(r.effectiveCwd, ".forseti", "memory-crew")
+		if err := os.WriteFile(path, []byte(ns+"\n"), 0o644); err != nil {
+			r.emit(Event{Type: "run_start", Info: "memory-crew hand-off write failed: " + err.Error()})
+		}
+	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return err
 	}
@@ -1219,13 +1234,22 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		r.fail(a.Name, fmt.Sprintf("prompt render: %v", err))
 		return
 	}
+	prompt := sb.String()
+	// P14 auto-recall: prepend the crew memory block AFTER the template render
+	// (the block itself is never template-expanded). Query = memory_query when
+	// declared, else node name + prompt head. Advisory: down/empty → no block.
+	if mem := r.Crew.Memory; mem != nil && mem.AutoRecallOn() && !a.MemoryOff() {
+		if block := r.autoRecallBlock(a, prompt); block != "" {
+			prompt = block + "\n\n---\n\n" + prompt
+		}
+	}
 
 	// baseline for the empty-settle guard (halogen quirk, 6A-3)
 	baseline, _ := c.AgentRead(a.Name, "recent_unwrapped", 400)
 
 	// settle atomically with the prompt (S-spike: separate wait-idle races the
 	// pre-prompt idle state and returns the startup screen instead of the answer)
-	status, err := c.AgentPromptWait(a.Name, sb.String(),
+	status, err := c.AgentPromptWait(a.Name, prompt,
 		[]string{"idle", "done", "blocked"}, r.Opts.NodeTimeout)
 	if err != nil {
 		r.fail(a.Name, fmt.Sprintf("agent.prompt+wait: %v", err))
@@ -1255,7 +1279,7 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		st.Retries++
 		r.mu.Unlock()
 		r.emit(Event{Type: "node_retry", Node: a.Name, Info: fmt.Sprintf("settle delta %d chars — re-prompting once", paneDelta(baseline, text))})
-		status, err := c.AgentPromptWait(a.Name, sb.String(),
+		status, err := c.AgentPromptWait(a.Name, prompt,
 			[]string{"idle", "done", "blocked"}, r.Opts.NodeTimeout)
 		if err != nil {
 			r.fail(a.Name, fmt.Sprintf("agent.prompt+wait (retry): %v", err))
@@ -1291,6 +1315,11 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	r.mu.Unlock()
 	r.emit(Event{Type: "node_done", Node: a.Name, Model: resolved, CostUSD: cost, CtxPct: ctxPct,
 		Info: fmt.Sprintf("%d chars → %s", len(text), bus)})
+	// P14 auto-write: post the finished output to the crew memory namespace
+	// (fire-and-forget goroutine — a down service costs an event, never the run).
+	if mem := r.Crew.Memory; mem != nil && mem.AutoWriteOn() && !a.MemoryOff() {
+		r.autoWrite(a.Name, text)
+	}
 }
 
 // paneDelta is the heuristic empty-settle measure (6A-3): how much the pane
@@ -1352,7 +1381,7 @@ func (r *Run) recallMemory(node, query string) string {
 	if r.memory == nil {
 		r.memory = NewMemoryClient()
 	}
-	rec, err := r.memory.Recall(query, node, 3)
+	rec, err := r.memory.Recall(query, node, 3, r.MemoryNS())
 	if err != nil {
 		r.emit(Event{Type: "memory_recall", Node: node, Info: "unavailable: " + err.Error()})
 		return ""
@@ -1380,6 +1409,100 @@ func (r *Run) recallMemory(node, query string) string {
 		out = out[:2000]
 	}
 	return out
+}
+
+// MemoryNS returns the crew's memory namespace (P14) — "" when the crew has
+// no memory: block, which keeps every call below invisible to the service.
+func (r *Run) MemoryNS() string {
+	if r.Crew.Memory == nil {
+		return ""
+	}
+	return r.Crew.Memory.NS(r.Crew.Name)
+}
+
+// memClient lazily builds the memory client. Pre-created in Run() when the
+// crew declares memory, so auto-write goroutines only ever read the pointer.
+func (r *Run) memClient() *MemoryClient {
+	if r.memory == nil {
+		r.memory = NewMemoryClient()
+	}
+	return r.memory
+}
+
+// autoRecallBlock (P14) is the dispatch-time auto-recall: it queries with the
+// node's memory_query (or its name + a prompt head) and renders a compact
+// "## Shared memory" block to prepend to the prompt. Advisory: any failure
+// or empty result → "" — a down service never changes what gets dispatched
+// beyond the missing block.
+func (r *Run) autoRecallBlock(a *schema.Agent, prompt string) string {
+	mem := r.Crew.Memory
+	k := mem.RecallK
+	if k <= 0 {
+		k = 3
+	}
+	q := a.MemoryQuery
+	if q == "" {
+		head := truncateUTF8(prompt, 200)
+		q = a.Name + " " + head
+	}
+	rec, err := r.memClient().Recall(q, a.Name, k, r.MemoryNS())
+	if err != nil {
+		r.emit(Event{Type: "memory_recall", Node: a.Name, Info: "auto: unavailable: " + err.Error()})
+		return ""
+	}
+	if len(rec) == 0 {
+		r.emit(Event{Type: "memory_recall", Node: a.Name, Info: fmt.Sprintf("auto: 0 entries for %q", truncateUTF8(q, 60))})
+		return ""
+	}
+	r.emit(Event{Type: "memory_recall", Node: a.Name, Info: fmt.Sprintf("auto: %d entries for %q", len(rec), truncateUTF8(q, 60))})
+	var b strings.Builder
+	b.WriteString("## Shared memory (from the crew; trust but verify)\n")
+	for _, row := range rec {
+		txt, _ := row["text"].(string)
+		ts, _ := row["ts"].(string)
+		if len(ts) > 10 {
+			ts = ts[:10]
+		}
+		if txt == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "- [%s] %s\n", ts, txt)
+	}
+	out := strings.TrimSpace(b.String())
+	if len(out) > 2000 {
+		out = truncateUTF8(out, 2000)
+	}
+	return out
+}
+
+// autoWrite (P14) posts a finished node's output to the crew memory
+// namespace. Fire-and-forget: errors only emit an event, the run never sees
+// them.
+func (r *Run) autoWrite(node, text string) {
+	mem := r.Crew.Memory
+	text = truncateUTF8(text, mem.WriteMaxChars)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	go func() {
+		id, err := r.memClient().Write(text, r.MemoryNS(), r.runID, "node:"+node, []string{"crew", r.Crew.Name})
+		if err != nil {
+			r.emit(Event{Type: "memory_write", Node: node, Info: "unavailable: " + err.Error()})
+			return
+		}
+		r.emit(Event{Type: "memory_write", Node: node, Info: fmt.Sprintf("#%d -> crew-%s", id, r.MemoryNS())})
+	}()
+}
+
+// truncateUTF8 cuts s to at most n bytes, never mid-rune.
+func truncateUTF8(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func (r *Run) summary() string {

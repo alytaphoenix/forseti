@@ -927,3 +927,53 @@ Gates: memory-eval **23/23** (16 P12/P13 + 7 P12.5 rows + 3 conditional P12.6
 rows — SKIP-not-fail and excluded from the total when laya is down);
 laya-eval 9/9 unaffected; degradation probe (laya URL black-holed) and a live
 shared-service smoke (conflict → supersede → history → clear) both PASS.
+
+## Phase 14 — MemTree hierarchy + crew memory integration (implemented 2026-10-07)
+
+Two coupled upgrades, one goal: memory that compounds across crew runs.
+
+### `crew/memory/memtree.py` — hierarchical summaries inside the service
+
+Memory grows flat: recall quality degrades as near-duplicates pile up and no
+level of abstraction exists between "one sentence" and "everything". Phase 14
+ports MemTree (arXiv:2410.14052) into the v5 service (verified facts + our
+deviations: spikes S26):
+
+- `tree_nodes` table (schema v5: parent_id column on `memories`, vec0 index
+ `tree_vec`): memory rows are leaves; internal nodes carry an aggregate
+ summary + mean-bootstrap embedding (re-encoded from the summary text).
+- **Insert**: cosine-thresholded descent (theta(d) = theta0*exp(lambda*d),
+ env dials), one expansion per insert; structure written INSIDE the write txn
+ (pure SQL), summary + encode after commit (M6 lock rule — embedding/LLM
+ never hold the write lock; a crash leaves a structurally valid tree).
+- **Retrieval**: the collapsed leg (flat cosine over all nodes) is fused into
+ `/recall`; hits on internal nodes resolve to descendant leaves, so agents
+ only ever see leaf facts. Kill switch `FORSETI_MEMTREE=0` keeps everything
+ (incl. v2 flat behavior).
+- Summaries recompute from living children on merge/forget (undo-safe);
+ aggregation is heuristic by default, valhalla-advisory
+ (`FORSETI_MEMTREE_AGG=llm`, any failure -> heuristic).
+- `GET /tree?namespace=` renders the tree for humans/debugging; export
+ carries `_tree` lines (skipped on import, trees rebuild).
+
+### Crew integration: `memory:` block in crew.yaml
+
+- `memory: {}` opts a crew in: namespace (default crew name, <=26 chars so
+ `crew-<ns>` fits the service agent limit), `auto_recall` (default on,
+ `recall_k` 3), `auto_write` (default on, `write_max_chars` 4000). Per-agent
+ `memory: off` skips both; `memory_query` overrides the recall query
+ (default: node name + rendered-prompt head).
+- **Auto-recall** prepends a `## Shared memory` block to the dispatched
+ prompt AFTER template render; **auto-write** posts each finished node's
+ output to the crew namespace from a fire-and-forget goroutine (provenance:
+ `run` id + `source: node:<name>`). Both advisory: service down = missing
+ context, never a failed run. New event type `memory_write`.
+- **Namespace plumbing**: the herdr socket API offers no per-pane env
+ (S26), so the runner writes `.forseti/memory-crew` at run start and the
+ pi-extension resolves `FORSETI_MEMORY_CREW` env-first, file-second for
+ `memory_write`/`memory_recall` inside crew panes.
+
+Boundaries (Phase 14): no tree-depth rebalancing, no cross-namespace trees,
+no learned embeddings; LLM aggregation stays advisory-only. Gate:
+`scripts/memory-eval.sh` 28/28 + Go suite (incl. MemoryClient payload
+coverage). Example: `crew/examples/crew-memory.yaml`.

@@ -329,7 +329,68 @@ mark = "PASS" if passed else "FAIL"
 print(f"  [{mark}] recall k>=1 contract (k=0 → 422)")
 ok += passed
 
-total = len(probes) + 17 + laya_extra
+# ---- P14 probes (MemTree hierarchy + crew namespaces) ----
+memtree_extra = 0
+health = get("/health")
+if health.get("memtree"):
+    memtree_extra = 5
+    # a cluster of related facts forms at least one internal summary node
+    tn = ns + "-tree"
+    post("/write", {"agent": tn, "text": "the api gateway forwards requests to the upstream service mesh"})
+    post("/write", {"agent": tn, "text": "the api gateway rate limits each tenant before the mesh"})
+    tree = get(f"/tree?namespace={tn}&agent={tn}")
+    def count_nodes(nodes):
+        n = 0
+        for x in nodes:
+            if x["kind"] == "node":
+                n += 1 + count_nodes(x.get("children", []))
+        return n
+    passed = count_nodes(tree["root"]) >= 1
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] memtree: related facts form an internal node → {count_nodes(tree['root'])} node(s)")
+    ok += passed
+
+    # a summary node's text is an AGGREGATE of its children (not a bare copy)
+    def first_node(nodes):
+        for x in nodes:
+            if x["kind"] == "node":
+                return x
+            r = first_node(x.get("children", []))
+            if r:
+                return r
+    nd = first_node(tree["root"])
+    summary = (nd or {}).get("text") or ""
+    passed = bool(nd) and ("gateway" in summary)
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] memtree: internal node holds an aggregate summary → {summary[:50]!r}")
+    ok += passed
+
+    # crew namespace: a crew write is visible to a same-crew recall...
+    crew = "probecrew"
+    post("/write", {"crew": crew, "agent": "x", "text": "crew probe gateway canary ships at 09:00 UTC"})
+    rcrew = post("/recall", {"query": "when does the crew gateway canary ship", "agent": ns, "crew": crew, "k": 3})
+    passed = any("canary" in x["text"] for x in rcrew)
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] crew namespace: same-crew recall sees the row")
+    ok += passed
+
+    # ...and invisible to a recall WITHOUT the crew arg (namespace isolation)
+    rplain = post("/recall", {"query": "when does the crew gateway canary ship", "agent": ns, "k": 3})
+    passed = all("canary" not in x["text"] for x in rplain)
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] crew isolation: no crew arg -> crew row hidden")
+    ok += passed
+
+    # /forget prunes the tree without corrupting it (structure stays walkable)
+    tw = post("/write", {"agent": tn, "text": "the api gateway emits traces to the collector"})
+    post("/forget", {"id": tw["id"], "agent": tn})
+    tree2 = get(f"/tree?namespace={tn}&agent={tn}")
+    passed = isinstance(tree2.get("root"), list)
+    mark = "PASS" if passed else "FAIL"
+    print(f"  [{mark}] memtree: forget collapses the tree cleanly")
+    ok += passed
+
+total = len(probes) + 17 + laya_extra + memtree_extra
 print(f"{ok}/{total} probes passed")
 sys.exit(0 if ok == total else 1)
 EOF

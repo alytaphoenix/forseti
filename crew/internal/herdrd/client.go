@@ -374,7 +374,7 @@ func (c *Client) AgentPromptWait(name, text string, until []string, timeout time
 		} `json:"event"`
 	}
 	_ = json.Unmarshal(res, &out)
-		if st := out.Event.Data.AgentStatus; st != "" {
+	if st := out.Event.Data.AgentStatus; st != "" {
 		return st, nil
 	}
 	// herdr 0.9.3 live shape (crew-smoke 2026-10-05): the wait result rides

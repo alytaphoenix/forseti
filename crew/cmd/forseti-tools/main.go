@@ -158,15 +158,15 @@ func cmdServe() {
 				}
 			}
 			// P13-B13: arguments are validated against the declared properties —
-		// model-supplied values used to flow into executors unchecked.
-		if err := spec.ValidateArgs(args); err != nil {
-			reply(id, map[string]any{
-				"content": []map[string]any{{"type": "text", "text": "tool rejected arguments: " + err.Error()}},
-				"isError": true,
-			})
-			continue
-		}
-		res, err := spec.Call(context.Background(), args)
+			// model-supplied values used to flow into executors unchecked.
+			if err := spec.ValidateArgs(args); err != nil {
+				reply(id, map[string]any{
+					"content": []map[string]any{{"type": "text", "text": "tool rejected arguments: " + err.Error()}},
+					"isError": true,
+				})
+				continue
+			}
+			res, err := spec.Call(context.Background(), args)
 			if err != nil {
 				reply(id, map[string]any{
 					"content": []map[string]any{{"type": "text", "text": "tool error: " + err.Error()}},

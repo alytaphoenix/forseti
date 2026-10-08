@@ -1,0 +1,39 @@
+# forseti crew v1 — Phase 14 memory-integration demo.
+# Same planner → builder shape as crew.yaml, plus a `memory:` block:
+#   - every node gets a "## Shared memory" block prepended at dispatch
+#     (auto-recall, k=3 by default), scoped to namespace `crew-memdemo`
+#     (service rows live in `crew-<namespace>`);
+#   - each finished node's output is posted back (auto-write) so later runs
+#     and sibling nodes recall what earlier nodes learned.
+# Memory is advisory: a down memory service costs zero context, never a run.
+# Start the service first: scripts/memory-serve.sh start
+# Run: FORSETI_CREW_MODEL=valhalla/valhalla-flash-next forseti-crew run -f crew-memory.yaml
+name: crew-memdemo
+
+memory: {}
+  # all defaults: namespace = crew name, auto_recall on (k=3), auto_write on
+
+agents:
+  - name: planner
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    memory_query: deployment freeze gotchas for the demo repo
+    prompt: |
+      You are the planner. Do NOT edit files. Produce a numbered plan
+      (max 4 steps) to add HELLO_MEMORY.md containing "crew memory works".
+      If a Shared memory block appears above, respect its facts. End with PLAN_READY.
+
+  - name: builder
+    kind: pi
+    model: halogen/halogen-qwen3.8-flash-next
+    prompt: |
+      Execute this plan exactly:
+
+      {{ .planner }}
+
+      Reply with the single word DONE.
+
+edges:
+  - from: planner
+    to: builder
+    when: re:PLAN_READY

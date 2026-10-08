@@ -73,14 +73,26 @@ scripts/laya-eval.sh   # 9-probe gate incl. an abstention contract
 
 ## Memory — shared agent recall
 
-Agents share structured cross-run memory through a local service (vector
-recall, agent-namespaced): pi's `memory_write`/`memory_recall` tools, and
-crew prompts can pull recall directly via `{{ memory "query" }}`.
+Agents share structured cross-run memory through a local service: hybrid
+retrieval (sqlite-vec cosine + FTS5 BM25, RRF-fused), dedup/supersede with
+queryable history, and a **MemTree** layer that rolls related facts into
+summary nodes (retrieval hits a summary but answers with its leaf facts).
+pi's `memory_write`/`memory_recall` tools, crew prompts pull recall via
+`{{ memory "query" }}`, and a crew declaring `memory:` gets **auto-recall**
+(a `## Shared memory` block prepended to every node prompt) and **auto-write**
+(node outputs posted back to the crew namespace `crew-<name>`, invisible to
+other crews and to non-crew callers).
 
 ```sh
 scripts/memory-serve.sh start        # SQLite+vec0 at ~/.config/forseti/memory.db
-scripts/memory-eval.sh               # 4-probe gate incl. namespace isolation
+scripts/memory-eval.sh               # 28-probe gate: isolation, dedup, supersede,
+                                     # TTL, laya gray-band, MemTree + crew probes
 ```
+
+A standalone lineage of the service lives at
+[github.com/alytaphoenix/mimir](https://github.com/alytaphoenix/mimir)
+(`MIMIR_*` env config, `FORSETI_*` fallbacks). Both copies exist on purpose:
+edit mindfully.
 
 ## Crew — multi-agent pipelines
 

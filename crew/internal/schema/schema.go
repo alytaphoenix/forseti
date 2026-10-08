@@ -25,13 +25,40 @@ var validStatuses = map[string]bool{
 }
 
 type Crew struct {
-	Name   string    `yaml:"name"`
-	Routes []Route   `yaml:"routes,omitempty"` // switchyard model-routes (optional, P6-D)
-	Agents []Agent   `yaml:"agents"`
-	Phases []Phase   `yaml:"phases,omitempty"` // ordered work stages with barrier semantics (P11)
-	Edges  []Edge    `yaml:"edges,omitempty"`
-	Checks []Check   `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
-	Watch  []Watcher `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
+	Name   string      `yaml:"name"`
+	Routes []Route     `yaml:"routes,omitempty"` // switchyard model-routes (optional, P6-D)
+	Agents []Agent     `yaml:"agents"`
+	Phases []Phase     `yaml:"phases,omitempty"` // ordered work stages with barrier semantics (P11)
+	Edges  []Edge      `yaml:"edges,omitempty"`
+	Checks []Check     `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
+	Watch  []Watcher   `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
+	Memory *MemorySpec `yaml:"memory,omitempty"` // shared-memory integration (optional, P14)
+}
+
+// MemorySpec wires the shared memory service into a crew run (P14). The block
+// is opt-in: present = on. The crew's memory namespace is `namespace` (default
+// the crew name); rows land in the service namespace `crew-<ns>`, isolated
+// from other agents and crews. Auto-recall prepends recalled facts to each
+// node's prompt at dispatch; auto-write posts a node's output back on completion.
+// Both are advisory — a down service never fails a run.
+type MemorySpec struct {
+	Namespace     string `yaml:"namespace,omitempty"`       // default: crew name
+	AutoRecall    *bool  `yaml:"auto_recall,omitempty"`     // default true
+	RecallK       int    `yaml:"recall_k,omitempty"`        // default 3
+	AutoWrite     *bool  `yaml:"auto_write,omitempty"`      // default true
+	WriteMaxChars int    `yaml:"write_max_chars,omitempty"` // output cap posted (default 4000)
+}
+
+// AutoRecallOn / AutoWriteOn resolve the *bool defaults (present block → on).
+func (m *MemorySpec) AutoRecallOn() bool { return m != nil && (m.AutoRecall == nil || *m.AutoRecall) }
+func (m *MemorySpec) AutoWriteOn() bool  { return m != nil && (m.AutoWrite == nil || *m.AutoWrite) }
+
+// NS returns the crew memory namespace (default = crew name).
+func (m *MemorySpec) NS(crewName string) string {
+	if m != nil && m.Namespace != "" {
+		return m.Namespace
+	}
+	return crewName
 }
 
 // Phase is an ordered stage of work: its agents only dispatch after every
@@ -54,7 +81,16 @@ type Agent struct {
 	// Prompt is a Go text/template; data is map[string]string of
 	// upstream node outputs keyed by node name.
 	Prompt string `yaml:"prompt"`
+	// Memory opts this node out of the crew's memory integration: "off"
+	// skips auto-recall AND auto-write for this node (default inherit).
+	Memory string `yaml:"memory,omitempty"` // "" (inherit) | "on" | "off"
+	// MemoryQuery overrides the auto-recall query for this node (default:
+	// the node name + a head of its rendered prompt). Templated like Prompt.
+	MemoryQuery string `yaml:"memory_query,omitempty"`
 }
+
+// MemoryOff reports whether this node disables the crew memory integration.
+func (a *Agent) MemoryOff() bool { return a.Memory == "off" }
 
 // Check is a shell assertion run after its `after` node settles.
 // exit 0 = pass; failures flip the run's exit code (crew.yaml as E2E harness).
@@ -115,6 +151,10 @@ func Load(data []byte) (*Crew, error) {
 }
 
 var routeIDRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// crewNSRule bounds a memory namespace so `crew-<ns>` stays within the memory
+// service's agent limit (≤ 32 → ns ≤ 26) and its own CREW_RE.
+var crewNSRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,25}$`)
 
 // layaWhenRule parses `laya:choice:<instructions>` edge gates (instructions
 // may be empty at parse time — validation rejects empties explicitly).
@@ -190,6 +230,26 @@ func (c *Crew) Validate() error {
 		}
 		if strings.TrimSpace(a.Prompt) == "" {
 			return fmt.Errorf("agent %q: empty prompt", a.Name)
+		}
+		if a.Memory != "" && a.Memory != "on" && a.Memory != "off" {
+			return fmt.Errorf("agent %q: memory must be on|off (got %q)", a.Name, a.Memory)
+		}
+	}
+	if c.Memory != nil { // P14: validate + default the memory block
+		if ns := c.Memory.NS(c.Name); !crewNSRule.MatchString(ns) {
+			return fmt.Errorf("memory namespace %q must match [a-z0-9][a-z0-9_-]{0,25}", ns)
+		}
+		if c.Memory.RecallK < 0 {
+			return fmt.Errorf("memory.recall_k must be >= 0")
+		}
+		if c.Memory.WriteMaxChars < 0 {
+			return fmt.Errorf("memory.write_max_chars must be >= 0")
+		}
+		if c.Memory.RecallK == 0 {
+			c.Memory.RecallK = 3
+		}
+		if c.Memory.WriteMaxChars == 0 {
+			c.Memory.WriteMaxChars = 4000
 		}
 	}
 	for i := range c.Phases {

@@ -202,7 +202,7 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	for time.Now().Before(deadline) {
 		if p.alive() {
-		resp, err := hc.Get(base + "/health")
+			resp, err := hc.Get(base + "/health")
 			if err == nil {
 				resp.Body.Close()
 				if resp.StatusCode == 200 {

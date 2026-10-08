@@ -29,6 +29,21 @@ const REVIEW_FILE = path.join(FORSETI_DIR, "review.json");
 const MIN_GAP_MS = 1200;
 const VAULT = process.env.FORSETI_VAULT ?? path.join(homedir(), "forseti");
 
+// P14 crew memory namespace for pi panes inside a crew run. The herdr socket
+// API has no per-pane env (spikes S26), so the crew runner drops a
+// .forseti/memory-crew hand-off file in the run cwd; FORSETI_MEMORY_CREW
+// covers manually-started panes. "" = plain personal+shared visibility.
+async function crewNamespace(): Promise<string> {
+	const fromEnv = (process.env.FORSETI_MEMORY_CREW || "").trim();
+	if (fromEnv) return fromEnv;
+	try {
+		const ns = (await readFile(path.join(process.cwd(), ".forseti", "memory-crew"), "utf8")).trim();
+		return /^[a-z0-9][a-z0-9_-]{0,25}$/.test(ns) ? ns : "";
+	} catch {
+		return "";
+	}
+}
+
 interface ForsetiContext {
 	path?: string;
 	line?: number;
@@ -301,6 +316,7 @@ export default function forseti(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			if (!params.text) return { content: [{ type: "text", text: "memory_write error: text required" }], isError: true };
 			const base = (process.env.FORSETI_MEMORY_URL || "http://127.0.0.1:8752").replace(/\/$/, "");
+			const crew = await crewNamespace();
 			try {
 				const res = await fetch(`${base}/write`, {
 					method: "POST",
@@ -311,6 +327,7 @@ export default function forseti(pi: ExtensionAPI) {
 					body: JSON.stringify({
 						agent: "shared", text: params.text, tags: params.tags ?? [],
 						source: "pi",
+						...(crew ? { crew } : {}), // P14: server re-routes to crew-<ns>
 						...(params.type ? { type: params.type } : {}),
 						...(params.importance !== undefined ? { importance: params.importance } : {}),
 						...(params.supersedes !== undefined ? { supersedes: params.supersedes } : {}),
@@ -346,6 +363,7 @@ export default function forseti(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			if (!params.query) return { content: [{ type: "text", text: "memory_recall error: query required" }], isError: true };
 			const base = (process.env.FORSETI_MEMORY_URL || "http://127.0.0.1:8752").replace(/\/$/, "");
+			const crew = await crewNamespace();
 			try {
 				const res = await fetch(`${base}/recall`, {
 					method: "POST",
@@ -353,6 +371,7 @@ export default function forseti(pi: ExtensionAPI) {
 					signal: AbortSignal.timeout(30000), // P13-B13: bounded like /write
 					body: JSON.stringify({
 						query: params.query, agent: "shared", k: params.k ?? 5,
+						...(crew ? { crew } : {}), // P14: widen to crew namespace
 						...(params.type ? { type: params.type } : {}),
 						...(params.include_superseded ? { include_superseded: true } : {}),
 					}),

@@ -6,12 +6,13 @@ sqlite-vec + FTS5 at ~/.config/forseti/memory.db; embeddings all-MiniLM-L6-v2
 (override with FORSETI_MEMORY_MODEL — the 12-6 evaluation dial).
 
   POST /write  {agent, text, tags?, source?, run?, type?, importance?,
-                supersedes?, expires_at?}                     → {id}
+                supersedes?, expires_at?, crew?}              → {id}
   POST /recall {query, agent?, k?, since?, min_score?, type?,
-                include_superseded?, expand?}                 → [rows]
+                include_superseded?, expand?, crew?}         → [rows]
   POST /forget {id}                                          → {ok}
   GET  /export                                               → JSONL dump
   POST /import                                               ← JSONL
+  GET  /tree?namespace=                                      → tree structure
   GET  /health                                               → {status, rows, ...}
 
 v2 (S23 survey, docs/spikes.md): hybrid retrieval — sqlite-vec cosine + FTS5
@@ -22,10 +23,22 @@ near-dup cosine ≥ 0.95 → merge, not insert); supersede-not-delete (Zep: the
 new fact marks the old one, history stays queryable); TTL; associative links
 (A-MEM light: stored adjacency + bounded "box" expansion of the top hit).
 
+v3 / P14 (memtree.py, spikes S26): MemTree-style hierarchy (arXiv:2410.14052)
+— memory rows are leaves of a per-namespace tree, tree_nodes holds internal
+summary nodes; insert traverses by depth-adaptive cosine theta(d) and
+expands leaves into parents; /recall grows a collapsed-tree leg (summary
+nodes score too and resolve to their living leaves). Structure mutates in
+the write txn; summary aggregation + re-embedding run after commit
+(advisory). Kill switch FORSETI_MEMTREE=0 = flat v2 behavior.
+
 Namespaces: rows carry `agent` ("shared" = cross-agent; anything else is that
 agent's private memory). /recall filters by agent: callers see their own rows
 + shared rows, never another agent's private rows. Link expansion obeys the
 same rule — a link into someone else's private rows resolves to nothing.
+P14: `crew` on /write stores under the namespace `crew-<name>`; /recall with
+`crew` widens visibility to that crew's rows (its tree included). One tree
+per namespace — internal nodes aggregate descendant text, so a global tree
+would leak private wording into shared-visible summaries.
 
 Advisory context only — never control flow. The service is user-invoked
 (scripts/memory-serve.sh); clients degrade with a start hint when it's down.
@@ -39,6 +52,8 @@ import threading
 import urllib.request
 from datetime import datetime, timezone
 
+import memtree  # P14: sibling module (script dir is on sys.path)
+import numpy as np
 import sqlite_vec
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,7 +63,7 @@ from typing import Optional
 DB_PATH = os.environ.get("FORSETI_MEMORY_DB", os.path.expanduser("~/.config/forseti/memory.db"))
 MODEL_NAME = os.environ.get("FORSETI_MEMORY_MODEL", "all-MiniLM-L6-v2")
 DIM = 384
-SCHEMA_VERSION = 4  # v4 (P12.5-C): history audit table
+SCHEMA_VERSION = 5  # v5 (P14): tree_nodes / tree_vec / memories.parent_id
 
 # S23 calibration caveat: every published constant was tuned on 1024-d
 # embeddings — keep them in env config, never in code.
@@ -77,7 +92,25 @@ LAYA_PROB = float(os.environ.get("FORSETI_MEMORY_LAYA_PROB", "0.65"))
 # (p ~= 0.50-0.51, coin flips), so p >= 0.65 abstains exactly when unsure.
 LAYA_BAND = float(os.environ.get("FORSETI_MEMORY_LAYA_BAND", "0.7"))  # conflict-candidate floor
 LAYA_TOPK = int(os.environ.get("FORSETI_MEMORY_LAYA_TOPK", "3"))
+_BACKFILL = {"needed": False}  # P14: set by _migrate, consumed once in db() (no re-scan per request)
 BOOT_ID = os.environ.get("FORSETI_MEMORY_BOOT_ID", "")  # serve-script liveness nonce (M2)
+# P14 (MemTree, spikes S26): depth-adaptive insertion threshold
+# theta(d) = THETA0 * e^(LAMBDA * d / MAX_DEPTH). The paper's 0.4/0.5 were
+# tuned on 1024-d embeddings — same rule as the S23 dials: keep them in env,
+# validate on our probes. The paper's learned trees are n-ary (branching
+# ~2.1): no child cap here either (user decision: paper-faithful).
+MEMTREE = os.environ.get("FORSETI_MEMTREE", "1") != "0"
+MEMTREE_THETA0 = float(os.environ.get("FORSETI_MEMTREE_THETA0", "0.4"))
+MEMTREE_LAMBDA = float(os.environ.get("FORSETI_MEMTREE_LAMBDA", "0.5"))
+MEMTREE_MAX_DEPTH = int(os.environ.get("FORSETI_MEMTREE_MAX_DEPTH", "20"))
+MEMTREE_EXPAND_MAX = int(os.environ.get("FORSETI_MEMTREE_EXPAND_MAX", "3"))  # leaves per summary-node hit
+# Node summaries aggregate from their CURRENT living children (merge/forget
+# cannot undo an incremental merge). heuristic = heads join, capped; llm = the
+# paper's merge prompt via an OpenAI-compat endpoint — advisory like laya:
+# any failure falls back to the heuristic, a write never fails because of it.
+MEMTREE_AGG = os.environ.get("FORSETI_MEMTREE_AGG", "heuristic")  # heuristic|llm
+MEMTREE_AGG_URL = os.environ.get("FORSETI_MEMTREE_AGG_URL", "http://192.168.0.142:8731/v1")
+MEMTREE_AGG_MODEL = os.environ.get("FORSETI_MEMTREE_AGG_MODEL", "valhalla-flash-next")
 
 # P13 boot-time validation (agent-1 hardening): bad env constants fail FAST
 # at startup instead of ZeroDivision/negative boosts on every request.
@@ -89,6 +122,10 @@ if W_RECENCY < 0 or W_IMPORTANCE < 0 or LINK_MAX < 0:  # P12.6 dials too (M-rule
     raise SystemExit("FORSETI_MEMORY_W_RECENCY / W_IMPORTANCE / LINK_MAX must be >= 0")
 if not 0 <= LAYA_PROB <= 1 or not 0 <= LAYA_BAND <= 1:
     raise SystemExit("FORSETI_MEMORY_LAYA_PROB / LAYA_BAND must be in [0,1]")
+if not 0 < MEMTREE_THETA0 <= 1 or MEMTREE_LAMBDA < 0 or MEMTREE_MAX_DEPTH < 1:  # P14 (M-rule: fail fast)
+    raise SystemExit("FORSETI_MEMTREE_THETA0 must be in (0,1], LAMBDA >= 0, MAX_DEPTH >= 1")
+if MEMTREE_EXPAND_MAX < 0 or MEMTREE_AGG not in ("heuristic", "llm"):
+    raise SystemExit("FORSETI_MEMTREE_EXPAND_MAX must be >= 0; FORSETI_MEMTREE_AGG must be heuristic|llm")
 
 VALID_TYPES = {"fact", "episode", "procedure", "preference"}
 
@@ -140,6 +177,9 @@ def db():
         pass  # already created
     _migrate(conn)
     conn.commit()
+    if _BACKFILL["needed"] and MEMTREE:  # P14: one-shot tree build over pre-v5 rows
+        _BACKFILL["needed"] = False
+        memtree.build_backfill(conn, MEMTREE_THETA0, MEMTREE_LAMBDA, MEMTREE_MAX_DEPTH)
     return conn
 
 
@@ -158,6 +198,7 @@ def _migrate(conn):
         ("superseded_by", "INTEGER"),
         ("expires_at", "TEXT"),
         ("links", "TEXT NOT NULL DEFAULT '[]'"),
+        ("parent_id", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {ddl}")
@@ -217,16 +258,41 @@ def _migrate(conn):
             "INSERT INTO history(memory_id, namespace, event, actor, new_text, at)"
             " SELECT id, agent, 'add', agent, text, ts FROM memories"
         )
+    # v5 (P14): the MemTree internal-node table. Rows in `memories` are the
+    # leaves (memories.parent_id -> tree_nodes.id, NULL = the namespace root);
+    # tree_nodes stores only internal summary nodes, one tree per namespace.
+    # The tree_vec index holds summary embeddings (memory embeddings stay in
+    # mem_vec — collapsed retrieval scores both).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tree_nodes ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " namespace TEXT NOT NULL,"
+        " parent_id INTEGER,"
+        " text TEXT NOT NULL DEFAULT '',"
+        " descendants INTEGER NOT NULL DEFAULT 0,"
+        " updated_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tree_parent ON tree_nodes(namespace, parent_id)")
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS tree_vec USING vec0("
+            f" embedding float[{DIM}] distance_metric=cosine, +node_id INTEGER)")
+    except sqlite3.OperationalError:
+        pass  # already created
+    if conn.execute("SELECT COUNT(*) FROM tree_nodes").fetchone()[0] == 0 and \
+            conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] > 0:
+        _BACKFILL["needed"] = True  # rows predate the tree — build it once, after commit
     # P13-M5: verify every expected column exists BEFORE latching the schema
     # version — a partially applied migration must re-run, not fail forever.
     have = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
     for col in ("hash", "type", "importance", "access_count", "last_access",
-                "superseded_by", "expires_at", "links"):
+                "superseded_by", "expires_at", "links", "parent_id"):
         if col not in have:
             raise RuntimeError(f"migration incomplete: column {col!r} missing after ALTERs")
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if "history" not in tables:  # P12.5-C (same re-run-not-latch rule as M5)
-        raise RuntimeError("migration incomplete: history table missing")
+    for t in ("history", "tree_nodes"):
+        if t not in tables:  # P12.5-C (same re-run-not-latch rule as M5)
+            raise RuntimeError(f"migration incomplete: {t} table missing")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
@@ -338,6 +404,100 @@ def _laya_choice(name, instructions, criteria, state_text):
         return None
 
 
+def _agg_llm(texts, n_children):
+    """P14: the paper's Aggregate merge (S26 A.1.2) against an OpenAI-compat
+    chat endpoint. Advisory like laya: any shape surprise/timeout -> None and
+    the caller falls back to the heuristic merge — a write never fails here.
+    Lock discipline: memtree.refresh runs AFTER the write txn (M6 rule)."""
+    existing, new = texts[0], texts[1]
+    prompt = (
+        "You will receive two pieces of information: New Information is "
+        "detailed, and Existing Information is a summary from "
+        f"{n_children} previous entries. Your task is to merge these into a "
+        "single, cohesive summary that highlights the most important insights.\n\n"
+        "- Focus on the key points from both inputs.\n"
+        "- Ensure the final summary combines the insights from both pieces of "
+        "information.\n"
+        "- If the number of previous entries in Existing Information is "
+        "accumulating (more than 2), focus on summarizing more concisely, only "
+        "capturing the overarching theme, and getting more abstract in your "
+        "summary.\n\n"
+        "Output the summary directly.\n\n"
+        f"[New Information] \n{new}\n\n"
+        f"[Existing Information (from {n_children} previous entries)] \n{existing}"
+    )
+    try:
+        body = json.dumps({"model": MEMTREE_AGG_MODEL,
+                           "messages": [{"role": "user", "content": prompt}],
+                           "max_tokens": 400}).encode()
+        req = urllib.request.Request(MEMTREE_AGG_URL.rstrip("/") + "/chat/completions",
+                                     data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            out = json.loads(resp.read().decode())
+        text = (out["choices"][0]["message"]["content"] or "").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+# P14: memtree dependency injection (the module never imports the service).
+# encode_fn lazy-loads through model() (thread-safe, P13-M18).
+memtree.encode_fn = lambda texts: model().encode(texts)
+memtree.expired_fn = _expired
+memtree.now_fn = now_iso
+memtree.agg_llm_fn = _agg_llm if MEMTREE_AGG == "llm" else None
+
+
+CREW_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,25}$")  # 'crew-' + ≤26 keeps agent ≤ 32
+
+
+def _vis_ns(req):
+    """P14: caller's visible namespaces — own, shared, and (when declared)
+    the crew namespace. Single source for row + tree-node visibility."""
+    ns = {req.agent, "shared"}
+    if getattr(req, "crew", None):
+        ns.add("crew-" + req.crew)
+    return ns
+
+
+def _tree_after_insert(agent, mem_id):
+    """P14: place one freshly inserted row in its namespace tree. Structure
+    (pure SQL) inside a short IMMEDIATE txn; summaries + encodes run after
+    commit (advisory — worst case: correct structure, stale summary until the
+    next write on the path). Tree failure NEVER fails a write."""
+    if not MEMTREE:
+        return
+    try:
+        conn = db()
+        conn.execute("BEGIN IMMEDIATE")
+        chain = memtree.place(conn, agent, mem_id, MEMTREE_THETA0, MEMTREE_LAMBDA, MEMTREE_MAX_DEPTH)
+        conn.commit()
+        memtree.refresh(conn, agent, chain)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _tree_merge_refresh(agent, mem_id):
+    """P14: a merge rewrote a leaf's text — refresh its ancestor summaries.
+    The leaf keeps its placement: a merged row was ≥0.95 similar (or laya-said
+    same) to its old self, placement churn costs more than a stale slot."""
+    if not MEMTREE:
+        return
+    try:
+        conn = db()
+        row = conn.execute("SELECT parent_id FROM memories WHERE id = ?", (mem_id,)).fetchone()
+        if not row or row[0] is None:
+            return
+        memtree.refresh(conn, agent, [row[0]] + memtree.ancestors(conn, row[0]))
+        conn.commit()
+    except Exception:
+        pass
+
+
 app = FastAPI(title="forseti-memory")
 
 
@@ -355,6 +515,7 @@ class WriteReq(BaseModel):
     supersedes: Optional[int] = None  # id of the fact this one replaces
     expires_at: Optional[str] = None  # ISO timestamp
     links: list[int] = []       # associative links (A-MEM light)
+    crew: Optional[str] = None  # P14: store under namespace crew-<name> (crew runner auto-writes)
 
 
 class RecallReq(BaseModel):
@@ -367,6 +528,7 @@ class RecallReq(BaseModel):
     type: Optional[str] = None        # memory-type filter
     include_superseded: bool = False
     expand: bool = True  # bounded A-MEM box expansion of the top hit
+    crew: Optional[str] = None  # P14: widen visibility + tree to namespace crew-<name>
 
 
 class ForgetReq(BaseModel):
@@ -385,8 +547,22 @@ def health():
     conn = db()
     n = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     ver = conn.execute("PRAGMA user_version").fetchone()[0]
-    return {"status": "ok", "rows": n, "model": MODEL_NAME, "dim": DIM,
-            "schema": ver, "boot_id": BOOT_ID}
+    out = {"status": "ok", "rows": n, "model": MODEL_NAME, "dim": DIM,
+           "schema": ver, "boot_id": BOOT_ID, "memtree": MEMTREE}
+    if MEMTREE:
+        out["tree_nodes"] = conn.execute("SELECT COUNT(*) FROM tree_nodes").fetchone()[0]
+    return out
+
+
+@app.get("/tree")
+def tree_of(namespace: str, agent: str = "shared"):
+    """P14: structure dump of one namespace's tree (id -N = internal node).
+    Namespace-guarded like /history: only shared or the caller's own."""
+    if namespace != "shared" and namespace != agent:
+        raise HTTPException(status_code=404, detail=f"no tree for {namespace!r}")
+    conn = db()
+    return {"namespace": namespace, "memtree": MEMTREE,
+            "root": memtree.tree_dump(conn, namespace) if MEMTREE else []}
 
 
 @app.post("/write")
@@ -400,6 +576,11 @@ def write(req: WriteReq):
             _parse_ts(req.expires_at)
         except (ValueError, TypeError):
             raise HTTPException(status_code=422, detail="expires_at must be an ISO timestamp")
+    if req.crew is not None:  # P14: crew writes live in the crew-<name> namespace
+        if not CREW_RE.match(req.crew):
+            raise HTTPException(status_code=422,
+                                detail="crew must match [a-z0-9][a-z0-9_-]{0,25}")
+        req.agent = "crew-" + req.crew
     emb = model().encode([req.text])[0].tobytes()
     conn = db()
     ts = now_iso()
@@ -468,6 +649,7 @@ def write(req: WriteReq):
         _hist(conn, req.supersedes, target[1], "supersede", actor=req.agent,
               ref=mem_id)
         conn.commit()
+        _tree_after_insert(req.agent, mem_id)  # P14
         return {"id": mem_id, "ts": ts, "supersedes": req.supersedes,
                 "auto_links": auto, "type": mtype}
 
@@ -558,6 +740,7 @@ def write(req: WriteReq):
             _hist(conn, mem_id, req.agent, "merge", actor=req.agent,
                   old=old_row[1], new=req.text)
             conn.commit()
+            _tree_merge_refresh(req.agent, mem_id)  # P14
             return {"id": mem_id, "ts": ts, "dedup": "near", "type": mtype}
 
     # P12.6: gray-band adjudication (laya) for candidates the 0.95 heuristic
@@ -591,6 +774,7 @@ def write(req: WriteReq):
             _hist(conn, mem_id, req.agent, "merge", actor=req.agent,
                   old=r[3], new=req.text)
             conn.commit()
+            _tree_merge_refresh(req.agent, mem_id)  # P14
             return {"id": mem_id, "ts": ts, "dedup": "laya-merge", "type": mtype}
         if verdict == "changed":
             auto = []
@@ -619,6 +803,7 @@ def write(req: WriteReq):
             if marked == 1:
                 _hist(conn, mem_id, req.agent, "supersede", actor=req.agent, ref=new_id)
             conn.commit()
+            _tree_after_insert(req.agent, new_id)  # P14
             return {"id": new_id, "ts": ts, "auto_links": auto,
                     "supersedes": mem_id if marked == 1 else None,
                     "laya": "changed", "type": mtype}
@@ -641,6 +826,7 @@ def write(req: WriteReq):
     conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, mem_id))
     _hist(conn, mem_id, req.agent, "add", actor=req.agent, new=req.text)  # P12.5-C
     conn.commit()
+    _tree_after_insert(req.agent, mem_id)  # P14: place the new leaf in its namespace tree
     return {"id": mem_id, "ts": ts, "auto_links": auto, "type": mtype}
 
 
@@ -663,7 +849,7 @@ def _visible(conn, mem_id, req, since_dt=None):
             links = []
     except (ValueError, TypeError):
         links = []
-    if agent != "shared" and agent != req.agent:  # namespace isolation
+    if agent not in _vis_ns(req):  # namespace isolation (P14: + crew namespace)
         return None
     if since_dt is not None:
         try:
@@ -705,6 +891,47 @@ def recall(req: RecallReq):
         " ORDER BY distance", (emb, of),
     ).fetchall():
         v_leg.append((mem_id, 1.0 - float(distance)))
+
+    # leg 1b (P14, MemTree collapsed retrieval): internal summary nodes score
+    # too; a hit resolves to its LIVING leaves, which join the vector leg at
+    # the leaf's own cosine, ordered into the collapse by the node's distance
+    # (S26: the paper's collapsed retrieval beats traversal retrieval).
+    if MEMTREE:
+        vis_ns = _vis_ns(req)
+        qv = np.frombuffer(emb, dtype="<f4")
+        qnorm = float(np.linalg.norm(qv)) or 1.0
+        seen_ids = {m for m, _ in v_leg}
+        extra = []
+        for node_id, distance in conn.execute(
+            "SELECT node_id, distance FROM tree_vec WHERE embedding MATCH ? AND k = ?"
+            " ORDER BY distance", (emb, of),
+        ).fetchall():
+            if 1.0 - float(distance) < req.min_score:
+                break  # ascending distance: everything further is semantically dead
+            trow = conn.execute("SELECT namespace FROM tree_nodes WHERE id = ?",
+                                (node_id,)).fetchone()
+            if not trow or trow[0] not in vis_ns:
+                continue
+            cand = []
+            for lid in memtree.descendants_leaves(conn, trow[0], node_id):
+                if lid in seen_ids:
+                    continue
+                lb = conn.execute("SELECT embedding FROM mem_vec WHERE mem_id = ?",
+                                  (lid,)).fetchone()
+                if not lb:
+                    continue
+                lv = np.frombuffer(lb[0], dtype="<f4")
+                lsim = float(np.dot(qv, lv)) / (qnorm * (float(np.linalg.norm(lv)) or 1.0))
+                if lsim >= req.min_score:
+                    cand.append((lid, lsim))
+            cand.sort(key=lambda t: -t[1])
+            for lid, lsim in cand[:MEMTREE_EXPAND_MAX]:
+                seen_ids.add(lid)
+                extra.append((float(distance), lid, lsim))
+        if extra:
+            merged = [(1.0 - s, m, s) for m, s in v_leg] + sorted(extra, key=lambda t: t[0])
+            merged.sort(key=lambda t: t[0])
+            v_leg = [(m, s) for _, m, s in merged]
 
     # leg 2: FTS5 BM25 (rank order = ascending rank; bm25() is lower=better)
     f_leg = []
@@ -820,6 +1047,8 @@ def forget(req: ForgetReq):
     children = conn.execute(
         "SELECT id, agent FROM memories WHERE superseded_by = ?", (req.id,)
     ).fetchall()
+    parent = conn.execute("SELECT parent_id FROM memories WHERE id = ?", (req.id,)).fetchone()
+    parent = parent[0] if parent else None
     conn.execute("DELETE FROM memories WHERE id = ?", (req.id,))
     conn.execute("DELETE FROM mem_vec WHERE mem_id = ?", (req.id,))
     conn.execute("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?", (req.id,))
@@ -828,7 +1057,16 @@ def forget(req: ForgetReq):
     _hist(conn, req.id, owner[0], "delete", actor=caller, old=owner[1])
     for cid, cns in children:
         _hist(conn, cid, cns, "revive", actor=caller, ref=req.id)
+    touched = []
+    if MEMTREE and parent is not None:  # P14: prune/collapse the emptied branch
+        touched = memtree.collapse_up(conn, owner[0], parent)
     conn.commit()
+    if touched:
+        try:
+            memtree.refresh(conn, owner[0], touched)
+            conn.commit()
+        except Exception:
+            pass
     return {"ok": True}
 
 
@@ -866,6 +1104,11 @@ def clear(req: ClearReq):
         )
         for cid, cns in revived:
             _hist(conn, cid, cns, "revive", actor=req.agent)
+    if MEMTREE:  # P14: the whole namespace tree goes with its rows
+        for (nid,) in conn.execute(
+                "SELECT id FROM tree_nodes WHERE namespace = ?", (req.agent,)).fetchall():
+            conn.execute("DELETE FROM tree_vec WHERE node_id = ?", (nid,))
+        conn.execute("DELETE FROM tree_nodes WHERE namespace = ?", (req.agent,))
     conn.commit()
     return {"ok": True, "cleared": len(ids)}
 
@@ -912,9 +1155,15 @@ def export_all():
     conn = db()
     cols = ("id, ts, agent, run, source, tags, text, hash, type, importance,"
             " access_count, last_access, superseded_by, expires_at, links")
-    out = [json.dumps({"_meta": {"model": MODEL_NAME, "dim": DIM}})]
+    out = [json.dumps({"_meta": {"model": MODEL_NAME, "dim": DIM, "schema": SCHEMA_VERSION}})]
     for row in conn.execute(f"SELECT {cols} FROM memories ORDER BY id"):
         out.append(json.dumps(dict(zip(cols.split(", "), row))))
+    # P14: internal tree nodes ride along as informational _tree lines (an
+    # import rebuilds placement from the memory rows; summaries come back via
+    # the next aggregation, this dump is for inspection + future faithful restore)
+    tcols = "id, namespace, parent_id, text, descendants, updated_at"
+    for row in conn.execute(f"SELECT {tcols} FROM tree_nodes ORDER BY id"):
+        out.append(json.dumps({"_tree": dict(zip(tcols.split(", "), row))}))
     return Response(content="\n".join(out), media_type="application/x-ndjson")
 
 
@@ -941,6 +1190,8 @@ def import_all(req: ImportReq):
                         f"dump was embedded with {m['model']!r}, service runs {MODEL_NAME!r} — "
                         f"set FORSETI_MEMORY_MODEL={m['model']} to restore it faithfully")
                 continue
+            if "_tree" in r:  # P14: tree rows are informational in dumps —
+                continue    # the import rebuilds placement from the rows themselves
             for k in ("id", "ts", "agent", "text"):
                 if k not in r:
                     raise ValueError(f"missing {k}")
@@ -971,6 +1222,7 @@ def import_all(req: ImportReq):
     embs = {r["id"]: model().encode([r["text"]])[0].tobytes() for r in rows}
     conn = db()
     added = 0
+    touched_by_ns = {}  # P14: agent -> internal-node ids to refresh after commit
     try:
         conn.execute("BEGIN")
         for r in rows:
@@ -989,10 +1241,21 @@ def import_all(req: ImportReq):
             )
             conn.execute("INSERT INTO mem_vec(embedding, mem_id) VALUES (?,?)", (emb, r["id"]))
             added += 1
+            if MEMTREE:  # P14: place in-transaction (pure SQL), refresh summaries after
+                touched_by_ns.setdefault(r["agent"], []).extend(
+                    memtree.place(conn, r["agent"], r["id"],
+                                  MEMTREE_THETA0, MEMTREE_LAMBDA, MEMTREE_MAX_DEPTH))
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+    if MEMTREE and touched_by_ns:  # P14: encode + refresh off the lock
+        try:
+            for ns, ids in touched_by_ns.items():
+                memtree.refresh(conn, ns, ids)
+            conn.commit()
+        except Exception:
+            pass
     return {"ok": True, "added": added}
 
 

@@ -550,3 +550,47 @@ stale value?” — how to pose that to a decision endpoint turned out to matter
   paraphrases read `same` (merged). The auto-links probe now uses a measured
   abstention pair (cos 0.75, p ~0.50); the /clear probe uses unrelated topics
   (cos ~0.38) so it tests /clear, not the gray band.
+
+## S26 — MemTree hierarchy + crew memory namespaces (Phase 14, 2026-10-07) resolved (paper + live)
+
+Verified arXiv:2410.14052 (MemTree, HTML fetch) against the shipped
+`crew/memory/memtree.py`. Paper mechanics that ported 1:1:
+- **Insert**: descend from the namespace root taking the max-cosine child
+ while cos >= theta(d) = theta0 * exp(lambda*d/max_depth) (paper 0.4/0.5;
+ env dials `FORSETI_MEMTREE_THETA0/_LAMBDA`). At a leaf: old leaf + new row
+ become children of a fresh internal node.
+- **Retrieval = COLLAPSED**: flat cosine over ALL nodes; the paper's ablation
+ shows collapsed >= traversal gating. A summary-node hit resolves to its
+ descendant leaves (`descendants_leaves`), never surfaces the node text.
+- **Branching is learned, not binary** (~2.1 children/node average) -> we
+ keep n-ary fanout, no child cap.
+
+Our deliberate deviations (recorded so future edits don't re-litigate):
+- **Rows are the leaves** (`memories.parent_id` -> `tree_nodes.id`, NULL =
+ the implicit per-namespace root) instead of the paper's separate leaf class.
+- **One expansion per insert max** — the paper's re-expansion loop can build
+ chains; ours caps placement work (dial `_EXPAND_MAX`, boot-validated).
+- **Structure inside the write txn (pure SQL), summary + encode AFTER
+ commit** (M6 lock rule): embedding/LLM work never holds the write lock.
+- **Aggregation recomputes from the CURRENT living children** on every
+ merge/forget, so pruning cannot leave stale aggregates. Default heuristic
+ heads; `FORSETI_MEMTREE_AGG=llm` folds pairwise via valhalla (paper A.1.2
+ prompt, 8 s cap, any failure -> heuristic: a down box never blocks writes).
+- **One tree per namespace**, not per visibility set: a shared-visibility
+ tree would leak private text into shared-visible summaries.
+
+Crew integration findings:
+- **herdr socket API has NO per-pane env** (`herdr api schema` grep: zero
+ matches for env): the crew namespace reaches pi panes through the runner's
+ `.forseti/memory-crew` hand-off file (+ `FORSETI_MEMORY_CREW` env for
+ manually started panes); pi-extension resolves env-first, file-second.
+- Crew namespace = `crew-<name>` (service normalizes `req.agent` when
+ `crew` is set); ns capped at 26 chars in schema so `crew-<ns>` fits the
+ agent limit. Recall WITHOUT the crew arg hides crew rows (isolation).
+- Auto-recall prepends a `## Shared memory` block AFTER the prompt template
+ render (query = `memory_query` else node name + prompt head); auto-write
+ posts capped node output on node_done from a fire-and-forget goroutine.
+- Live gates: scratch-service probes 7/7; `scripts/memory-eval.sh` 28/28
+ (5 new P14 rows: internal-node formation, aggregate summary, crew
+ visibility, crew isolation, forget-collapse); Go suite green incl.
+ MemoryClient payload tests.
