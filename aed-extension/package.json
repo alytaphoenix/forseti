@@ -1,0 +1,10 @@
+{
+  "name": "@alytathoenix/forseti-aed-pi-extension",
+  "version": "0.1.0",
+  "description": "Forseti: use agentic-edit (aed) to make safe, verified file edits from a pi session (/aed edit|grep; aed_edit/aed_grep tools). Verify surfaces: docs/spikes.md",
+  "author": "alytathoenix",
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
