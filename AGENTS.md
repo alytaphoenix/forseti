@@ -88,6 +88,8 @@ facts from source-level investigation.
 ## ttt Lua plugin facts — 2c/2d additions (verified 2026-09-30)
 
 - `ttt.events` module: `events.on("cursor.change"|"file.open"|"file.save", cb)` — needs `events.editor` / `events.file` manifest permissions; `require` it inside pcall and degrade if missing.
+- Panel widgets (v1.6.0, verified 2026-10-09, spike S27): `panel:list`/`panel:tree` take `items` (`{id,label,icon,badge}`) + `on_select=function(node)` (Enter/double-click); `ttt.set_status_item(side,id,text,{priority=,on_click=})` is clickable. **No Lua terminal API exists** — /exec input is focus-global, `wait-for` sees only the rendered screen, `debug` gives raw per-tab PTY tails; terminal tabs are unlabeled, fixed shell, workspace cwd. Fork plan if ever needed: `docs/ttt-terminal-api.md`.
+- Focus bridge (P15, live 2026-10-09): `agent list` carries `pane_id`+`tab_id`; `agent focus` sets `focused:true`; unknown `tab focus` → `tab_not_found` exit 1 (empty stdout → `herdr_cmd` nil → Lua fallbacks work). crew-status.json carries `nodes:[{name,status}]` (run state, crew order) + `tab` — the ttt sidebar switcher + badge jump consume them; contract pinned by `status_bridge_test.go`.
 - Sidebar input widget: `panel:input({placeholder, prefix, on_submit = function(text) end})` inside `render` — widget state (typed text) survives re-renders.
 - Command registration is cached per plugin load: adding a palette command in init.lua needs "Plugins: Reload All" or a fresh ttt start; **a reload following a failed reload latches stale state** (verified — restart ttt via bring-up instead).
 - `exec "X"` over /exec returns a non-2xx "command N …: command "X" not found" when a palette title isn't registered — cheap probe for command availability.

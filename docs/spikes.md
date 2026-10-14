@@ -594,3 +594,39 @@ Crew integration findings:
  (5 new P14 rows: internal-node formation, aggregate summary, crew
  visibility, crew isolation, forget-collapse); Go suite green incl.
  MemoryClient payload tests.
+
+## S27 — ttt terminal surface audit + focus-bridge primitives (Phase 15, 2026-10-09) ✅ resolved (source + live)
+
+Source audit of ttt v1.6.0 (module cache) for the "run pi as a ttt terminal
+tab" idea, then live verification of everything P15 consumes:
+
+**ttt terminal (the Phase-16 gap, all source-verified):**
+- No Lua API for the integrated terminal — plugin surface (internal/plugin/*)
+  has ZERO terminal bindings; /exec remains the only automation channel.
+- /exec input is FOCUS-GLOBAL: key/type/paste post tcell events to the focused
+  widget (exec_script.go execKey/execType); `panel ID` addresses bottom panels
+  (terminal/problems/references), NOT individual terminal tabs; `wait-for TEXT`
+  polls RENDERED screen text (visible tab only).
+- `debug` dump exposes per-tab raw PTY byte tails (DebugTerminal.RawTail,
+  debug_dump.go:33) — ground-truth bytes, no ANSI parsing, pull-only.
+- SpawnTerminal (app.go:291) hardcodes settings shell + workspace cwd; tab ids
+  are `terminal-<N>`; the vertical tab bar renders Count/Active ONLY — tabs
+  cannot carry labels. → full analysis + patch design: docs/ttt-terminal-api.md.
+
+**Panel widgets that DO exist (v1.6.0, docs plugin-authoring.md + lua_panel.go):**
+- `panel:list/panel:tree{items, on_select=function(node)}` — node table has
+  {id,label,icon,badge,muted}; Enter/double-click activates (lua_panel.go:345).
+- `ttt.set_status_item(side,id,text,{priority=,on_click=})` — clickable badge
+  (sandbox.go:262). Both used by the P15 sidebar switcher + crew badge.
+
+**herdr 0.9.3 focus mechanics (live, named session `sandbox` via the PTY
+recipe):**
+- `agent list` carries `pane_id` + `tab_id` per agent (herdrd.AgentInfo was
+  right); the sidebar's brace-scan parser handles the real output.
+- `agent focus <name>` → response shows `"focused":true` — the P15 switcher
+  path, verified.
+- `tab focus <id>` works; unknown id → `{"error":{"code":"tab_not_found"}}`
+  exit 1 → sys.exec stdout empty → Lua `herdr_cmd` returns nil → the
+  crew_jump fallback path fires as designed.
+- Mid-run crew-status.json (throwaway crew, valhalla override): `nodes:
+  [{name,status}]` + `tab:"w1:tR"` appear while running — the P15 contract.

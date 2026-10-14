@@ -112,6 +112,7 @@ type Run struct {
 	checksDone      map[string]bool // P13 BUG-04: guarded by mu
 	checksFailed    int
 	finished        atomic.Bool // P13 BUG-17: freeze the status bridge (read from stream goroutines)
+	crewTab         string      // P15: crew tab id for the ttt focus bridge (guarded by mu)
 	laya            *LayaClient
 	memory          *MemoryClient
 	runID           string // P14: stable per-run id stamped on memory writes
@@ -170,16 +171,26 @@ func (r *Run) writeStatusBridge() {
 	}
 	r.mu.Lock()
 	counts := map[string]int{}
-	for _, st := range r.Nodes {
-		counts[st.Status]++
+	// P15 focus bridge: per-node rows (crew order) + the crew tab id, so the
+	// ttt sidebar can render crew-aware switcher rows and the badge can
+	// `herdr tab focus`. Status stays the RUN state (not herdr's agent_status)
+	// — it is what watch/phases reason about.
+	nodes := make([]map[string]any, 0, len(r.Crew.Agents))
+	for _, a := range r.Crew.Agents {
+		if st := r.Nodes[a.Name]; st != nil {
+			counts[st.Status]++
+			nodes = append(nodes, map[string]any{"name": st.Name, "status": st.Status})
+		}
 	}
+	tab := r.crewTab
 	r.mu.Unlock()
 	out, _ := json.Marshal(map[string]any{
 		"crew": r.Crew.Name, "ts": time.Now().Format(time.RFC3339),
 		"total": len(r.Crew.Agents), "done": counts["done"],
 		"running": counts["running"], "blocked": counts["blocked"],
 		"failed": counts["failed"], "checks_failed": r.checksFailedCount(),
-		"phase": r.currentPhase(), // P11 ("" when the crew has no phases)
+		"phase": r.currentPhase(),    // P11 ("" when the crew has no phases)
+		"tab":   tab, "nodes": nodes, // P15 (ttt focus bridge)
 	})
 	path := filepath.Join(r.Opts.Cwd, ".forseti", "crew-status.json")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
@@ -333,6 +344,9 @@ func (r *Run) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create crew tab: %w", err)
 	}
+	r.mu.Lock() // P15: ttt focus bridge reads this from the status file writer
+	r.crewTab = tabID
+	r.mu.Unlock()
 	defer func() {
 		if !r.Opts.KeepTab && tabID != "" {
 			_, _ = c.Call("tab.close", map[string]any{"tab_id": tabID}, 10*time.Second)

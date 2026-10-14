@@ -21,6 +21,8 @@ dialog (persisted in `~/.config/ttt/plugins.ttt.json`).
 |---|---|
 | Ask pi | select code → `ctrl+k a` (or palette "Forseti: Ask pi") — sends buffer path + line + selection to the live pi agent via `herdr agent prompt` |
 | Status | sidebar "Forseti" panel: live pi agents + `idle/working/blocked/done`; a right status-bar badge pops on working→settled transitions (`! name needs you` when blocked) |
+| Focus switcher | sidebar agent list: up/down + **enter** focuses that agent's herdr pane (`herdr agent focus`); crew-run members carry a `crew` badge |
+| Crew jump | click the right status-bar crew badge → jumps to the crew tab (`herdr tab focus`), falling back to the first blocked/running node |
 | Jump | palette "Forseti: Jump" opens the file/line from `jump.json` in this plugin dir — written by the pi side (follow mode / `/ttt jump`) |
 
 ## Requirements

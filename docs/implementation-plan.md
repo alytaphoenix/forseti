@@ -421,3 +421,30 @@ the `re:PLAN_READY` edge), smoke gate.
 
 Only remaining (non-blocking) items: U1/U2 upstream issues to ttt, and
 re-running the smoke gates after herdr/ttt upgrades.
+
+## Phase 15 — focus bridge: ttt ⇄ herdr agent switcher — ✅ **implemented + gates green** (2026-10-09)
+
+Orchestration stays in herdr (input addressing, status events — S27); ttt
+becomes the human's switching surface. Design rationale: the trade-off
+analysis that became docs/ttt-terminal-api.md.
+
+| item | status |
+|---|---|
+| 15-1 runner bridge extension | crew-status.json gains nodes:[{name,status}] (run state, crew order) + tab (crew tab id); unit test pins the contract incl. the finished-run freeze | ✅ live (mid-run probe) |
+| 15-2 sidebar switcher | agent rows are a panel:list — up/down + enter → `herdr agent focus` (verified `focused:true`, S27); crew members get a `crew` badge | ✅ code; ttt-reload check = user |
+| 15-3 clickable crew badge | `set_status_item … {on_click}` → `herdr tab focus <tab>`; unknown tab → tab_not_found/exit 1 → fallback focuses first blocked, else running, else done node | ✅ code (fallback path proven live, S27); ttt-reload check = user |
+| 15-4 palette | `Forseti: Focus agent pane (cycles)` — keyboard-only path when the sidebar is closed | ✅ code |
+| 15-5 gates | go suite green (new status-bridge contract test); `luac -p` clean; live sandbox probes S27 (agent list ids, agent focus, tab focus, sidebar parser, mid-run status file) | ✅ |
+
+Pending (needs a GUI ttt): **Plugins: Reload All** in the live ttt, then select a
+row in the Forseti sidebar → the agent's pane takes focus; click the crew badge
+during a run → lands on the crew tab. Only claim what's verified — that row is
+the user's to mark.
+
+## Phase 16-proposed — ttt terminal API (fork/upstream) — 📋 **planned, not started** (2026-10-09)
+
+Run pi as a *named terminal tab inside ttt* (single-window crew). Blocked on
+fact today: ttt v1.6.0 has no Lua terminal API and /exec cannot address a
+non-focused tab (S27). Patch design, integration bridge, step plan and
+abandon criteria: **docs/ttt-terminal-api.md**. Phase 15 is the hedge that
+ships now.

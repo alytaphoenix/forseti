@@ -5,6 +5,10 @@
 --   forseti.ask        (ctrl+k a)    — fixed quick-ask with context
 --   sidebar "Forseti"  — status + an input row: "ask pi about this …" with a
 --                        real question; post-submit herdr agent focus ring.
+--   P15 focus bridge   — the sidebar agent list is a switcher: enter runs
+--                        `herdr agent focus` (lands you on that pane); crew
+--                        badge click jumps to the crew tab (status file
+--                        carries tab + per-node rows).
 --   context.json       — written on cursor/change/file events; the pi side
 --                        reads it to become IDE-aware in every prompt.
 -- Design: docs/design.md §2 · verified APIs: docs/spikes.md · plan: docs/implementation-plan.md
@@ -23,6 +27,8 @@ local agents = {}          -- { {name, status, workspace_id}, ... }
 local last_error = ""
 local auto_focus = true    -- after ask, focus the pi pane to watch the answer
 local last_ctx_write = 0
+local crew_st = nil        -- P15: parsed crew-status.json (nil = no live run)
+local focus_idx = 0        -- P15: cursor for the focus-next-agent command
 
 local function log_err(msg) ttt.log("error", "forseti: " .. msg) end
 
@@ -361,6 +367,51 @@ local function open_obsidian()
   ttt.set_timeout(2500, function() ttt.remove_status_item("ask") end)
 end
 
+-- --- P15 focus bridge: ttt ⇄ herdr pane switching ---------------------------
+-- The orchestrator stays herdr (input addressing, status events); ttt only
+-- points the user's focus at the right pane. `herdr agent focus` was already
+-- proven here by the ask ring; the crew tab id + node rows arrive through
+-- crew-status.json (P15 extension of the runner bridge).
+
+local function focus_agent(name)
+  if not name or name == "" then return end
+  if not herdr_cmd({ "agent", "focus", name }) then
+    last_error = "herdr agent focus failed: " .. name
+    log_err(last_error)
+    return
+  end
+  last_error = ""
+  ttt.set_status_item("left", "ask", "focused " .. name)
+  ttt.set_timeout(2000, function() ttt.remove_status_item("ask") end)
+end
+
+local function focus_next_agent()
+  if #agents == 0 then log_err("no live pi agents to focus") return end
+  focus_idx = focus_idx % #agents + 1
+  focus_agent(agents[focus_idx].name)
+end
+
+local function crew_node(name)
+  if not crew_st or type(crew_st.nodes) ~= "table" then return nil end
+  for _, n in ipairs(crew_st.nodes) do
+    if n.name == name then return n end
+  end
+  return nil
+end
+
+-- badge click → crew tab; if the tab id is missing (older runner) focus the
+-- node that most needs the human: blocked first, then running, then done.
+local function crew_jump()
+  local st = crew_st
+  if not st then return end
+  if st.tab and st.tab ~= "" and herdr_cmd({ "tab", "focus", st.tab }) then return end
+  for _, want in ipairs({ "blocked", "running", "done" }) do
+    for _, n in ipairs(st.nodes or {}) do
+      if n.status == want then focus_agent(n.name); return end
+    end
+  end
+end
+
 -- --- sidebar ---------------------------------------------------------------
 
 local glyph = { idle = "●", working = "◐", blocked = "!", done = "✓", unknown = "?" }
@@ -384,15 +435,23 @@ local function render(panel)
     panel:label("     invoke forseti.open")
     return
   end
+  local items = {}
   for _, a in ipairs(agents) do
     local g = glyph[a.status] or "?"
-    local txt = g .. " " .. a.name .. "  " .. a.status
-    if a.status == "blocked" then txt = txt .. "  (approval UI)" end
-    panel:label(txt)
+    local label = g .. " " .. a.name .. "  " .. a.status
+    if a.status == "blocked" then label = label .. " (approval)" end
+    local item = { id = a.name, label = label }
+    if crew_node(a.name) then item.badge = "crew" end
+    items[#items + 1] = item
   end
+  -- P15 switcher: up/down + enter focuses that agent's pane in herdr
+  panel:list({
+    items = items,
+    on_select = function(node) focus_agent(node.id) end,
+  })
   panel:label("")
+  panel:label("enter = focus pane · click crew badge = crew tab")
   panel:label("ctrl+k a  quick ask")
-  panel:label("type above: custom ask")
 end
 
 
@@ -478,10 +537,12 @@ ttt.set_interval(2000, function()
   if ok_r and type(content) == "string" then
     local ok, st = pcall(json.decode, content)
     if ok and type(st) == "table" then
-      ttt.set_status_item("right", "crew", crew_render(st))
+      crew_st = st -- P15: sidebar rows + badge click read this
+      ttt.set_status_item("right", "crew", crew_render(st), { on_click = crew_jump })
       return
     end
   end
+  crew_st = nil
   ttt.remove_status_item("crew") -- no live run (file removed at teardown)
 end)
 
@@ -551,6 +612,7 @@ ttt.register({
     { id = "forseti.ask", title = "Forseti: Ask pi about selection", handler = quick_ask },
     { id = "forseti.review", title = "Forseti: Review", handler = review },
     { id = "forseti.git", title = "Forseti: Git (lazygit pane)", handler = open_git },
+    { id = "forseti.focus_agent", title = "Forseti: Focus agent pane (cycles)", handler = focus_next_agent },
     { id = "forseti.ask_diff", title = "Forseti: Ask pi about uncommitted changes", handler = ask_diff },
     { id = "forseti.daily", title = "Forseti: Daily Note", handler = daily_note },
     { id = "forseti.backlinks", title = "Forseti: Backlinks", handler = backlinks },
