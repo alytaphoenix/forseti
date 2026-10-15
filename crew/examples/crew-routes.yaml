@@ -1,0 +1,69 @@
+# forseti crew — the switchyard 0.3.0 route surface (Phase 18C).
+#
+# One crew, five route shapes, so `forseti-crew validate` dry-runs each against
+# the router. forseti emits the typed keys it can derive from efficient/capable
+# and passes `options` through verbatim, so a router release with new route
+# types or keys needs no forseti change — the router's own `--dry-run` is the
+# authority on semantics (see docs/spikes.md S30).
+#
+# Provider status (2026-10-05): valhalla is the free LAN model; the opencode-go
+# key is out of funds (402), so the capable tier is declared but not gated on.
+name: demo-route-surface
+
+routes:
+  # stage_router: picks a tier per turn from tool signals; `picker` handles the
+  # unconfident turns. The classic auto-pool.
+  - id: auto-pool
+    type: stage_router
+    efficient: valhalla/valhalla-flash-next
+    capable: opencode-go/glm-5.3-flash
+    picker: efficient_first
+    confidence: 0.5
+
+  # auto: switchyard's stage_router preset (efficient_first + 0.5), no knobs.
+  - id: preset-pool
+    type: auto
+    efficient: valhalla/valhalla-flash-next
+    capable: opencode-go/glm-5.3-flash
+
+  # plan_execute: plans on capable, hands off to efficient after the first edit.
+  - id: plan-then-edit
+    type: plan_execute
+    capable: opencode-go/glm-5.3-flash
+    efficient: valhalla/valhalla-flash-next
+    options:
+      handoff_prompt: "Continue implementing the plan; make the edit."
+
+  # llm_classifier: a judge scores solve probability per turn. `judge:` mints a
+  # dedicated `<id>_judge` target and wires classifier_target to it.
+  - id: judged-pool
+    type: llm_classifier
+    efficient: valhalla/valhalla-flash-next
+    capable: opencode-go/glm-5.3-flash
+    judge: valhalla/valhalla-flash-next
+    options:
+      base_threshold: 0.5
+      threshold_step: 0.1
+
+  # advisor: an executor answers, an advisor reviews before the reply is
+  # released. Option-driven: the whole table comes from `options`, and the
+  # targets it names are forseti's generated `<route>_eff` / `<route>_cap`.
+  - id: advised-pool
+    type: advisor
+    efficient: valhalla/valhalla-flash-next
+    capable: opencode-go/glm-5.3-flash
+    options:
+      executor_target: advised-pool_eff
+      advisor_target: advised-pool_cap
+
+agents:
+  - name: scout-a
+    kind: pi
+    route: auto-pool
+    prompt: |
+      Reply with exactly: ROUTE_A_OK and nothing else.
+  - name: scout-b
+    kind: pi
+    route: preset-pool
+    prompt: |
+      Reply with exactly: ROUTE_B_OK and nothing else.

@@ -467,17 +467,35 @@ coupling, loses crash isolation; S28).
   routing log `origin` tracks `FORSETI_SWITCHYARD_ORIGIN` (S29).
 - `pi-extension/package.json` ships both extensions; README + AGENTS + S29 updated.
 
-### 18B — embedded Rust host (proof done, integration pending)
+### 18B — embedded Rust host ✅ **implemented + verified live** (2026-10-15)
 - `host/` crate `forseti-host` embeds `BoundServer` (`switchyard_server` lib),
   loads route TOML, prints `FORSETI_HOST_ADDR/MODELS/READY`, supports
   `--routing-log` and `--dry-run` (S28 live proof).
-- Next: point the crew's switchyard supervisor at `forseti-host` instead of the
-  cargo-installed `switchyard-server`; consume the routing log for per-node
-  attribution (fixes the `runner.go` "attribution impossible" note).
+- The crew's supervisor now resolves OUR host first (`ResolveRouter`:
+  `FORSETI_CREW_ROUTER_BIN` → `host/target/{release,debug}/forseti-host` →
+  `$PATH` → legacy `switchyard-server`), and `Router.Args` keeps both flag sets
+  working. `--dry-run` runs as a pre-flight before a port is bound, so a bad
+  routes file fails with the router's own message.
+- The routing log now carries real attribution (route id, algorithm, tier,
+  session, origin, token split) in `route_decision` events — the S29 era shim
+  and the "per-node attribution impossible" note are gone (S30).
+- Live gate: `FORSETI_LIVE_ROUTER=1 go test ./internal/switchyard/` (20.5 s) —
+  Start → dry-run → bind → `/health` → a real routed completion → routing record.
+  Needs the free LAN model; unit tests stay offline.
 
-### 18C — full routing surface (pending)
-- Broaden crew `schema.Route` beyond `stage_router` to the 0.3.0 route types +
-  keys (verified loadable via `--dry-run` pre-flight): `passthrough`,
-  `plan_execute` (`capable_target`/`efficient_target`/prompts), `llm_classifier`
-  subagents, plus per-client/per-target keys.
+### 18C — full routing surface ✅ **implemented + verified live** (2026-10-15)
+- `schema.Route` covers the whole 0.3.0 `AlgorithmSpec` surface: tier types
+  derive `capable_target`/`efficient_target` (or `strong_target`/`weak_target`),
+  `passthrough`/`random`/`noop` map directly, a new `judge:` mints `<id>_judge`
+  and wires `classifier_target`, and `options:` passes any other route key
+  through verbatim (TOML inline tables for nested shapes) — so a router release
+  with new keys needs no forseti change.
+- Reserved-key collisions, tier requirements, and type validity are rejected at
+  load; the router's `--dry-run` remains the authority on semantics, and
+  `forseti-crew validate` now runs it (`crew/examples/crew-routes.yaml`
+  exercises stage_router/auto/plan_execute/llm_classifier+judge/advisor).
+
+### 18D — runner/TUI on the host (next)
+- Staged Rust port of the runner/TUI onto `forseti-host` (see the Phase 19
+  direction below), with the Go engine as the compatibility surface.
 - Staged port of the runner/TUI onto the Rust host.

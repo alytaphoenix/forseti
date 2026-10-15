@@ -258,7 +258,7 @@ func TestRouteUnknownRef(t *testing.T) {
 
 func TestRouteMissingPool(t *testing.T) {
 	_, err := Load([]byte("name: t\nroutes:\n  - {id: r1, efficient: e}\nagents:\n  - {name: a, model: m, prompt: x}\n"))
-	if err == nil || !strings.Contains(err.Error(), "required") {
+	if err == nil || !strings.Contains(err.Error(), "efficient and capable") {
 		t.Fatalf("want missing-pool error, got %v", err)
 	}
 }

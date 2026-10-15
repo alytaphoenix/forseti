@@ -107,15 +107,133 @@ type Watcher struct {
 	Match string `yaml:"match"` // regex (Rust regex crate semantics server-side)
 }
 
-// Route declares a switchyard stage_router over an efficient/capable model pool.
-// Agents attach with `route: <id>` instead of `model:`.
+// Route declares a switchyard routing algorithm that crew agents attach to with
+// `route: <id>` instead of `model:`.
+//
+// forseti emits the typed keys for the tier shapes it can derive from
+// efficient/capable and passes Options through verbatim, so every switchyard
+// 0.3.0 route type and key is reachable without forseti re-encoding the
+// router's schema (which would drift). The router's own `--dry-run` remains the
+// authority on semantics — see switchyard.Validate.
 type Route struct {
-	ID         string  `yaml:"id"`
-	Type       string  `yaml:"type,omitempty"` // v1: stage_router (the "auto" preset shape)
-	Efficient  string  `yaml:"efficient"`
-	Capable    string  `yaml:"capable"`
-	Picker     string  `yaml:"picker,omitempty"`     // efficient_first (default) | capable_first
-	Confidence float64 `yaml:"confidence,omitempty"` // default 0.5
+	ID         string         `yaml:"id"`
+	Type       string         `yaml:"type,omitempty"`       // switchyard algorithm type; default stage_router
+	Efficient  string         `yaml:"efficient,omitempty"`  // provider/model — the cheap tier
+	Capable    string         `yaml:"capable,omitempty"`    // provider/model — the strong tier
+	Judge      string         `yaml:"judge,omitempty"`      // provider/model — a dedicated judge target (<id>_judge)
+	Picker     string         `yaml:"picker,omitempty"`     // stage_router: efficient_first (default) | capable_first
+	Confidence float64        `yaml:"confidence,omitempty"` // stage_router: agreement a decisive pick needs (default 0.5)
+	Options    map[string]any `yaml:"options,omitempty"`    // raw switchyard route keys, emitted verbatim
+}
+
+// KnownRouteTypes mirrors switchyard 0.3.0's AlgorithmSpec variants
+// (switchyard-runner/src/algorithm.rs). forseti derives typed keys only for
+// the tier shapes below; everything else is option-driven, so a router release
+// that adds a type or key needs no forseti change.
+var KnownRouteTypes = []string{
+	"stage_router", "auto", "plan_execute", "llm_classifier", "passthrough",
+	"random", "noop", "composite", "advisor", "prefill_router",
+}
+
+// routeTierKeys maps a tiered route type to its (capable, efficient) keys.
+var routeTierKeys = map[string][2]string{
+	"stage_router": {"capable_target", "efficient_target"},
+	// `auto` is switchyard's stage_router preset (efficient_first + 0.5) with
+	// no knobs of its own.
+	"auto":           {"capable_target", "efficient_target"},
+	"plan_execute":   {"capable_target", "efficient_target"},
+	"llm_classifier": {"strong_target", "weak_target"},
+}
+
+// optionDrivenRouteTypes take no typed keys from forseti — their whole route
+// table (nested sub-tables included) comes from `options`.
+var optionDrivenRouteTypes = map[string]bool{
+	"composite": true, "advisor": true, "prefill_router": true,
+}
+
+var validPickers = map[string]bool{"efficient_first": true, "capable_first": true}
+
+func knownRouteType(t string) bool {
+	for _, k := range KnownRouteTypes {
+		if k == t {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveType is the route type, defaulted to stage_router.
+func (r Route) EffectiveType() string {
+	if r.Type == "" {
+		return "stage_router"
+	}
+	return r.Type
+}
+
+// TargetNames are the switchyard target names forseti generates for this route.
+// `options` can reference them to wire a custom route shape.
+func (r Route) TargetNames() (efficient, capable string) {
+	return r.ID + "_eff", r.ID + "_cap"
+}
+
+// JudgeTarget is the target name generated for a route's dedicated judge model.
+func (r Route) JudgeTarget() string { return r.ID + "_judge" }
+
+// RouteKeys is the switchyard route table forseti emits: the typed keys of the
+// route's type, plus Options merged in. A collision is an error — forseti's
+// typed keys are authoritative, and silently overwriting one would produce a
+// config that reads differently than the crew file.
+func (r Route) RouteKeys() (map[string]any, error) {
+	t := r.EffectiveType()
+	if !knownRouteType(t) {
+		return nil, fmt.Errorf("route %q: unknown switchyard type %q (known: %s)",
+			r.ID, t, strings.Join(KnownRouteTypes, ", "))
+	}
+	eff, cap := r.TargetNames()
+	keys := map[string]any{}
+	if pair, ok := routeTierKeys[t]; ok {
+		keys[pair[0]] = cap
+		keys[pair[1]] = eff
+	}
+	switch t {
+	case "stage_router":
+		picker := r.Picker
+		if picker == "" {
+			picker = "efficient_first"
+		}
+		conf := r.Confidence
+		if conf == 0 {
+			conf = 0.5
+		}
+		keys["picker"] = picker
+		keys["confidence_threshold"] = conf
+	case "passthrough":
+		keys["target"] = cap
+	case "random":
+		keys["targets"] = []any{cap, eff}
+	}
+	// a dedicated judge model makes llm_classifier ergonomic: the judge target
+	// forseti generates is wired in unless the crew wires its own.
+	if t == "llm_classifier" {
+		if r.Judge != "" {
+			if _, wired := r.Options["classifier_target"]; !wired {
+				keys["classifier_target"] = r.JudgeTarget()
+			}
+		}
+		if _, set := r.Options["base_threshold"]; !set {
+			keys["base_threshold"] = 0.5
+		}
+	}
+	for k, v := range r.Options {
+		if k == "id" || k == "type" {
+			return nil, fmt.Errorf("route %q: options.%s is set by forseti", r.ID, k)
+		}
+		if _, taken := keys[k]; taken {
+			return nil, fmt.Errorf("route %q: options.%s duplicates the %s field forseti derives", r.ID, k, t)
+		}
+		keys[k] = v
+	}
+	return keys, nil
 }
 
 type Edge struct {
@@ -160,9 +278,6 @@ var crewNSRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,25}$`)
 // may be empty at parse time — validation rejects empties explicitly).
 var layaWhenRule = regexp.MustCompile(`^laya:choice:(.*)$`)
 
-var validRouteTypes = map[string]bool{"stage_router": true}
-var validPickers = map[string]bool{"efficient_first": true, "capable_first": true}
-
 func (c *Crew) Validate() error {
 	// P13 BUG-21: the crew name lands in run-log filenames and herdr view/tab
 	// sources — empty or path-unsafe names broke log creation silently.
@@ -185,23 +300,54 @@ func (c *Crew) Validate() error {
 		if r.Type == "" {
 			r.Type = "stage_router"
 		}
-		if !validRouteTypes[r.Type] {
-			return fmt.Errorf("route %q: type %q unsupported (v1: stage_router)", r.ID, r.Type)
+		if !knownRouteType(r.Type) {
+			return fmt.Errorf("route %q: unknown switchyard type %q (known: %s)",
+				r.ID, r.Type, strings.Join(KnownRouteTypes, ", "))
 		}
-		if strings.TrimSpace(r.Efficient) == "" || strings.TrimSpace(r.Capable) == "" {
-			return fmt.Errorf("route %q: efficient and capable are required", r.ID)
+		effOK := strings.TrimSpace(r.Efficient) != ""
+		capOK := strings.TrimSpace(r.Capable) != ""
+		if _, tiered := routeTierKeys[r.Type]; tiered && (!effOK || !capOK) {
+			return fmt.Errorf("route %q: type %s needs both efficient and capable", r.ID, r.Type)
 		}
-		if r.Picker == "" {
-			r.Picker = "efficient_first"
+		switch r.Type {
+		case "passthrough":
+			if !capOK {
+				return fmt.Errorf("route %q: type passthrough needs capable (the single target)", r.ID)
+			}
+		case "llm_classifier":
+			if _, ok := r.Options["classifier_target"]; !ok && r.Judge == "" {
+				return fmt.Errorf("route %q: type llm_classifier needs a judge (judge: provider/model, or options.classifier_target)", r.ID)
+			}
 		}
-		if !validPickers[r.Picker] {
-			return fmt.Errorf("route %q: picker %q invalid", r.ID, r.Picker)
+		if optionDrivenRouteTypes[r.Type] && len(r.Options) == 0 {
+			return fmt.Errorf("route %q: type %s is option-driven — set options: with its switchyard keys", r.ID, r.Type)
 		}
-		if r.Confidence == 0 {
-			r.Confidence = 0.5
+		if r.Picker != "" {
+			if r.Type != "stage_router" {
+				return fmt.Errorf("route %q: picker only applies to stage_router", r.ID)
+			}
+			if !validPickers[r.Picker] {
+				return fmt.Errorf("route %q: picker %q must be efficient_first or capable_first", r.ID, r.Picker)
+			}
 		}
-		if r.Confidence <= 0 || r.Confidence > 1 {
+		if r.Type == "stage_router" {
+			// defaults are applied at emission too (RouteKeys); setting them here
+			// keeps a loaded crew self-describing for the builder TUI.
+			if r.Picker == "" {
+				r.Picker = "efficient_first"
+			}
+			if r.Confidence == 0 {
+				r.Confidence = 0.5
+			}
+		}
+		if r.Confidence != 0 && r.Type != "stage_router" {
+			return fmt.Errorf("route %q: confidence only applies to stage_router", r.ID)
+		}
+		if r.Confidence != 0 && (r.Confidence <= 0 || r.Confidence > 1) {
 			return fmt.Errorf("route %q: confidence must be in (0,1]", r.ID)
+		}
+		if _, err := r.RouteKeys(); err != nil {
+			return err
 		}
 	}
 	seen := map[string]bool{}

@@ -28,6 +28,9 @@ echo "crew-smoke: validating examples…"
 "$BIN" validate -f "crew/examples/crew.yaml" >/dev/null
 "$BIN" validate -f "$CREWFILE" >/dev/null
 "$BIN" validate -f "$PHASEFILE" >/dev/null
+# Phase 18C: routed examples go through the router's own --dry-run (advisory)
+"$BIN" validate -f "crew/examples/crew-routed.yaml" >/dev/null
+"$BIN" validate -f "crew/examples/crew-routes.yaml" >/dev/null
 
 # Model override (outage): FORSETI_CREW_MODEL swaps direct-model nodes without
 # touching the pinned crew files. Status 2026-10-05: the LAN box rebranded

@@ -1042,15 +1042,42 @@ func (r *Run) tailRoutingLog() {
 			_, _ = f.Seek(offset, 0)
 			sc := bufio.NewScanner(f)
 			for sc.Scan() {
+				// Phase 18: the host's routing record carries per-request
+				// attribution (S30) — the route that decided, the algorithm,
+				// the tier actually served, and the pi session that asked.
 				var rec struct {
-					Model  string `json:"model"`
-					Tokens int    `json:"total_tokens"`
-					TS     string `json:"ts"`
+					TS          string `json:"ts"`
+					RouteID     string `json:"route_id"`
+					Algorithm   string `json:"algorithm"`
+					Tier        string `json:"tier"`
+					SessionID   string `json:"session_id"`
+					Origin      string `json:"origin"`
+					Model       string `json:"model"`
+					PromptTok   int    `json:"prompt_tokens"`
+					CompleteTok int    `json:"completion_tokens"`
+					TotalTokens int    `json:"total_tokens"`
 				}
-				if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Model != "" {
-					r.emit(Event{Type: "route_decision", Model: rec.Model,
-						Info: fmt.Sprintf("routed call: %d tokens @ %s", rec.Tokens, rec.TS)})
+				if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.Model == "" {
+					continue
 				}
+				parts := []string{fmt.Sprintf("%d tokens (in %d / out %d)", rec.TotalTokens, rec.PromptTok, rec.CompleteTok)}
+				if rec.RouteID != "" {
+					parts = append(parts, "route "+rec.RouteID)
+				}
+				if rec.Algorithm != "" {
+					parts = append(parts, "via "+rec.Algorithm)
+				}
+				if rec.Tier != "" {
+					parts = append(parts, "tier "+rec.Tier)
+				}
+				if rec.SessionID != "" {
+					parts = append(parts, "session "+rec.SessionID)
+				}
+				if rec.Origin != "" {
+					parts = append(parts, "origin "+rec.Origin)
+				}
+				r.emit(Event{Type: "route_decision", Model: rec.Model,
+					Info: fmt.Sprintf("routed call: %s @ %s", strings.Join(parts, ", "), rec.TS)})
 			}
 			offset = fi.Size()
 		}

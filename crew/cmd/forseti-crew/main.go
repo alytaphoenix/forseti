@@ -14,6 +14,7 @@ import (
 
 	"forseti/crew/internal/runner"
 	"forseti/crew/internal/schema"
+	"forseti/crew/internal/switchyard"
 )
 
 func main() {
@@ -93,7 +94,8 @@ func loadCrew(path string) (*schema.Crew, error) {
 func cmdValidate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	f := parseRun(fs, args)
-	if _, err := loadCrew(f.file); err != nil {
+	crew, err := loadCrew(f.file)
+	if err != nil {
 		// P13-B23: a missing file is a read error, not a crew validation verdict
 		if os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "cannot read:", err)
@@ -101,6 +103,16 @@ func cmdValidate(args []string) {
 			fmt.Fprintln(os.Stderr, "INVALID:", err)
 		}
 		os.Exit(1)
+	}
+	// Phase 18C: hand the routes to the router's own `--dry-run`, so a bad route
+	// shape (unknown key, incomplete option-driven type) fails here with the
+	// router's message instead of at run time. Advisory only when no router
+	// binary is available.
+	if note, err := switchyard.DryRunRoutes(crew.Routes); err != nil {
+		fmt.Fprintln(os.Stderr, "INVALID (routes):", err)
+		os.Exit(1)
+	} else if note != "" {
+		fmt.Fprintln(os.Stderr, "note:", note)
 	}
 	fmt.Println(f.file, "valid")
 }

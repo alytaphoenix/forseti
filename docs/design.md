@@ -415,14 +415,25 @@ carried the unknowns; all resolved live (`docs/spikes.md`).
 agents attach with `route: <id>` (mutually exclusive with `model:`). The
 runner, only when routes exist:
 
-1. Generates `switchyard.toml` (schema_version 1, stage_router routes) into the
-   run dir. Upstream `base_url`s resolve from `~/.pi/agent/models.json`
-   (forseti's provider/model strings live there); API keys resolve the same
-   way (`!cmd` executed) and pass ONLY as `SWITCHYARD_KEY_<PROVIDER>` env vars
-   to the server process — never in the TOML.
-2. Spawns `switchyard-server` (bin: `FORSETI_SWITCHYARD_BIN` →
-   `~/.cargo/bin` → PATH) on a free port with `--routing-log-file` inside the
-   run dir; waits for `GET /health`.
+1. Generates `switchyard.toml` (schema_version 1) into the run dir. The route
+   table covers the whole 0.3.0 `AlgorithmSpec`: forseti derives the target keys
+   for the tier shapes (`stage_router`, `auto`, `plan_execute`,
+   `llm_classifier`), maps `passthrough`/`random`/`noop` directly, mints a
+   `<id>_judge` target for `judge:`, and passes every other key through
+   `options:` verbatim (nested maps as TOML inline tables) — so a router release
+   with new route types/keys needs no forseti change; the router's own
+   `--dry-run` is the authority (18C, S30). Upstream `base_url`s resolve from
+   `~/.pi/agent/models.json` (forseti's provider/model strings live there); API
+   keys resolve the same way (`!cmd` executed) and pass ONLY as
+   `SWITCHYARD_KEY_<PROVIDER>` env vars to the router process — never in the TOML.
+2. Spawns the router on a free port with its routing log inside the run dir and
+   waits for `GET /health` (15 s). The default router is OUR `forseti-host`
+   (embedded switchyard, no separate server): `ResolveRouter` tries
+   `FORSETI_CREW_ROUTER_BIN` → `host/target/{release,debug}/forseti-host` →
+   PATH → `FORSETI_SWITCHYARD_BIN`/`~/.cargo/bin/switchyard-server`/PATH.
+   `Router.Args` keeps both flag sets working, and the config is dry-run *before*
+   a port is bound, so a bad route fails with the router's own message
+   (18B, S30). `forseti-crew validate` runs the same dry-run.
 3. Materializes the `switchyard` provider entry in pi's `models.json`
    (one model entry per route id, `openai-completions`, compat block per
    upstream pi doc), restoring the previous bytes at teardown.

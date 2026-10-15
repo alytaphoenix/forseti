@@ -739,3 +739,76 @@ session_id:"…", model:"valhalla-flash-next", …}`. Re-running with
 changed `origin` to `forseti-e2e` — the header came from the extension, not pi's
 built-in affinity path. (The routing log has no `agent_id` column; agent identity is
 consumed by algorithms/telemetry, not the log record.)
+
+## S30 — crew → forseti-host: supervision + the full route surface (Phase 18B/18C, 2026-10-15) ✅ resolved (source + live)
+
+**Which binary the crew runs (18B).** `crew/internal/switchyard.ResolveRouter`
+prefers, in order: `FORSETI_CREW_ROUTER_BIN` (explicit path; kind from basename
+unless `FORSETI_CREW_ROUTER=switchyard-server` forces it) → a `forseti-host`
+built in this repo (walking up from the CWD to the repo root that owns
+`host/Cargo.toml`, `target/release` then `target/debug`; `FORSETI_HOST_BIN`
+overrides) → `forseti-host` on `$PATH` → legacy
+`FORSETI_SWITCHYARD_BIN`/`~/.cargo/bin/switchyard-server`/`$PATH`. The two
+routers take different flags, so `Router.Args` is kind-aware:
+`--addr 127.0.0.1:<port> --routing-log <ndjson>` (ours) vs
+`--host/--port/--routing-log-file` (upstream). Readiness is unchanged
+(`/health` within 15 s), and the run log now names the router kind on failure.
+
+**Dry-run is the validation seam.** Both binaries accept `--config X --dry-run`.
+The crew runs it twice: as a pre-flight inside `Start` (before binding a port, so
+a bad routes file fails with the router's own message instead of "exited early"),
+and in `forseti-crew validate` via `switchyard.DryRunRoutes`. Two facts make the
+CLI-side dry-run robust: (1) unknown/changed providers are substituted with a
+placeholder endpoint (the dry-run never dials), and (2) `api_key_env` is resolved
+by the router at LOAD time through `std::env::var` — an empty value is a hard
+error ("api_key_env … is empty") — so DryRunRoutes resolves real keys when it can
+and otherwise passes a stub. Live: a bogus `options` key is rejected with
+`unknown field \`not_a_switchyard_key\`` at `[routes.broken]`.
+
+**18C route surface (source-verified, `switchyard-runner/src/algorithm.rs`
+`AlgorithmSpec`).** Types: `noop`, `random{targets,weights,seed}`,
+`passthrough{target,subagents}`, `plan_execute{capable_target,efficient_target,
+planning_prompt,handoff_prompt,planner_reasoning_as_text}`,
+`llm_classifier{…mode,classifier_target,strong_target,weak_target,base_threshold,
+threshold_step,…}`, `stage_router{tiers…,picker,classifier,subagents}`,
+`auto{capable_target,efficient_target}` (= stage_router preset efficient_first +
+0.5, no knobs), `composite{classifier,stage}`, `advisor{executor_target,
+advisor_target,…}`, `prefill_router{…}`. serde is `deny_unknown_fields` with
+`tag = "type"`, `rename_all = "snake_case"`.
+- `advisor` REQUIRES `advisor_target` (dry-run rejection), `llm_classifier`
+  REQUIRES `base_threshold` (dry-run rejection) — both confirmed live.
+- forseti's mapping: tier types (`stage_router`, `auto`, `plan_execute`,
+  `llm_classifier`) derive `<id>_cap`/`<id>_eff` (or `_strong`/`_weak`) from
+  `capable`/`efficient`; `passthrough` uses `capable` as its single target;
+  `random` uses `[cap, eff]`; a new optional `judge: provider/model` mints
+  `<id>_judge` and auto-wires `classifier_target`; `auto`/`noop` want no knobs.
+  Everything else is **option-driven**: the whole route table comes from
+  `options:` and may reference forseti's generated target names (documented in
+  `crew/examples/crew-routes.yaml`). Reserved keys (`id`, `type`, and any typed
+  key of that type) are rejected so `options` can never silently win.
+- Route-level `context_window`/`tool_calling`/`reasoning`/`vision` and nested
+  sub-tables (`tool_semantics`, `classifier`, `subagents`) all pass through
+  `options`; nested maps are emitted as TOML **inline tables** (serde parses them
+  identically to sub-tables) by a small dependency-free value encoder.
+- `crew/examples/crew-routes.yaml` carries one route of each shape and validates
+  against the real router.
+
+**Routing-log records carry real attribution.** `switchyard-server/src/routing_log.rs`
+`RoutingRecord`: `ts, route_id, algorithm, origin, task, trial_id, session_id,
+model, tier, prompt_tokens, cached_tokens, cache_creation_tokens,
+completion_tokens, reasoning_tokens, total_tokens` (missing fields default). The
+runner's `route_decision` event now carries route id, algorithm, tier, session
+and origin alongside the model — the previous `{model,total_tokens,ts}` shim (and
+the "per-node attribution impossible" note) is gone. The panes' pi sessions are
+distinguishable by `session_id`; mapping one to a node name needs a per-pane env
+the herdr socket does not expose (S26), so the header channel stays opt-in via
+`FORSETI_SWITCHYARD_AGENT_ID`.
+
+**Live proof (`FORSETI_LIVE_ROUTER=1 go test ./internal/switchyard/`, 20.5 s).**
+`switchyard.Start` with a `stage_router` over `valhalla/valhalla-flash-next`:
+resolved `host/target/debug/forseti-host`, dry-ran the generated TOML, bound a
+free port, answered `/health`, served a real
+`POST /v1/chat/completions` (`ROUTED_OK`), and appended
+`{route_id:"live-pool", algorithm:"stage_router", model:"valhalla-flash-next"}`.
+`crew/examples/crew-routes.yaml` (5 route shapes incl. an advisor naming
+generated targets) validates against the same router.

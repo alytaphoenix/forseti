@@ -1,13 +1,17 @@
-# forseti crew — routed pool demo (6D): two agents share one switchyard route.
-# The proxy picks efficient (halogen, free) vs capable (glm-5.3-flash, paid)
-# per model call. Requires: switchyard-server (cargo install switchyard-server),
-# pi provider entry (materialized automatically by the runner).
+# forseti crew — routed pool demo (6D/18C): agents share switchyard routes.
+#
+# Provider status (2026-10-05): the LAN box rebranded halogen→valhalla and the
+# opencode-go key returns 402 Insufficient funds, so no gate can lean on the
+# capable tier. The crew file stays pinned; the free path is the efficient tier.
+#
+# Requires: a router (built `host/` → forseti-host, or cargo-installed
+# switchyard-server), and pi provider entries (materialized by the runner).
 name: demo-routed-pool
 
 routes:
   - id: auto-pool
     type: stage_router
-    efficient: halogen/halogen-qwen3.8-flash-next
+    efficient: valhalla/valhalla-flash-next
     capable: opencode-go/glm-5.3-flash
     picker: efficient_first
     confidence: 0.5
