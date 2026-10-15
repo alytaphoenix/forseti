@@ -1,0 +1,22 @@
+[package]
+name = "forseti-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Forseti host: in-process switchyard router (no separate server process)"
+license = "MIT"
+
+[dependencies]
+# Embeddable switchyard server library (Phase 18A). Verified surface:
+#   switchyard_server::config::load_server_state(path) -> ServerState
+#   ServerState::from_runner / with_routing_log / models
+#   BoundServer::bind(state, ServerRunOptions) -> .local_addr() / .serve(shutdown)
+#   ServerRunOptions { addr, backlog, dry_run, shutdown_timeout, tls }
+switchyard-server = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "forseti-host"
+path = "src/main.rs"

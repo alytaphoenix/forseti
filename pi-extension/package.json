@@ -5,6 +5,6 @@
   "author": "alytaphoenix",
   "license": "MIT",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./index.ts", "./switchyard.ts"]
   }
 }

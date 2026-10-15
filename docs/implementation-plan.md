@@ -448,3 +448,36 @@ fact today: ttt v1.6.0 has no Lua terminal API and /exec cannot address a
 non-focused tab (S27). Patch design, integration bridge, step plan and
 abandon criteria: **docs/ttt-terminal-api.md**. Phase 15 is the hedge that
 ships now.
+## Phase 18 — switchyard 0.3.0: full headers + full routing on an embedded Rust host — 🚧 **in progress** (2026-10-15)
+
+Direction (agreed): upgrade to switchyard 0.3.0, implement the **full header and
+routing surface**, and move toward a **Rust host that embeds switchyard in-process**
+(no separate `switchyard-server`). Python layers (laya/memory) stay isolated
+127.0.0.1 services — PyO3 embedding rejected on evidence (1.3 GB venv, libpython/GIL
+coupling, loses crash isolation; S28).
+
+### 18A — full headers ✅ **implemented + verified live** (2026-10-15)
+- `pi-extension/switchyard.ts` (new, independent of the ttt bridge `index.ts`):
+  `before_provider_headers` injects `x-switchyard-session-id` + legacy
+  `proxy_x_session_id` (pi's session id), `x-switchyard-origin`,
+  `x-switchyard-request-id`, opt-in `x-switchyard-agent-id`; gated to the
+  `switchyard` provider. `after_provider_response` → `/switchyard` reports the
+  served target (`x-model-router-selected-model`).
+- Live E2E: pi → `forseti-host` (embedded switchyard) → `valhalla-flash-next`;
+  routing log `origin` tracks `FORSETI_SWITCHYARD_ORIGIN` (S29).
+- `pi-extension/package.json` ships both extensions; README + AGENTS + S29 updated.
+
+### 18B — embedded Rust host (proof done, integration pending)
+- `host/` crate `forseti-host` embeds `BoundServer` (`switchyard_server` lib),
+  loads route TOML, prints `FORSETI_HOST_ADDR/MODELS/READY`, supports
+  `--routing-log` and `--dry-run` (S28 live proof).
+- Next: point the crew's switchyard supervisor at `forseti-host` instead of the
+  cargo-installed `switchyard-server`; consume the routing log for per-node
+  attribution (fixes the `runner.go` "attribution impossible" note).
+
+### 18C — full routing surface (pending)
+- Broaden crew `schema.Route` beyond `stage_router` to the 0.3.0 route types +
+  keys (verified loadable via `--dry-run` pre-flight): `passthrough`,
+  `plan_execute` (`capable_target`/`efficient_target`/prompts), `llm_classifier`
+  subagents, plus per-client/per-target keys.
+- Staged port of the runner/TUI onto the Rust host.

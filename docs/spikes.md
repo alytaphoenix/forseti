@@ -630,3 +630,112 @@ recipe):**
   crew_jump fallback path fires as designed.
 - Mid-run crew-status.json (throwaway crew, valhalla override): `nodes:
   [{name,status}]` + `tab:"w1:tR"` appear while running — the P15 contract.
+
+## S28 — switchyard 0.3.0: embeddable server + route/header surface (Phase 18, 2026-10-15) ✅ resolved (source + live)
+
+**Upgrade.** `cargo install --locked --force switchyard-server --version 0.3.0`
+built on macOS (rustc 1.97.1, edition 2024; crate needs ≥1.96.1) in ~47 s. 0.3.0
+published 2026-09-22; libsy/protocol/runner/translation/llm-client all 0.3.0 on
+crates.io. Backup of the 0.2.0 binary kept at `~/.cargo/bin/switchyard-server-0.2.0.bak`.
+
+**Config validation.** `switchyard-server --config X --dry-run` validates without
+binding; serde is STRICT (missing/unknown fields are hard errors) → usable as a
+pre-flight check inside our config generator. Caveat: `api_key_env` is resolved
+at load, so dry-run needs the var set (keyless clients may omit it).
+
+**Route types accepted (empirical probe matrix, all PASS):** `passthrough`,
+`random`, `noop`, `plan_execute`, `llm_classifier`, `stage_router`, `auto`,
+`composite`, `advisor` (plus `prefill_router`, feature-gated). `stage_router`
+REQUIRES `picker`. `plan_execute` uses `capable_target`/`efficient_target` +
+`planning_prompt`/`handoff_prompt`/`planner_reasoning_as_text` (**not**
+planner/executor_target). Our existing emitted shape (stage_router +
+picker/confidence_threshold) still validates unchanged → the 0.2.0 config is
+0.3.0-clean.
+
+**Key surface.** Route: `id/type/context_window/tool_calling/reasoning/vision`.
+Target: `id/llm_client/system_prompt/extra_body/reasoning_effort`. Client:
+`format/base_url/api_key_env?/timeout_ms/max_retries/forward_auth/extra_headers`.
+Top-level `fallback_client` forwards unimplemented paths verbatim.
+`tool_semantics.{observe,mutate,plan,new}` classifies **custom** tool names only —
+built-ins (`read`, `grep`, `edit`, `todo_write`, …) are rejected ("already has
+built-in semantics"). `subagents` (on passthrough/stage_router/composite) IS in
+the 0.3.0 release despite the doc's "unreleased features" banner; an
+llm_classifier subagent needs `mode` + `models{judge,capable,efficient,any}` +
+`default_target` + `classify_trigger` + `max_output_tokens` + `prompt` +
+`response_schema` + `policy{type="target_selector",selector}`; every
+`models.<tier>` target must also appear in `models.any`. Sub-agent identity rides
+`x-claude-code-agent-id` (Claude Code ≥2.1.139) — **pi does not send it**, so
+subagent routing is unused unless we emit that header ourselves.
+
+**Headers.** `x-switchyard-session-id` = normalized session id (session affinity
++ `GET /v1/routing/session-stats`); `proxy_x_session_id` = legacy fallback (0.2.0
+name); `x-switchyard-origin` labels the client in the routing log;
+`message_hash_fallback` covers clients with no session header (requires
+`classify_trigger = "new_session"`).
+
+**The Phase 18 enabler — the server is a LIBRARY.** `switchyard-server` ships
+`[lib] switchyard_server`: `config::load_server_state(path) -> ServerState`;
+`ServerState::from_runner(Runner)` / `.with_routing_log(path)` / `.models()` /
+`.caller_auth_kind(model)`; `ServerRunOptions{addr,backlog,dry_run,
+shutdown_timeout,tls}`; `BoundServer::bind(state,opts) -> BoundServer` with
+`.local_addr()` (port 0 → OS-assigned) and async `.serve(shutdown)`; plus
+`run_server`, `build_llm_router`, `build_switchyard_router`.
+
+**Live proof (no separate server process).** New Rust crate `host/`
+(`forseti-host`) embeds `BoundServer` and loads a TOML route — `--dry-run`
+prints `ok models=sy-route`; bound to 127.0.0.1:8777, `GET /health` →
+`{"status":"ok"}`, and `POST /v1/chat/completions` returned real content
+("ROUTED-OK") from `valhalla-flash-next`. `/v1/stats` → `total_requests: 1` +
+model attribution. `--routing-log` NDJSON record:
+`{ts,route_id,algorithm,origin,session_id,model,tier,prompt_tokens,…}` →
+per-node session attribution, which 0.2.0 could not do (the `runner.go:528`
+"attribution impossible" note is now fixable).
+
+**Decision (Phase 18).** Staged Rust host with embedded switchyard; Python
+(laya/memory) stays isolated 127.0.0.1 services — NOT PyO3-embedded: that venv is
+1.3 GB (torch + sentence-transformers) on Python 3.14, and embedding adds
+libpython/GIL coupling while losing crash isolation + graceful degradation.
+
+## S29 — pi → switchyard headers: the extension surface (Phase 18A, 2026-10-15) ✅ resolved (source + live)
+
+**Question.** How does pi 0.99.1 let an extension inject HTTP headers on provider
+requests, and which headers does switchyard 0.3.0 actually read back?
+
+**pi hook (verified from `dist/core/extensions/types.d.ts`).**
+`pi.on("before_provider_headers", (event, ctx) => …)` — `BeforeProviderHeadersEvent
+{ type, headers: ProviderHeaders }` where `ProviderHeaders = Record<string,string|null>`.
+Handlers **mutate `event.headers` in place**; the return value is ignored, and
+`null` deletes a header. Companion `after_provider_response { status, headers }`,
+and `ExtensionContext` exposes `model` (`{id, provider: ProviderId, …}`),
+`sessionManager.getSessionId()`, `cwd`. So the gate is *provider id*, the session id
+comes from the session manager, and no build step is needed (jiti).
+
+**Which headers matter (verified `switchyard-protocol/src/metadata.rs`).** Correlation
+fields are resolved through a precedence table (`HEADER_CONFIG`); the explicit
+`x-switchyard-*` names are first, harness-native ones only fallbacks. Notably pi's
+native `x-session-id` (`OPENCODE_SESSION_ID_HEADER`) sits **fifth** for `session_id`,
+so an explicit `x-switchyard-session-id` wins. Other normalized fields exist
+(`agent_id`/`parent_agent_id`/`is_subagent`/`agent_kind`/`agent_role`/`task_id`/
+`task_kind`/`turn_id`/`session_final`) plus host-specific paths (Codex
+`x-codex-turn-metadata.*`, OpenCode, Dynamo). `switchyard-server/src/routing_log.rs`
+additionally reads the legacy `proxy_x_session_id`, and the response carries
+`x-model-router-selected-model`. There are also `x-switchyard-intake-task` and
+`x-switchyard-trial-id` request headers (recorded into the log as `task`/`trial_id`).
+
+**Result — shipped `pi-extension/switchyard.ts`.** On `before_provider_headers`, gated
+to `provider === switchyard`, it sets `x-switchyard-session-id` +
+`proxy_x_session_id` (= pi's session id), `x-switchyard-origin`
+(`FORSETI_SWITCHYARD_ORIGIN`, default `pi`), `x-switchyard-request-id` (uuid/request),
+and opt-in `x-switchyard-agent-id`; `after_provider_response` captures the served
+target for a `/switchyard` command.
+
+**Live proof (2026-10-15).** `pi -a -ne -e ./pi-extension/switchyard.ts --model
+switchyard/forseti-auto -p "Reply with exactly: PI-ROUTED-OK"` against `host/`
+(`forseti-host`, embedded switchyard, route `forseti-auto` → `valhalla-flash-next`)
+answered `PI-ROUTED-OK`, and the routing log recorded
+`{route_id:"forseti-auto", algorithm:"passthrough", origin:"forseti-e2e",
+session_id:"…", model:"valhalla-flash-next", …}`. Re-running with
+`FORSETI_SWITCHYARD_ORIGIN=forseti-e2e FORSETI_SWITCHYARD_AGENT_ID=node-alpha`
+changed `origin` to `forseti-e2e` — the header came from the extension, not pi's
+built-in affinity path. (The routing log has no `agent_id` column; agent identity is
+consumed by algorithms/telemetry, not the log record.)

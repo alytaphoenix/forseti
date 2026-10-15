@@ -9,5 +9,8 @@
 # pi / tooling local state
 .pi/sessions/
 crew/bin/
+
+# rust host
+host/target/
 .forseti/
 __pycache__/

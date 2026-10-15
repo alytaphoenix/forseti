@@ -16,12 +16,34 @@ Follow mode pairs `tool_execution_start` (file) with `tool_execution_end` (pi's
 hand-off the ttt side consumes. Pushes are debounced (1.2 s) and tolerate a dead
 ttt listener silently (one-time notice instead).
 
+## switchyard headers — `switchyard.ts`
+
+A second, independent extension (`index.ts` is the ttt bridge; this one is the
+crew-routing bridge). When the active provider is `switchyard` (the provider the
+crew materializes per run) it decorates every provider request so the router can
+attribute traffic per session:
+
+| header | value | why |
+|---|---|---|
+| `x-switchyard-session-id` | pi's session id | explicit override — top precedence in switchyard's header-normalization table (S28) |
+| `proxy_x_session_id` | pi's session id | the 0.2.0 legacy name the server still reads |
+| `x-switchyard-origin` | `$FORSETI_SWITCHYARD_ORIGIN` or `pi` | client label in the routing log |
+| `x-switchyard-request-id` | a uuid per request | joins routing-log rows with host telemetry |
+| `x-switchyard-agent-id` | `$FORSETI_SWITCHYARD_AGENT_ID` | opt-in per-agent identity (per-pane env is unavailable over the herdr socket, S26) |
+
+pi already emits `x-session-id` for this provider (`compat.sendSessionAffinityHeaders`),
+but switchyard reads that only as a *fallback*; the explicit override above plus
+`origin`/`request-id` is what this extension adds. `/switchyard` reports the gate,
+the tagged-request count, and the model that actually served the last response
+(`x-model-router-selected-model`).
+
 ## Install
 
 **User-level (recommended)** — every pi session gets it:
 
 ```sh
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
+cp pi-extension/switchyard.ts ~/.pi/agent/extensions/forseti-switchyard.ts
 ```
 
 **As a package** (shareable):
