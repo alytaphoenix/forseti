@@ -566,6 +566,27 @@ is byte-for-byte the old behavior.
   second copy of the synthesized nodes. `saveCrew` and `startRun` use it;
   `marshal_test.go` pins the round trip.
 
+### 19F — prompt binding for synthesized prompts ✅
+- The FIRST live SOP run failed at `rev-reviewer` before any model call:
+  `prompt template: template: rev-reviewer:5: function "design" not defined`
+  (S32). Three findings:
+  1. a dot-less action is a FUNCTION call, so the generated reference for an
+     upstream output must be `{{ .name }}` (the upstream map is keyed by node
+     name) — the generated prompts were missing the dot;
+  2. hyphens make field access unwritable (`{{ .ap-critic-1 }}` = `bad character
+     U+002D`), and EVERY synthesized node is `<pattern>-<part>`;
+  3. the panel's judge renders the artifact under judgement but edges only from
+     the critics, so the subject is not an incoming edge — there was nothing to
+     bind even with a valid name.
+- Fix: a runner template function `{{ node "name" }}` (string-typed name → any
+  node's latest text, `""` until it finishes), used by all six generated
+  references. `{{ .<node> }}` (identifier-safe names) and
+  `{{ artifact "<type>" }}` are unchanged.
+- Guard: `schema.TestPatternPromptsRender` parses+renders every node of a crew
+  with all four patterns under the runner's binding rules, and `pattern_test.go`
+  asserts the function form — the smoke gate was green throughout, because
+  template PARSE happens at dispatch (`runNode`), not at `Validate`.
+
 ### Engine refinement (needed by the loops) ✅
 - `BackEdges` is now **DFS-classified** from the entry nodes (plus an explicit
   `loop: true` marker for ambiguous cycles) instead of "target reaches source".
@@ -587,6 +608,6 @@ is byte-for-byte the old behavior.
   patterns expand, one ENTRY node, verdict gates present.
 - `scripts/crew-smoke.sh` asserts the expansion (no herdr needed for the
   validate leg).
-- NOT run for this phase: the live smoke/herdr legs (`run` against the LAN
-  model) — no herdr session was available in the dev environment; the
-  expansion is covered by validate + unit tests instead.
+- Live gate: `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next bash
+  scripts/crew-smoke.sh` — PASS (2026-10-16): checked crew in the sandbox
+  session (bus files, watch match, probe), phased crew barrier held.

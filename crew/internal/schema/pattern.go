@@ -315,7 +315,7 @@ func (c *Crew) instantiateReviewLoop(p *Pattern, part, good, bad string) ([]stri
 		if l := strings.TrimSpace(p.str("subject_label", "")); l != "" {
 			what = l
 		}
-		prompt := fmt.Sprintf("The work under review is %s:\n\n{{ %s }}\n\n%s `%s` or `%s`.",
+		prompt := fmt.Sprintf("The work under review is %s:\n\n{{ node %q }}\n\n%s `%s` or `%s`.",
 			what, subject, instruction, good, bad)
 		if err := c.addAgent(Agent{
 			Name:   reviewer,
@@ -354,7 +354,7 @@ func (c *Crew) instantiatePanel(p *Pattern) ([]string, error) {
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("%s-critic-%d", p.ID, i+1)
 		critics = append(critics, name)
-		prompt := fmt.Sprintf("Artifact under attack (output of node %q):\n\n{{ %s }}\n\nYour lens: %s\n\nAttack it from this lens only: give the strongest concrete counter-case (a scenario where it fails) and how you would demonstrate the failure. End with `VERDICT: ACCEPT` or `VERDICT: REVISE`.",
+		prompt := fmt.Sprintf("Artifact under attack (output of node %q):\n\n{{ node %q }}\n\nYour lens: %s\n\nAttack it from this lens only: give the strongest concrete counter-case (a scenario where it fails) and how you would demonstrate the failure. End with `VERDICT: ACCEPT` or `VERDICT: REVISE`.",
 			p.Subject, p.Subject, lenses[i])
 		if err := c.addAgent(Agent{Name: name, Role: "adversarial_reviewer", Prompt: prompt}); err != nil {
 			return nil, err
@@ -366,7 +366,7 @@ func (c *Crew) instantiatePanel(p *Pattern) ([]string, error) {
 	judge := p.Members["judge"]
 	if judge == "" {
 		judge = p.ID + "-judge"
-		judgePrompt := fmt.Sprintf("Artifact under judgement (output of node %q):\n\n{{ %s }}\n\nYou sit on a panel. Each position below is one critic's independent attack, from a different lens:\n\n%sDecide. For each position state whether it survives scrutiny and why. Name the findings you accept (they must be addressed before shipping) and the ones you reject (with the reason). End with exactly one line: `VERDICT: ACCEPT` (ship as-is) or `VERDICT: REVISE` (the accepted findings must be addressed).",
+		judgePrompt := fmt.Sprintf("Artifact under judgement (output of node %q):\n\n{{ node %q }}\n\nYou sit on a panel. Each position below is one critic's independent attack, from a different lens:\n\n%sDecide. For each position state whether it survives scrutiny and why. Name the findings you accept (they must be addressed before shipping) and the ones you reject (with the reason). End with exactly one line: `VERDICT: ACCEPT` (ship as-is) or `VERDICT: REVISE` (the accepted findings must be addressed).",
 			p.Subject, p.Subject, joinBindings(critics))
 		if err := c.addAgent(Agent{Name: judge, Role: "judge", Prompt: judgePrompt}); err != nil {
 			return nil, err
@@ -393,7 +393,7 @@ func (c *Crew) instantiateExecutor(p *Pattern) ([]string, error) {
 		impl = p.ID + "-implement"
 		prompt := strings.TrimSpace(p.str("task", ""))
 		if p.Subject != "" {
-			binding := fmt.Sprintf("The task (output of node %q):\n\n{{ %s }}\n\n", p.Subject, p.Subject)
+			binding := fmt.Sprintf("The task (output of node %q):\n\n{{ node %q }}\n\n", p.Subject, p.Subject)
 			prompt = binding + prompt
 		}
 		if prompt == "" {
@@ -410,7 +410,7 @@ func (c *Crew) instantiateExecutor(p *Pattern) ([]string, error) {
 	}
 	checks := p.list("checks", nil)
 	verify := p.ID + "-verify"
-	vprompt := "Verify the work produced by node \"" + impl + "\":\n\n{{ " + impl + " }}\n\n"
+	vprompt := "Verify the work produced by node \"" + impl + "\":\n\n{{ node \"" + impl + "\" }}\n\n"
 	if len(checks) > 0 {
 		vprompt += "Verification commands:\n" + bullet(checks) + "\n"
 	} else {
@@ -480,7 +480,7 @@ func bullet(items []string) string {
 func joinBindings(nodes []string) string {
 	var b strings.Builder
 	for _, n := range nodes {
-		b.WriteString(fmt.Sprintf("- %s:\n\n{{ %s }}\n\n", n, n))
+		b.WriteString(fmt.Sprintf("- %s:\n\n{{ node %q }}\n\n", n, n))
 	}
 	return b.String()
 }

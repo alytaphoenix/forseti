@@ -935,3 +935,58 @@ asserts all four pattern kinds expand and that an entry node and a
 cycle}_test.go` + runner verdict / cycle-body / uncapped-edge-refire tests.
 Example: `crew/examples/crew-sop.yaml` (planner → architect → reviewer_loop →
 security_review → adversarial_panel(3) → executor).
+
+## S32 — the synthesized prompts must not use field access (Phase 19, 2026-10-16) ✅ resolved (live)
+
+The first **live** SOP run (`forseti-crew run -f crew/examples/crew-sop.yaml
+--session sandbox --worktree sop-live`, valhalla) died one node in, before the
+model was asked anything:
+
+```
+node_start  rev-reviewer  pane=w1:p1D
+node_failed rev-reviewer  prompt template: template: rev-reviewer:5: function "design" not defined
+```
+
+Three facts, in order:
+
+1. **A bare name is a function.** The reviewer prompt bound its subject as
+   `{{ draft }}`, and text/template parses a dot-less action as a FUNCTION call
+   — `function "draft" not defined` (not the "map has no entry" a missing
+   variable gives). The runner's upstream map is keyed by node name, so the
+   reference is `{{ .draft }}`; the dot was simply missing. Every hand-written
+   example already used the dotted form, so the failure was local to the
+   generated prompts.
+2. **The dot cannot be used for a synthesized name.** `{{ .ap-critic-1 }}` is a
+   PARSE error — `bad character U+002D '-'` — because field access only accepts
+   an identifier. Every pattern-synthesized node is `<pattern>-<part>`
+   (`rl-reviewer`, `ap-critic-1`, `ex-implement`), i.e. every generated
+   reference is un-writable with the documented syntax. Node names legitimately
+   contain `-` (they are herdr names), so this is a general template-layer trap,
+   not a pattern-only one.
+3. **The judge could never bind the artifact anyway.** The panel's judge
+   renders the artifact under judgement, but it edges only from the critics —
+   the subject is not one of its incoming edges, so the upstream map has
+   nothing for `{{ .<subject> }}` and the prompt would have rendered an EMPTY
+   artifact (or an unapproved lookup fallback). The judge genuinely needs a
+   value that is not a predecessor.
+
+Resolution: a runner template function, `{{ node "name" }}` (the name is a
+string literal, hyphens included), returning the node's latest text — `""`
+until it has finished, matching the unconditional upstream binding of P13
+BUG-06. All six generated references (subject, subject in the panel, the panel
+row per critic, the executor's task, the verifier's implementer, the judge's
+subject) use it. `{{ .<node> }}` for identifier-safe names and
+`{{ artifact "<type>" }}` are unchanged.
+
+Guards: `schema.TestPatternPromptsRender` parses+renders every node of a crew
+with all four patterns under the runner's rules (its `node` stub flags a
+nonexistent name as `UNKNOWN:`), so a bare or hyphenated-broken reference fails
+a unit test instead of a live run; `pattern_test.go` asserts the generated
+prompts use the function form. The smoke gate was already green — this class of
+bug is invisible to `validate`, because template PARSE happens at dispatch,
+inside `runNode`.
+
+Lesson for the pattern layer: the generated prompt is a *runtime artifact*
+(the templates are rendered node-by-node at dispatch, not at Validate), so
+every generated prompt needs a parse/render test in the schema package, not
+just an expansion assertion.

@@ -1265,17 +1265,6 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	// of the node's prompt (and used as the whole prompt when the node has none
 	// and the archetype carries an instruction). Role-less nodes are unchanged.
 	render = r.roles.RolePrompt(a, render)
-	tpl, err := template.New(a.Name).Funcs(template.FuncMap{
-		"memory": func(q string) string { return r.recallMemory(a.Name, q) },
-		// P19D: {{ artifact "type" }} resolves the artifact registry — the
-		// latest in-run output published as that type, else the file the last
-		// run left in .forseti/bus/typed/<type>.md.
-		"artifact": func(t string) string { return r.artifact(t) },
-	}).Parse(render)
-	if err != nil {
-		r.fail(a.Name, fmt.Sprintf("prompt template: %v", err))
-		return
-	}
 	// P13 BUG-06: upstream outputs are bound UNCONDITIONALLY — a skipped or
 	// empty upstream used to render the literal "<no value>" into the prompt.
 	data := map[string]string{}
@@ -1287,6 +1276,24 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	}
 	retries := st.Retries
 	r.mu.Unlock()
+	tpl, err := template.New(a.Name).Funcs(template.FuncMap{
+		"memory": func(q string) string { return r.recallMemory(a.Name, q) },
+		// P19D: {{ artifact "type" }} resolves the artifact registry — the
+		// latest in-run output published as that type, else the file the last
+		// run left in .forseti/bus/typed/<type>.md.
+		"artifact": func(t string) string { return r.artifact(t) },
+		// {{ node "name" }} renders a node's latest output by name. Two reasons
+		// it exists: text/template field access cannot express a hyphenated
+		// name ({{ .ap-critic-1 }} is a parse error, "bad character U+002D"),
+		// and a consumer may legitimately need an output that is NOT one of its
+		// incoming edges (the adversarial panel's judge binds the subject, which
+		// it does not directly edge from). Empty for a node that has not run.
+		"node": func(name string) string { return r.nodeOutput(name) },
+	}).Parse(render)
+	if err != nil {
+		r.fail(a.Name, fmt.Sprintf("prompt template: %v", err))
+		return
+	}
 	var sb strings.Builder
 	if err := tpl.Execute(&sb, data); err != nil {
 		r.fail(a.Name, fmt.Sprintf("prompt render: %v", err))
@@ -1482,6 +1489,22 @@ func (r *Run) artifact(t string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// nodeOutput renders a node's latest text by name ({{ node "name" }}). It
+// exists because text/template field access cannot express a hyphenated node
+// name ({{ .ap-critic-1 }} is a parse error), and because a consumer may need an
+// output that is not one of its incoming edges (the panel's judge binds the
+// subject it never edges from). Empty for a node that has not run, matching the
+// unconditional upstream binding of P13 BUG-06.
+func (r *Run) nodeOutput(name string) string {
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if st := r.Nodes[name]; st != nil {
+		return st.Output
+	}
+	return ""
 }
 
 // recallMemory queries the shared memory service for a node's prompt render.

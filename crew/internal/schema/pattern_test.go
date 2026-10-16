@@ -47,7 +47,7 @@ func TestPatternReviewerLoop(t *testing.T) {
 	if rev.Role != "reviewer" {
 		t.Fatalf("reviewer role = %q", rev.Role)
 	}
-	if !strings.Contains(rev.Prompt, "{{ draft }}") {
+	if !strings.Contains(rev.Prompt, `{{ node "draft" }}`) {
 		t.Fatalf("reviewer prompt must bind the subject: %q", rev.Prompt)
 	}
 	if e := crewEdge(c, "draft", "rl-reviewer"); e == nil || e.When != "idle" {
@@ -111,7 +111,7 @@ func TestPatternAdversarialPanel(t *testing.T) {
 		t.Fatalf("judge missing/wrong: %+v", judge)
 	}
 	for i := 1; i <= 3; i++ {
-		if !strings.Contains(judge.Prompt, fmt.Sprintf("{{ ap-critic-%d }}", i)) {
+		if !strings.Contains(judge.Prompt, fmt.Sprintf(`{{ node "ap-critic-%d" }}`, i)) {
 			t.Fatalf("judge prompt must bind critic %d: %q", i, judge.Prompt)
 		}
 		if e := crewEdge(c, fmt.Sprintf("ap-critic-%d", i), "ap-judge"); e == nil {
@@ -135,7 +135,7 @@ func TestPatternExecutor(t *testing.T) {
 	if impl == nil || impl.Role != "engineer" {
 		t.Fatalf("implementer missing/wrong: %+v", impl)
 	}
-	if !strings.Contains(impl.Prompt, "{{ draft }}") {
+	if !strings.Contains(impl.Prompt, `{{ node "draft" }}`) {
 		t.Fatalf("implementer must bind the subject: %q", impl.Prompt)
 	}
 	verify := ag["ex-verify"]
@@ -248,7 +248,7 @@ func TestPatternValidation(t *testing.T) {
 
 func TestPatternMemberSupplied(t *testing.T) {
 	c := baseCrew()
-	c.Agents = append(c.Agents, Agent{Name: "myrev", Role: "reviewer", Prompt: "review {{ draft }}"})
+	c.Agents = append(c.Agents, Agent{Name: "myrev", Role: "reviewer", Prompt: `review {{ node "draft" }}`})
 	c.Patterns = []Pattern{{ID: "rl", Pattern: PatternReviewerLoop, Subject: "draft",
 		Members: map[string]string{"reviewer": "myrev"}}}
 	if err := c.Validate(); err != nil {

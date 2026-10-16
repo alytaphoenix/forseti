@@ -1122,6 +1122,32 @@ in-run producer's output, else the typed file
 publishes the node's own `.forseti/bus/<node>.md` as before, and emits a
 `verdict` event when the output carries one.
 
+### Prompt binding: `{{ node "name" }}`
+
+The first live SOP run died at the synthesized reviewer, before the model was
+ever asked (S32). Synthesized nodes are `<pattern>-<part>`, and the prompts bound
+the subject as `{{ draft }}` — a dot-less action, which text/template reads as a
+FUNCTION and answers with `template: rev-reviewer:5: function "draft" not
+defined`. Upstream outputs are bound by node name (`{{ .draft }}`), so the
+reviewer's first form was simply wrong.
+
+Adding the dot exposed the deeper problem: a hyphenated name cannot be written as
+field access at all (`{{ .ap-critic-1 }}` = `bad character U+002D`), and *every*
+synthesized name is hyphenated. The synthesized prompts now use the runner
+template function
+
+    {{ node "ap-critic-1" }}    # any node's latest text, "" until it finished
+
+which takes the name as a plain string, so hyphens never parse. It also serves
+the panel's judge directly: the judge prompt renders the artifact under
+judgement, but the judge edges only from the critics, so the subject is not an
+incoming edge and `{{ .design }}` had nothing to bind. `{{ node "name" }}` reads
+the run state instead of the incoming-edge map — the artifact is done by dispatch
+time.
+
+`{{ .<node> }}` (incoming edges only) and `{{ artifact "<type>" }}` (the typed
+registry) are unchanged.
+
 ### Serialization: the source is the file
 
 `Validate` is where roles expand and patterns instantiate, so the in-memory crew
