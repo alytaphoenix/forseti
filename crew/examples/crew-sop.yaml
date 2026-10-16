@@ -13,9 +13,17 @@
 #   * verdicts:  a reviewer's output MUST end with a VERDICT line; `verdict:`
 #                edges loop only on the negative label (bounded by max_visits).
 #
-# Run:  forseti-crew validate crew/examples/crew-sop.yaml
-#       forseti-crew run      crew/examples/crew-sop.yaml      # needs herdr
-#       forseti-crew watch                                     # tail the run
+# Run:  forseti-crew validate -f crew/examples/crew-sop.yaml
+#       forseti-crew run -f crew/examples/crew-sop.yaml    # needs herdr
+#       forseti-crew watch                                 # tail the run
+#
+# The demo request is deliberately small (plan → design → review → security →
+# panel → implement a one-line file) so a live run converges, and the
+# executor's checks run in the crew cwd (the repo root, or the worktree with
+# --worktree) so the artifact they assert lives there. Use a disposable
+# worktree so SOP_DEMO.md lands outside the checkout:
+#
+#   forseti-crew run -f crew/examples/crew-sop.yaml --worktree sop-demo
 #
 # The valhalla box is the free/test provider (AGENTS.md). Override every direct
 # model node with: FORSETI_CREW_MODEL=valhalla/valhalla-flash-next
@@ -39,9 +47,19 @@ roles:
     instruction: "Write the design: the decision, the shape of the change, and the risks."
 
 agents:
-  # entry: the planner writes the `plan` artifact
+  # entry: the planner writes the `plan` artifact. The request itself lives
+  # here, because every later stage is model work over what this node
+  # produces. It is deliberately small and self-verifying (the executor's
+  # checks are the demo's objective evidence) so a LIVE run can converge
+  # instead of looping on an open-ended subject.
   - name: plan
     role: planner
+    prompt: |-
+      The request: add a file named SOP_DEMO.md at the repository root,
+      containing exactly the line `sop pipeline works`.
+
+      Plan the change: the file to add and the check that proves it.
+      Plan only — do not create the file; the implementer is who edits.
 
   # watches `plan` → the edge plan→design is derived from the artifact types
   - name: design
@@ -88,11 +106,15 @@ patterns:
 
   # 4. executor: implement from the design, verify by running the checks; a
   #    FAIL verdict loops the implementer (bounded), PASS is the end of the SOP.
+  #
+  # The checks run in the CREW cwd — the worktree checkout for a
+  # `--worktree` run — which is this repository's root (NOT the crew/ Go
+  # module), so they assert the demo artifact itself.
   - id: run
     pattern: executor
     subject: design
     params:
       max_fixes: 2
       checks:
-        - "go build ./..."
-        - "go test ./..."
+        - "test -f SOP_DEMO.md"
+        - "grep -q 'sop pipeline works' SOP_DEMO.md"
