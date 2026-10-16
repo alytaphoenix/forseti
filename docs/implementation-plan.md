@@ -587,3 +587,6 @@ is byte-for-byte the old behavior.
   patterns expand, one ENTRY node, verdict gates present.
 - `scripts/crew-smoke.sh` asserts the expansion (no herdr needed for the
   validate leg).
+- NOT run for this phase: the live smoke/herdr legs (`run` against the LAN
+  model) — no herdr session was available in the dev environment; the
+  expansion is covered by validate + unit tests instead.
