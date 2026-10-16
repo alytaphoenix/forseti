@@ -499,7 +499,7 @@ coupling, loses crash isolation; S28).
 - Staged Rust port of the runner/TUI onto `forseti-host`, with the Go engine as
   the compatibility surface.
 
-## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified (unit/validate/docs)** (2026-10-15)
+## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified (unit/validate/docs, live smoke; the SOP live leg is PARTIAL)** (2026-10-16)
 
 Direction (user): move the crew layer from ad-hoc prompts to MetaGPT-style
 roles/actions/SOPs — a **role archetype library** plus **declarative
@@ -617,4 +617,22 @@ is byte-for-byte the old behavior.
   validate leg).
 - Live gate: `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next bash
   scripts/crew-smoke.sh` — PASS (2026-10-16): checked crew in the sandbox
-  session (bus files, watch match, probe), phased crew barrier held.
+  session (bus files, watch match, probe), phased crew barrier held. Run logs
+  `.forseti/runs/202610-090415…demo-planner-builder-checked.jsonl` and
+  `…090554…demo-phased-planner-builder.jsonl`; every `node_start` carries
+  `"model":"valhalla/valhalla-flash-next"` (the crew files pin halogen; the
+  override is what ran).
+- SOP live run — **PARTIAL** (2026-10-16):
+  `forseti-crew run -f crew/examples/crew-sop.yaml --session sandbox
+  --worktree sop-demo`. Verified live: the graph expanded at run time (10
+  agents / 20 edges, every dispatch on valhalla) and the reviewer loop ran for
+  real — `rev-reviewer` settled `VERDICT: LBTM`, its `verdict:lgtm` edge to
+  `sec-security_reviewer` was **skipped**, and `design` re-dispatched twice:
+  the P19 back-edge + uncapped-edge behavior exercised against a live model
+  (unit-tested only before this). NOT verified live: the security/panel/
+  executor legs. The run was interrupted on purpose while the LAN box was
+  loaded by unrelated clustering tests (a `design` settle took ~2.5 min, the
+  reviewer's on a ~52k-char subject ~7 min). Also the first attempts died
+  before any model call on the S32 template bug and on a 4-minute node timeout
+  (`agent.prompt+wait: timed out waiting for agent status`), which is how the
+  example's missing request and its unrunnable `checks:` were found.
