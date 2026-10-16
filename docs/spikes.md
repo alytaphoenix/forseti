@@ -990,3 +990,25 @@ Lesson for the pattern layer: the generated prompt is a *runtime artifact*
 (the templates are rendered node-by-node at dispatch, not at Validate), so
 every generated prompt needs a parse/render test in the schema package, not
 just an expansion assertion.
+
+Three more live-run findings, same session:
+
+- **The entry node needs the request.** The planner archetype's instruction
+  reads "write the plan for the request below"; `crew-sop.yaml`'s `plan` node
+  had no prompt and no request anywhere, so the model invented the task (plan
+  23k chars, then design 49k). The reviewer then dispatched on a 49k-char
+  subject and hit a 4-minute node timeout (`agent.prompt+wait: timeout: timed
+  out waiting for agent status`) without producing a verdict. The example now
+  states a small, self-verifying request on the entry node.
+- **`checks:` run in the crew cwd — the repo ROOT, not the Go module.**
+  `runCheck(ch.Run, r.effectiveCwd)`, and with `--worktree` the effective cwd
+  is the worktree checkout. There is no `go.mod` at this repo's root (the
+  module is `crew/`), so the example's `go build ./...`/`go test ./...` could
+  only ever FAIL. They now assert the demo's own artifact, independent of the
+  layout.
+- **A killed run leaves herdr agents behind.** A sandbox session restarted
+  from persisted state still had the old agents registered, so every node of
+  the next run failed with `agent.start: agent_name_taken` (agent names ARE
+  the node names). Recovery: `herdr session stop <name> && herdr session
+  delete <name>` (the runner re-bootstraps the session) plus `git worktree
+  remove --force <path>` and `git branch -D <branch>`.

@@ -545,7 +545,14 @@ is byte-for-byte the old behavior.
   next stage's entries all wait on the verdict edge (fan-in AND); `members:`
   reuses declared nodes; a synthesized node joins its subject's phase.
 - `validate -explain` renders the resolved graph; `crew/examples/crew-sop.yaml`
-  exercises all four patterns end to end (validate-clean).
+  exercises all four patterns end to end (validate-clean). The example names a
+  concrete request on its entry node — a `plan` node with no prompt leaves the
+  planner archetype's "write the plan for the request below" pointing at
+  nothing, and the live run then produced model-invented work (S32) — and its
+  executor `checks:` are shell commands runnable from the **crew cwd** (the
+  repo root, or the worktree checkout with `--worktree`), which is where checks
+  run; `go build ./...` could only FAIL there (this repo's Go module is
+  `crew/`).
 - Known limitation (pre-existing P13 semantics, unchanged): a node's declared
   `checks:` run on its FIRST settle only (`checksDone` is per-check, not per
   visit), so an executor loop's shell checks do not re-run after a fix —

@@ -1020,7 +1020,9 @@ roles:                        # optional: add/override an archetype
   - {name: architect, profile: Architect, goal: …, tier: capable,
      writes: design, instruction: "Write the design."}
 agents:
-  - {name: plan, role: planner}                  # prompt comes from the role
+  - name: plan                                   # the entry node carries the request
+    role: planner
+    prompt: "…the request, as a task…"           # role prefix + request
   - {name: design, role: architect, watch: [plan], prompt: "…{{ artifact \"plan\" }}"}
 patterns:
   - {id: rev, pattern: reviewer_loop, subject: design,
@@ -1030,8 +1032,16 @@ patterns:
   - {id: adv, pattern: adversarial_panel, subject: design,
      params: {critics: 3, max_rounds: 2, then: run}}
   - {id: run, pattern: executor, subject: design,
-     params: {max_fixes: 2, checks: ["go test ./..."]}}
+     params: {max_fixes: 2, checks: ["test -f SOP_DEMO.md"]}}
 ```
+
+The entry node needs an actual request: the planner archetype's instruction
+reads "write the plan for the request below", and a `plan` node with no prompt
+leaves the model to invent the whole task (live-run finding, S32). The
+executor's `checks:` are shell commands run in the **crew cwd** — the repo root,
+or the worktree checkout with `--worktree` — so they must be runnable from
+there (`go build ./...` is not, in a repo whose Go module lives in a
+subdirectory).
 
 `forseti-crew validate -f crew.yaml -explain` prints what that became: each
 node with its archetype, resolved model, phase, artifact subscriptions and the
@@ -1062,8 +1072,9 @@ rather than guessing.
 | `adversarial_panel` | `<id>-critic-<n>` (2–7) + `<id>-judge` | judge `verdict:revise` (max_rounds) | `verdict:accept` |
 | `executor` | `<id>-implement`, `<id>-verify` | verify `verdict:fail` (max_fixes) | `verdict:pass` |
 
-- `subject` is the node under review (its output is bound into every
-  synthesized prompt as `{{ <subject> }}`; the panel's judge binds each critic).
+- `subject` is the node under review: its output is bound into every
+  synthesized prompt as `{{ node "<subject>" }}` (the panel's judge binds the
+  subject it does not edge from, plus every critic it does).
 - `members:` maps a part (`reviewer`, `security_reviewer`, `judge`,
   `implementer`) to a declared node — the pattern wires it in instead of
   synthesizing one.
