@@ -1079,6 +1079,9 @@ rather than guessing.
   reviewer's prose ("the design") instead of the default phrasing.
 - Synthesized nodes are `<pattern-id>-<part>`, and in a phased crew they join
   their subject's phase — the loop-back stays intra-phase.
+- Pre-existing P13 behavior kept: a node's declared `checks:` run on its first
+  settle only, so an executor loop's shell checks do not re-run after a fix —
+  the synthesized verifier re-establishes PASS/FAIL each iteration.
 
 ### Loop semantics (why verdicts, and the back-edge fix)
 

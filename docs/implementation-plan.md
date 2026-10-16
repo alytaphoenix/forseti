@@ -546,6 +546,11 @@ is byte-for-byte the old behavior.
   reuses declared nodes; a synthesized node joins its subject's phase.
 - `validate -explain` renders the resolved graph; `crew/examples/crew-sop.yaml`
   exercises all four patterns end to end (validate-clean).
+- Known limitation (pre-existing P13 semantics, unchanged): a node's declared
+  `checks:` run on its FIRST settle only (`checksDone` is per-check, not per
+  visit), so an executor loop's shell checks do not re-run after a fix —
+  the verifier node is what re-establishes PASS/FAIL per iteration. Re-running
+  checks per visit is a future item.
 
 ### 19D — typed pub/sub ✅
 - `watch:`/`writes:` derive `producer → watcher` edges; `{{ artifact "type" }}`
