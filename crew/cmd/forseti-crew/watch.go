@@ -29,6 +29,7 @@ type watchModel struct {
 	ended         map[string]time.Time
 	cost          map[string]float64
 	phase         map[string]string // P11: node → phase name (from node_start)
+	verdict       map[string]string // P19B: node → last verdict label
 	phaseOrder    []string          // P11: first-seen phase order
 	checks        []string          // rendered check results (P13-B1: reset per replay)
 	failed        bool              // P13-B14: event-based verdict (not summary text)
@@ -58,7 +59,7 @@ func cmdWatch(args []string) {
 	m := &watchModel{path: p, follow: *follow,
 		status: map[string]string{}, started: map[string]time.Time{},
 		ended: map[string]time.Time{}, cost: map[string]float64{},
-		phase: map[string]string{}}
+		phase: map[string]string{}, verdict: map[string]string{}}
 	m.replay()
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := prog.Run(); err != nil {
@@ -124,6 +125,14 @@ func (m *watchModel) fold(ev runner.Event) {
 		if ev.CostUSD > 0 {
 			m.cost[ev.Node] = ev.CostUSD
 		}
+	case "verdict":
+		// P19B: a node's output carried a verdict line (the label is Info's
+		// first token; a following " → path" is the published artifact).
+		label := ev.Info
+		if i := strings.Index(label, " → "); i >= 0 {
+			label = label[:i]
+		}
+		m.verdict[ev.Node] = label
 	case "node_retry":
 		// keep running status
 	case "node_blocked":
@@ -199,7 +208,7 @@ func (m *watchModel) View() string {
 		if c := m.cost[n]; c > 0 {
 			cost = fmt.Sprintf(" $%.4f", c)
 		}
-		b.WriteString(fmt.Sprintf(" %s %-14s %8s%s\n", statusGlyph[m.status[n]], n, dur, cost))
+		b.WriteString(fmt.Sprintf(" %s %-14s %8s%s%s\n", statusGlyph[m.status[n]], n, dur, cost, verdictTag(m.verdict[n])))
 	}
 	if len(m.phaseOrder) > 0 {
 		// P11: phased run — rows grouped under phase headers
@@ -237,6 +246,20 @@ func followTag(f bool) string {
 		return " [following]"
 	}
 	return ""
+}
+
+// verdictTag renders a node's verdict next to its row (P19B): LGTM-ish labels
+// are neutral, the negative ones read as a warning marker.
+func verdictTag(label string) string {
+	if label == "" {
+		return ""
+	}
+	switch label {
+	case "lbtm", "fail", "revise":
+		return " ✗" + label
+	default:
+		return " ✓" + label
+	}
 }
 
 // contains is a tiny slice helper (P11 watch phase grouping).

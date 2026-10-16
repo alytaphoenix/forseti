@@ -812,3 +812,126 @@ free port, answered `/health`, served a real
 `{route_id:"live-pool", algorithm:"stage_router", model:"valhalla-flash-next"}`.
 `crew/examples/crew-routes.yaml` (5 route shapes incl. an advisor naming
 generated targets) validates against the same router.
+
+## S31 — MetaGPT role/SOP contracts + the forseti SOP layer (Phase 19, 2026-10-15) ✅ resolved (source + live)
+
+**Why MetaGPT.** Forseti's crew layer had ad-hoc prompts and hand-written edges.
+MetaGPT (MIT) is the reference for *role archetypes* (a profile/goal/constraints
+prefix, a set of actions) and *SOPs* (role pipelines whose hand-offs are typed
+messages). Forseti borrows the SPEC and the vocabulary, not the code: the SOP
+text is our own, nothing is vendored, and every pattern compiles down to the
+existing agent graph so the P13 scheduler, phases, bounded loops, run log, watch
+TUI and the routing layer are reused unchanged. Source read (pinned, scratch):
+`metagpt/roles/role.py`, `roles/{engineer,qa_engineer,researcher}.py`,
+`actions/{write_review,write_prd_review,design_api_review,write_code_review,
+execute_task,write_test,project_management}.py`, `team.py`,
+`environment/base_env.py`, `strategy/planner.py`.
+
+**Role contract (source-verified).** `Role{name, profile, goal, constraints,
+desc, actions[], is_human, enable_memory}` carries a `RoleContext{msg_buffer,
+memory, working_memory, state, todo, watch, react_mode, max_react_loop}`; the
+prompt prefix is the literal template
+`"You are a {profile}, named {name}, your goal is {goal}. the constraint is
+{constraints}. "` installed as each action's system prompt (`_get_prefix` →
+`Action.set_prefix`). `watch` is a set of message TAGS (`cause_by`) — a role
+observes only messages whose `cause_by` is in its watch set, so subscription is
+declared by artifact type, not by sender.
+
+**React modes.** `REACT` (the LLM picks a numbered state, `-1` = done),
+`BY_ORDER` (actions run in list order), `PLAN_AND_ACT`. The loop is
+`run → _observe → react → _think → _act → publish_message(cause_by=action)`.
+
+**Verdict actions (our verdict-edge source).** `WriteReview` emits a structured
+`LGTM`/`LBTM` token (its ActionNode output IS the bare token), and the
+engineering roles loop on it: `WritePRDReview`, `DesignAPIReview`,
+`WriteCodeReview`, `WriteTest` (a `VERDICT`-ish pass/fail), and
+`execute_task`/`write_test`/`run` in the QA engineer close a bounded fix loop.
+That is the shape forseti's `verdict:<label>` edges reproduce.
+
+**Messages are typed.** `Message{content, role, cause_by, send_to, ...}` —
+`environment/base_env.py` routes by `cause_by` membership in a role's watch
+list. Forseti keeps the graph as the source of truth and DERIVES those
+subscription edges from declared artifact types (`watch:`/`writes:`), so pub/sub
+is compiled rather than interpreted.
+
+**Engine finding — back edges had to be classified, not guessed (P19 fix).** The
+P13 rule ("an edge is a back edge when its target reaches its source") marks
+EVERY edge of a cycle: in `x→a→b→a` both `a→b` and `b→a` were "back edges", so
+`nodeReady` skipped both and the loop BODY dispatched at t0 out of order. A
+multi-agent review loop cannot be expressed on top of that. Forseti now
+classifies with a DFS from the crew's entry nodes (target on the current DFS
+path ⇒ back edge), so only the true loop-back is deferred; an ambiguous cycle
+(two nodes, no other way in) is broken explicitly with `loop: true` on the
+loop-back edge. The entry check still counts every non-`loop` edge, so an
+all-cycle crew is still rejected ("no entry node"). Proven by
+`schema/cycle_test.go` + `runner.TestNodeReadyCycleBodyWaitsItsGate`.
+
+**Engine finding — the implicit edge cap of 1 stalled every multi-edge loop.** The
+P13 scheduler capped an edge's firings at `max_visits` (default **1**). So in a
+reviewer loop only the loop-back edge (`reviewer→subject`, `max_visits: N`)
+could re-fire; the body edge (`subject→reviewer`) fired once and was then
+permanently skipped ("max_visits reached"), so a revised subject never reached
+the reviewer again — the loop performed exactly one revision and stopped. P13
+only ever exercised the capped edge (`TestFireEdgeReArmsSettledTarget` fires the
+edges by hand), so the gap was invisible. Fix: an edge with no `max_visits` is
+now UNCAPPED — it fires on every settle of its source. Termination is still
+guaranteed because validation requires every cycle to carry at least one
+`max_visits` edge and a re-dispatch only happens when an edge fires (every trip
+around a cycle consumes a capped edge); acyclic crews are byte-for-byte
+unaffected (a node settles once). Proven by `runner.TestUncappedEdgeRefiresLoopBody`
++ `TestCappedEdgeStillStops`.
+
+**Pattern chaining resolves to the target's ENTRY nodes.** `then: <pattern-id>`
+would otherwise add one edge to `<id>-<first-node>`, which for a panel is
+`<id>-critic-1` — critics 2..N kept their plain subject edge and ran in parallel
+with the previous stage, and the judge (AND fan-in over the critics) could accept
+before the previous stage's verdict arrived. `then` now resolves a pattern id to
+its entry nodes (all critics, the implementer, the reviewer), so fan-in AND
+makes the whole next stage wait on the verdict edge. In `crew-sop.yaml` this is
+what sequences reviewer_loop → security_review → panel → executor over one
+shared subject; `validate -explain` shows the double incoming edges.
+
+**The forseti SOP layer (as built).**
+- Roles (`crew/internal/schema/role.go`): `Action{Name, Desc, Expected,
+  Instruction, Reads, Writes}` + `Role{Name, Profile, Goal, Constraints, Desc,
+  Tier, Watch, Writes, ReactMode, Actions[], Instruction}`; `Role.Prefix(name)`
+  is the MetaGPT template verbatim (minus the clause when constraints are
+  empty). Built-ins: `planner`, `researcher` (BY_ORDER: search → gather →
+  synthesize), `engineer`, `reviewer` (lgtm|lbtm), `security_reviewer`
+  (pass|fail), `adversarial_reviewer`, `judge` (accept|revise), `verifier`
+  (pass|fail). A crew re-declares a name to override it. Roles resolve their
+  tier through a crew-level `models: {efficient, capable}` map, so an archetype
+  never pins a churning model id; `tier` without `models:` is a validation error.
+- Patterns (`crew/internal/schema/pattern.go`): `id`, `pattern`, `subject`,
+  `members`, `params`. Kinds: `reviewer_loop` (subject → reviewer, LBTM loops,
+  LGTM continues), `security_review` (same shape, security archetype, `lenses`),
+  `adversarial_panel` (`critics` 2–7 × `lenses` → judge, revise loops, accept
+  continues), `executor` (subject/task → implementer → verifier + real shell
+  checks, fail loops). Synthesized nodes are `<id>-<part>`
+  (`rl-reviewer`, `ap-critic-2`, `ap-judge`, `ex-implement`, `ex-verify`);
+  `then:` chains to a declared node or another pattern id — a pattern id
+  resolves to that pattern's ENTRY nodes (all critics of a panel, the
+  implementer of an executor), so the next stage's entries all wait on the
+  verdict edge (fan-in AND). A declared `members:` mapping reuses an
+  existing node instead of synthesizing one. In a phased crew a synthesized
+  node joins its subject's phase, so pattern loops stay intra-phase.
+- Typed pub/sub (`crew/internal/schema/bus.go`): `watch:` declares the artifact
+  types a node consumes and `writes:` what it publishes (default: the node's own
+  name); Validate DERIVES one `producer → watcher` idle edge per type, skips
+  edges the user already declared, and errors when a watched type has no
+  producer. `{{ artifact "type" }}` (runner template function) resolves the
+  in-run producer's output, else `.forseti/bus/typed/<type>.md` from the last
+  run.
+- Verdicts: `ParseVerdict` takes the LAST `VERDICT: <label>` line (pi panes echo
+  the prompt, which names the expected verdicts) and also accepts a bare
+  `LGTM`/`LBTM` on its own line. `verdict:<label>` edges fire only on that
+  label; laya dials (`min_confidence`/`state_file`) are rejected on them, and
+  loop edges need `max_visits`.
+
+**Gates.** `validate -explain` renders the resolved graph (nodes, archetypes,
+tiers, artifact subscriptions, per-edge gates, phases, checks); the smoke gate
+asserts all four pattern kinds expand and that an entry node and a
+`verdict:lbtm` edge survive expansion. Unit tests: `schema/{role,pattern,bus,
+cycle}_test.go` + runner verdict / cycle-body / uncapped-edge-refire tests.
+Example: `crew/examples/crew-sop.yaml` (planner → architect → reviewer_loop →
+security_review → adversarial_panel(3) → executor).

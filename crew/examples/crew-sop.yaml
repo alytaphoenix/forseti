@@ -1,0 +1,98 @@
+# SOP crew: role archetypes + multi-agent patterns (Phase 19).
+#
+# Demonstrates the MetaGPT-inspired layer, all compiling down to the ordinary
+# agent graph (so the P13 scheduler, phases, bounded loops, run log, watch TUI
+# and the routing layer are unchanged):
+#
+#   * roles:     a node inherits a prompt prefix (profile/goal/constraints), a
+#                model tier and its subscriptions from an archetype.
+#   * patterns:  reviewer_loop → security_review → adversarial_panel → executor,
+#                chained with `then:` (a pattern id or a node name).
+#   * pub/sub:   `watch:` derives the incoming edges from whoever `writes:` that
+#                artifact type; {{ artifact "type" }} renders the value.
+#   * verdicts:  a reviewer's output MUST end with a VERDICT line; `verdict:`
+#                edges loop only on the negative label (bounded by max_visits).
+#
+# Run:  forseti-crew validate crew/examples/crew-sop.yaml
+#       forseti-crew run      crew/examples/crew-sop.yaml      # needs herdr
+#       forseti-crew watch                                     # tail the run
+#
+# The valhalla box is the free/test provider (AGENTS.md). Override every direct
+# model node with: FORSETI_CREW_MODEL=valhalla/valhalla-flash-next
+name: crew-sop
+
+# tiers: role archetypes name a class, never a model id (model ids churn).
+models:
+  efficient: valhalla/valhalla-flash-next
+  capable: valhalla/valhalla-flash-next
+
+# archetypes: built-ins (planner, researcher, engineer, reviewer,
+# security_reviewer, adversarial_reviewer, judge, verifier) are always
+# available; a crew may add or override one by re-declaring its name.
+roles:
+  - name: architect
+    profile: Architect
+    goal: decide the smallest design that satisfies the request
+    constraints: no code — choose, and say what you rejected and why
+    tier: capable
+    writes: design
+    instruction: "Write the design: the decision, the shape of the change, and the risks."
+
+agents:
+  # entry: the planner writes the `plan` artifact
+  - name: plan
+    role: planner
+
+  # watches `plan` → the edge plan→design is derived from the artifact types
+  - name: design
+    role: architect
+    watch: [plan]
+    prompt: |-
+      Turn this plan into a concrete design.
+
+      {{ artifact "plan" }}
+
+  # the implementer is synthesized by the executor pattern below, which
+  # implements the design it watches.
+patterns:
+  # 1. plain reviewer loop over the design: an LBTM verdict loops the architect
+  #    (bounded), an LGTM verdict continues into the security review.
+  - id: rev
+    pattern: reviewer_loop
+    subject: design
+    params:
+      max_revisions: 2
+      then: sec
+
+  # 2. security review of the design: a security-lensed reviewer; FAIL loops
+  #    back to the architect, PASS continues to the adversarial panel.
+  - id: sec
+    pattern: security_review
+    subject: design
+    params:
+      max_revisions: 2
+      lenses: ["injection", "secrets and credentials", "authorization", "data exposure"]
+      then: adv
+
+  # 3. adversarial panel: three independent critics, one per lens, fan into a
+  #    judge; the judge's REVISE verdict loops the architect (bounded), ACCEPT
+  #    releases the executor.
+  - id: adv
+    pattern: adversarial_panel
+    subject: design
+    params:
+      critics: 3
+      max_rounds: 2
+      lenses: ["correctness", "failure modes and edge cases", "cost and complexity"]
+      then: run
+
+  # 4. executor: implement from the design, verify by running the checks; a
+  #    FAIL verdict loops the implementer (bounded), PASS is the end of the SOP.
+  - id: run
+    pattern: executor
+    subject: design
+    params:
+      max_fixes: 2
+      checks:
+        - "go build ./..."
+        - "go test ./..."

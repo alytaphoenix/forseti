@@ -308,7 +308,7 @@ func (m *model) startRun() (tea.Model, tea.Cmd) {
 	if m.running {
 		return m, nil
 	}
-	data, err := yaml.Marshal(m.crew)
+	data, err := m.crew.MarshalSource()
 	if err != nil {
 		return m.logf("marshal: %v", err), nil
 	}
@@ -697,7 +697,7 @@ func (m *model) adoptLive() {
 }
 
 func (m *model) saveCrew() {
-	data, err := yaml.Marshal(m.crew)
+	data, err := m.crew.MarshalSource()
 	if err != nil {
 		m.buildMsg = "save: " + err.Error()
 		return

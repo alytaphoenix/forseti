@@ -31,6 +31,16 @@ echo "crew-smoke: validating examples…"
 # Phase 18C: routed examples go through the router's own --dry-run (advisory)
 "$BIN" validate -f "crew/examples/crew-routed.yaml" >/dev/null
 "$BIN" validate -f "crew/examples/crew-routes.yaml" >/dev/null
+# Phase 19: roles + SOP patterns (reviewer loop, security review, adversarial
+# panel, executor) compile to the validated graph — validate -explain is the
+# evidence that nothing silently vanished during expansion.
+SOPEXPLAIN="$WORK/sop.txt"
+"$BIN" validate -f "crew/examples/crew-sop.yaml" -explain > "$SOPEXPLAIN"
+for want in reviewer_loop security_review adversarial_panel executor; do
+  grep -q "$want" "$SOPEXPLAIN" || { echo "crew-smoke: FAIL — SOP pattern $want not expanded"; exit 1; }
+done
+grep -q 'ENTRY' "$SOPEXPLAIN" || { echo "crew-smoke: FAIL — SOP graph has no entry node"; exit 1; }
+grep -q 'verdict:lbtm' "$SOPEXPLAIN" || { echo "crew-smoke: FAIL — reviewer loop has no verdict gate"; exit 1; }
 
 # Model override (outage): FORSETI_CREW_MODEL swaps direct-model nodes without
 # touching the pinned crew files. Status 2026-10-05: the LAN box rebranded

@@ -496,6 +496,89 @@ coupling, loses crash isolation; S28).
   exercises stage_router/auto/plan_execute/llm_classifier+judge/advisor).
 
 ### 18D — runner/TUI on the host (next)
-- Staged Rust port of the runner/TUI onto `forseti-host` (see the Phase 19
-  direction below), with the Go engine as the compatibility surface.
-- Staged port of the runner/TUI onto the Rust host.
+- Staged Rust port of the runner/TUI onto `forseti-host`, with the Go engine as
+  the compatibility surface.
+
+## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified (unit/validate/docs)** (2026-10-15)
+
+Direction (user): move the crew layer from ad-hoc prompts to MetaGPT-style
+roles/actions/SOPs — a **role archetype library** plus **declarative
+multi-agent patterns** (reviewer loop, security review, adversarial panel +
+judge, executor) compiled into the existing verified graph. MetaGPT (MIT) is
+inspiration/spec + attribution only; the SOP text is forseti's own and nothing
+is vendored. `opsctl` was dropped at the user's request. S31 records the
+source-verified MetaGPT contracts.
+
+Design rule: **patterns compile, they do not interpret.** Every pattern expands
+to ordinary agents/edges at `Validate`, so the P13 scheduler (fan-in AND,
+bounded back edges, `max_visits`), phases, checks, run log, watch TUI and the
+Phase 18 routing layer are reused untouched. A crew with no `roles:`/`patterns:`
+is byte-for-byte the old behavior.
+
+### 19A — role archetypes ✅
+- `schema/role.go`: `Action`/`Role` + `Role.Prefix(name)` (the MetaGPT prefix
+  template, verbatim). Built-ins: `planner`, `researcher` (BY_ORDER search →
+  gather → synthesize), `engineer`, `reviewer` (lgtm|lbtm),
+  `security_reviewer` (pass|fail), `adversarial_reviewer`, `judge`
+  (accept|revise), `verifier` (pass|fail). Crew `roles:` re-declares a name to
+  override/add.
+- Tier indirection: a crew-level `models: {efficient, capable}` map; an
+  archetype names a tier, never a model id (model ids churn — see AGENTS.md).
+  Explicit `model:`/`route:` on the node wins; `tier` without `models:` fails
+  validation.
+- The runner prepends `RolePrompt(node, prompt)` at dispatch (role-less nodes
+  unchanged); a role `instruction` fills an empty prompt.
+
+### 19B — verdicts ✅
+- `schema/bus.go`: `ParseVerdict` (LAST `VERDICT: <label>` line wins — panes
+  echo the prompt; bare `LGTM`/`LBTM` accepted) and the `verdict:<label>` edge
+  gate in the runner's `edgeSatisfied`.
+- `node_done` emits a `verdict` event when a node's output carries one; watch
+  renders it per row (✓/✗).
+
+### 19C — patterns ✅
+- `schema/pattern.go`: `reviewer_loop`, `security_review`, `adversarial_panel`
+  (`critics` 2–7 × `lenses` → judge), `executor` (implementer → verifier + real
+  shell checks, `max_fixes`). Params validated per kind; `then:` chains
+  pattern-to-pattern (or to a node) — a pattern id resolves to that pattern's
+  ENTRY nodes (every critic of a panel, the implementer of an executor), so the
+  next stage's entries all wait on the verdict edge (fan-in AND); `members:`
+  reuses declared nodes; a synthesized node joins its subject's phase.
+- `validate -explain` renders the resolved graph; `crew/examples/crew-sop.yaml`
+  exercises all four patterns end to end (validate-clean).
+
+### 19D — typed pub/sub ✅
+- `watch:`/`writes:` derive `producer → watcher` edges; `{{ artifact "type" }}`
+  resolves the latest published artifact (in-run producer, else
+  `.forseti/bus/typed/<type>.md`). Missing producer = validation error.
+
+### 19E — source-form serialization ✅
+- `Crew.MarshalSource()` writes the SOURCE (declared agents/edges, patterns,
+  roles) and drops everything `Validate` synthesized — pattern nodes/edges, the
+  materialised checks, pub/sub-derived edges, and the values a role filled
+  (tier model, writes, watch). `Load(MarshalSource())` is a fixed point of the
+  resolved graph, so a TUI save/run of a role/pattern crew never forges a
+  second copy of the synthesized nodes. `saveCrew` and `startRun` use it;
+  `marshal_test.go` pins the round trip.
+
+### Engine refinement (needed by the loops) ✅
+- `BackEdges` is now **DFS-classified** from the entry nodes (plus an explicit
+  `loop: true` marker for ambiguous cycles) instead of "target reaches source".
+  The old rule marked every edge of a cycle, so a loop body dispatched at t0;
+  `x→a→b→a` now runs a → b → a. The no-entry rejection is preserved for
+  all-cycle crews. See S31 + `schema/cycle_test.go`.
+- **Edge firing cap**: `max_visits` unset now means UNCAPPED — an edge fires
+  every time its source settles (before, the implicit cap was 1, so only the
+  loop-back edge could re-fire and a multi-edge loop body stalled after one
+  pass, never re-running the reviewer). Termination still holds because schema
+  validation requires every cycle to carry at least one `max_visits` edge and
+  a re-dispatch only happens when an edge fires. Acyclic crews are unaffected
+  (a node settles once). `runner_test.go`: `TestUncappedEdgeRefiresLoopBody`,
+  `TestCappedEdgeStillStops`.
+
+### Gates
+- `go test ./...` in `crew/` green (role/pattern/bus/cycle/verdict tests added).
+- `forseti-crew validate -f crew/examples/crew-sop.yaml -explain` — the four
+  patterns expand, one ENTRY node, verdict gates present.
+- `scripts/crew-smoke.sh` asserts the expansion (no herdr needed for the
+  validate leg).

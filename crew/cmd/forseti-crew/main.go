@@ -93,6 +93,7 @@ func loadCrew(path string) (*schema.Crew, error) {
 
 func cmdValidate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	explain := fs.Bool("explain", false, "print the resolved graph (roles, patterns, edges) after validating")
 	f := parseRun(fs, args)
 	crew, err := loadCrew(f.file)
 	if err != nil {
@@ -113,6 +114,9 @@ func cmdValidate(args []string) {
 		os.Exit(1)
 	} else if note != "" {
 		fmt.Fprintln(os.Stderr, "note:", note)
+	}
+	if *explain {
+		fmt.Print(schema.Explain(crew))
 	}
 	fmt.Println(f.file, "valid")
 }

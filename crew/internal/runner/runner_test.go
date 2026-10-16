@@ -218,6 +218,82 @@ edges:
 	}
 }
 
+func TestUncappedEdgeRefiresLoopBody(t *testing.T) {
+	// P19: only the loop-back edge carries max_visits; the loop BODY's forward
+	// edge (subject→reviewer) is uncapped and must re-fire when the subject is
+	// re-armed, otherwise the reviewer never re-runs after a revision.
+	crew, err := schema.Load([]byte(`
+name: loop-refire
+agents:
+  - {name: entry, prompt: go}
+  - {name: subject, prompt: write}
+  - {name: reviewer, prompt: review}
+edges:
+  - {from: entry, to: subject}
+  - {from: subject, to: reviewer}
+  - {from: reviewer, to: subject, when: "verdict:lbtm", max_visits: 2, loop: true}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	r := New(crew, Options{Cwd: t.TempDir()})
+	es := &edgeState{visited: map[string]int{}, ok: map[string]bool{}}
+	r.mu.Lock()
+	r.fireEdge(es, crew.Edges[0]) // entry→subject
+	r.Nodes["subject"].Status = "done"
+	r.fireEdge(es, crew.Edges[1]) // subject→reviewer (1st pass)
+	r.Nodes["reviewer"].Status = "done"
+	r.fireEdge(es, crew.Edges[2]) // reviewer→subject: LBTM re-arms subject
+	if r.Nodes["subject"].Status != "pending" {
+		r.mu.Unlock()
+		t.Fatalf("loop edge must re-arm subject, got %q", r.Nodes["subject"].Status)
+	}
+	// 2nd pass: the subject re-settles; the uncapped forward edge re-fires and
+	// re-dispatches the reviewer.
+	r.Nodes["subject"].Status = "done"
+	r.fireEdge(es, crew.Edges[1])
+	if skips := es.drain(); len(skips) != 0 {
+		r.mu.Unlock()
+		t.Fatalf("uncapped forward edge must not be capped, got %+v", skips)
+	}
+	if r.Nodes["reviewer"].Status != "pending" {
+		r.mu.Unlock()
+		t.Fatalf("forward edge must re-dispatch reviewer, got %q", r.Nodes["reviewer"].Status)
+	}
+	r.mu.Unlock()
+}
+
+func TestCappedEdgeStillStops(t *testing.T) {
+	// guard: max_visits is still a hard cap after the P19 default change.
+	crew, err := schema.Load([]byte(`
+name: capped
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+edges:
+  - {from: a, to: b, max_visits: 2}
+  - {from: b, to: a, max_visits: 2, loop: true}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	r := New(crew, Options{Cwd: t.TempDir()})
+	es := &edgeState{visited: map[string]int{}, ok: map[string]bool{}}
+	r.mu.Lock()
+	r.fireEdge(es, crew.Edges[0]) // 1st
+	r.fireEdge(es, crew.Edges[0]) // 2nd, within cap
+	if skips := es.drain(); len(skips) != 0 {
+		r.mu.Unlock()
+		t.Fatalf("within cap must not skip, got %+v", skips)
+	}
+	r.fireEdge(es, crew.Edges[0]) // 3rd exceeds the cap
+	skips := es.drain()
+	r.mu.Unlock()
+	if len(skips) != 1 || skips[0].Type != "edge_skip" {
+		t.Fatalf("want one max_visits skip, got %+v", skips)
+	}
+}
+
 func TestNodeReadyFanInAND(t *testing.T) {
 	// P13 BUG-05: fan-in AND — the target waits for ALL incoming edges; one
 	// missed edge permanently skips it (nothing dispatches half-connected).
@@ -273,5 +349,61 @@ edges:
 	r2.mu.Unlock()
 	if len(skips) != 1 || skips[0].Type != "edge_skip" || skips[0].Node != "t" {
 		t.Fatalf("want one collected edge_skip on t, got %+v", skips)
+	}
+}
+
+func TestEdgeSatisfiedVerdict(t *testing.T) {
+	// P19B: a verdict edge fires only on its own label; the label is the LAST
+	// verdict line in the output (the pane echoes the prompt first).
+	out := "End with `VERDICT: LGTM` or `VERDICT: LBTM`.\n\nreview body\n\nVERDICT: LBTM"
+	ltm := schema.Edge{From: "r", To: "d", When: "verdict:lbtm"}
+	lgtm := schema.Edge{From: "r", To: "n", When: "verdict:lgtm"}
+	if !edgeSatisfied(ltm, out) {
+		t.Fatal("verdict:lbtm must fire on a final LBTM verdict")
+	}
+	if edgeSatisfied(lgtm, out) {
+		t.Fatal("verdict:lgtm must NOT fire on an LBTM verdict")
+	}
+	if edgeSatisfied(ltm, "no verdict here") {
+		t.Fatal("a verdict edge must not fire without a verdict")
+	}
+	if !edgeSatisfied(lgtm, "all good\nLGTM") {
+		t.Fatal("bare LGTM (MetaGPT convention) must fire verdict:lgtm")
+	}
+}
+
+func TestNodeReadyCycleBodyWaitsForItsGate(t *testing.T) {
+	// P19: in x→a→b→a the body edge a→b is a readiness gate — b must wait for
+	// a (the old reachability rule marked a→b a back edge and let b run at t0).
+	crew, err := schema.Load([]byte(`
+name: cyc-ready
+agents:
+  - {name: x, prompt: x}
+  - {name: a, prompt: a}
+  - {name: b, prompt: b}
+edges:
+  - {from: x, to: a}
+  - {from: a, to: b}
+  - {from: b, to: a, max_visits: 2}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	r := New(crew, Options{})
+	es := &edgeState{visited: map[string]int{}, ok: map[string]bool{}}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.nodeReady(es, "b") {
+		t.Fatal("b must not be ready before a→b fires")
+	}
+	r.Nodes["a"].Status = "done"
+	r.fireEdge(es, crew.Edges[1]) // a→b
+	if !r.nodeReady(es, "b") {
+		t.Fatal("b must be ready once a→b fires")
+	}
+	// the loop-back does not re-gate a: a is already satisfied via x→a
+	r.fireEdge(es, crew.Edges[0]) // x→a
+	if !r.nodeReady(es, "a") {
+		t.Fatal("a must be ready from its gate edge x→a")
 	}
 }

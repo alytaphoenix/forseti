@@ -988,3 +988,153 @@ Boundaries (Phase 14): no tree-depth rebalancing, no cross-namespace trees,
 no learned embeddings; LLM aggregation stays advisory-only. Gate:
 `scripts/memory-eval.sh` 28/28 + Go suite (incl. MemoryClient payload
 coverage). Example: `crew/examples/crew-memory.yaml`.
+
+## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative flows (implemented 2026-10-15)
+
+### Why, and the boundary
+
+Crew files had grown ad-hoc: every reviewer prompt re-invented the review
+rubric, and every loop was hand-wired edges. Phase 19 adds the two pieces
+MetaGPT (MIT; inspiration + spec, nothing vendored — S31) gets right:
+
+- **roles** — a reusable archetype (profile/goal/constraints, a tier, the
+  artifact types it consumes and publishes) that a node inherits, and
+- **patterns** — declarative SOPs (reviewer loop, security review, adversarial
+  panel, executor) that instantiate a whole subgraph from a few parameters.
+
+The hard rule that keeps this cheap: **patterns compile, they do not
+interpret.** `Validate` expands every pattern into ordinary agents and edges,
+so the P13 scheduler (fan-in AND, bounded back edges, `max_visits`), phases,
+checks, the run log, the watch TUI and the Phase 18 routing layer are reused
+unchanged. A crew with no `roles:`/`patterns:`/`watch:` renders exactly the
+graph it did before.
+
+### Anatomy of a crew file after Phase 19
+
+```yaml
+name: crew-sop
+models:                       # tier → provider/model (roles name tiers, not ids)
+  efficient: valhalla/valhalla-flash-next
+  capable:   valhalla/valhalla-flash-next
+roles:                        # optional: add/override an archetype
+  - {name: architect, profile: Architect, goal: …, tier: capable,
+     writes: design, instruction: "Write the design."}
+agents:
+  - {name: plan, role: planner}                  # prompt comes from the role
+  - {name: design, role: architect, watch: [plan], prompt: "…{{ artifact \"plan\" }}"}
+patterns:
+  - {id: rev, pattern: reviewer_loop, subject: design,
+     params: {max_revisions: 2, then: sec}}
+  - {id: sec, pattern: security_review, subject: design,
+     params: {max_revisions: 2, then: adv}}
+  - {id: adv, pattern: adversarial_panel, subject: design,
+     params: {critics: 3, max_rounds: 2, then: run}}
+  - {id: run, pattern: executor, subject: design,
+     params: {max_fixes: 2, checks: ["go test ./..."]}}
+```
+
+`forseti-crew validate -f crew.yaml -explain` prints what that became: each
+node with its archetype, resolved model, phase, artifact subscriptions and the
+per-edge gates — the observable surface for a declarative layer.
+
+### Roles
+
+`Role{Name, Profile, Goal, Constraints, Desc, Tier, Watch, Writes, ReactMode,
+Actions[], Instruction}`. `Role.Prefix(name)` is MetaGPT's template
+(`"You are a {profile}, named {name}, your goal is {goal}. the constraint is
+{constraints}. "`); the runner prepends it to the node's prompt at dispatch, so
+a role-less node is untouched. Built-ins (always available, override by
+re-declaring the name): `planner`, `researcher`, `engineer`, `reviewer`
+(lgtm|lbtm), `security_reviewer` (pass|fail), `adversarial_reviewer`, `judge`
+(accept|revise), `verifier` (pass|fail).
+
+Tiers are the churn barrier: an archetype names `efficient`/`capable`, the crew
+maps tiers to model ids in `models:`, and an explicit `model:`/`route:` on the
+node always wins. A role with a tier and no `models:` entry fails validation
+rather than guessing.
+
+### Patterns
+
+| pattern | synthesized nodes | loop | continues on |
+|---|---|---|---|
+| `reviewer_loop` | `<id>-reviewer` | subject ⇄ reviewer, `lbtm` (max_revisions) | `verdict:lgtm` |
+| `security_review` | `<id>-security_reviewer` | `verdict:fail` (max_revisions) | `verdict:pass` |
+| `adversarial_panel` | `<id>-critic-<n>` (2–7) + `<id>-judge` | judge `verdict:revise` (max_rounds) | `verdict:accept` |
+| `executor` | `<id>-implement`, `<id>-verify` | verify `verdict:fail` (max_fixes) | `verdict:pass` |
+
+- `subject` is the node under review (its output is bound into every
+  synthesized prompt as `{{ <subject> }}`; the panel's judge binds each critic).
+- `members:` maps a part (`reviewer`, `security_reviewer`, `judge`,
+  `implementer`) to a declared node — the pattern wires it in instead of
+  synthesizing one.
+- `then:` continues the SOP after the positive verdict; the target may be a
+  declared agent, a synthesized node, or **another pattern id** (resolved after
+  all patterns expand), so pipelines read pattern to pattern. A pattern id
+  resolves to that pattern's **entry nodes** (every critic of a panel, the
+  implementer of an executor, the reviewer of a review loop), so the whole next
+  stage waits on the verdict edge instead of one entry racing ahead.
+- `lenses:` gives each critic (or the security reviewer) one angle; `checks:`
+  materialises real shell checks after the executor's implementer; `task:`
+  seeds a subject-less executor; `subject_label:` names the artifact in the
+  reviewer's prose ("the design") instead of the default phrasing.
+- Synthesized nodes are `<pattern-id>-<part>`, and in a phased crew they join
+  their subject's phase — the loop-back stays intra-phase.
+
+### Loop semantics (why verdicts, and the back-edge fix)
+
+Loops gate on **explicit verdict edges**, never on vibes. A reviewer's output is
+expected to end with `VERDICT: <label>`; `ParseVerdict` takes the LAST such line
+(pi panes echo the prompt, which names the expected verdicts) and also accepts
+MetaGPT's bare `LGTM`/`LBTM` on its own line. `verdict:<label>` fires only on
+that label; `max_visits` bounds the loop; laya dials are rejected on verdict
+edges (they belong on `laya:` edges).
+
+The patterns forced one engine refinement (S31). `BackEdges` used to be
+"target reaches source", which marks **every** edge of a cycle: in `x→a→b→a`
+both `a→b` and `b→a` were back edges, so `nodeReady` skipped them and the loop
+body dispatched at t0 — a multi-node loop could not sequence. Back edges are now
+**DFS-classified from the entry nodes**, with an explicit `loop: true` marker for
+an ambiguous cycle (a two-node review loop has no other way in). The no-entry
+rejection is preserved: a node's entry status ignores only `loop:`-marked
+incoming edges.
+
+A second refinement makes a multi-edge loop actually iterate: an edge **without**
+`max_visits` now fires every time its source settles (the implicit cap used to
+be 1, so only the loop-back edge could re-fire and the loop body stalled after
+one pass — the reviewer never re-ran). `max_visits` is still a hard cap, and
+validation still requires every cycle to carry at least one capped edge, so the
+run stays bounded: a re-dispatch only happens when an edge fires, and every trip
+around a cycle consumes a capped edge. Acyclic crews are unchanged (a node
+settles once, so its edges fire once).
+
+### Typed pub/sub (light MetaGPT message bus)
+
+MetaGPT roles subscribe to message *tags* (`cause_by`). Forseti keeps the graph
+as the source of truth and derives it: a node declares `writes: <type>` (default:
+its own name) and `watch: [<types>]`; `Validate` adds one `producer → watcher`
+idle edge per type, skips an edge the user already declared, and errors when a
+watched type has no producer. At dispatch, `{{ artifact "type" }}` resolves the
+in-run producer's output, else the typed file
+(`.forseti/bus/typed/<type>.md`) a previous run left behind. `node_done` also
+publishes the node's own `.forseti/bus/<node>.md` as before, and emits a
+`verdict` event when the output carries one.
+
+### Serialization: the source is the file
+
+`Validate` is where roles expand and patterns instantiate, so the in-memory crew
+is the RESOLVED graph. Marshaling that object would write a file that re-expands
+on `Load` into a second copy of every synthesized node. `Crew.MarshalSource()`
+is the save path (the TUI's `saveCrew` and `startRun` use it):
+
+- drop agents synthesized by a pattern, edges synthesized by a pattern or the
+  pub/sub derivation, and checks a pattern materialised — they regenerate on
+  Load, and `Load(MarshalSource())` is a fixed point of the resolved graph;
+- clear a value a role filled for its node (its tier's model, its `writes`, its
+  `watch`), so the role stays the single source of truth and editing a role
+  changes every node it serves;
+- drop the default gate (`when: idle`).
+
+Downside, by design: the source is what is saved, so a hand-written edge that
+happens to duplicate a derived one is fine (the derivation skips existing
+edges), while a node that a pattern would have synthesized must come from the
+pattern — a declared node with the pattern's name is a load error.

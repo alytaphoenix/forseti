@@ -25,14 +25,26 @@ var validStatuses = map[string]bool{
 }
 
 type Crew struct {
-	Name   string      `yaml:"name"`
-	Routes []Route     `yaml:"routes,omitempty"` // switchyard model-routes (optional, P6-D)
-	Agents []Agent     `yaml:"agents"`
-	Phases []Phase     `yaml:"phases,omitempty"` // ordered work stages with barrier semantics (P11)
-	Edges  []Edge      `yaml:"edges,omitempty"`
-	Checks []Check     `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
-	Watch  []Watcher   `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
-	Memory *MemorySpec `yaml:"memory,omitempty"` // shared-memory integration (optional, P14)
+	Name     string            `yaml:"name"`
+	Models   map[string]string `yaml:"models,omitempty"`   // tier → provider/model; roles resolve their tier through it (P19A)
+	Roles    []Role            `yaml:"roles,omitempty"`    // archetype overrides/additions (P19A)
+	Patterns []Pattern         `yaml:"patterns,omitempty"` // SOP patterns, instantiated into the graph at Validate (P19C)
+	Routes   []Route           `yaml:"routes,omitempty"`   // switchyard model-routes (optional, P6-D)
+	Agents   []Agent           `yaml:"agents"`
+	Phases   []Phase           `yaml:"phases,omitempty"` // ordered work stages with barrier semantics (P11)
+	Edges    []Edge            `yaml:"edges,omitempty"`
+	Checks   []Check           `yaml:"checks,omitempty"` // shell assertions (optional, 6A-1)
+	Watch    []Watcher         `yaml:"watch,omitempty"`  // output regex watchers (optional, 6C-1)
+	Memory   *MemorySpec       `yaml:"memory,omitempty"` // shared-memory integration (optional, P14)
+
+	// P19 expansion bookkeeping (never serialized; see MarshalSource).
+	pendingThen  []pendingThen       // `then:` chains awaiting pattern resolution
+	patternEntry map[string][]string // pattern id → the nodes a `then:` into that pattern should gate
+	// P19 provenance: what Validate synthesized, so a saved file keeps the
+	// SOURCE (roles + patterns + watch) and re-expands on Load.
+	synthAgents   map[string]bool // node names synthesized by a pattern
+	derivedEdges  map[string]bool // "from>to" edges synthesized at Validate
+	derivedChecks map[string]bool // "after\x00name" checks synthesized at Validate
 }
 
 // MemorySpec wires the shared memory service into a crew run (P14). The block
@@ -75,9 +87,16 @@ type Phase struct {
 type Agent struct {
 	Name  string   `yaml:"name"`
 	Kind  string   `yaml:"kind,omitempty"`  // currently only "pi"
+	Role  string   `yaml:"role,omitempty"`  // archetype from the role library (P19A)
 	Model string   `yaml:"model,omitempty"` // e.g. halogen/halogen-qwen3.8-flash-next
 	Route string   `yaml:"route,omitempty"` // switchyard route id (mutually exclusive with Model)
 	Args  []string `yaml:"args,omitempty"`  // extra pi argv (appended after --model)
+	// Watch lists artifact types this node reacts to; Writes names the type its
+	// output publishes (defaults: the role's, else the node name). Declaring a
+	// watch derives the incoming edges — the typed pub/sub of MetaGPT's
+	// Role._watch, compiled into the graph (P19D).
+	Watch  []string `yaml:"watch,omitempty"`
+	Writes string   `yaml:"writes,omitempty"`
 	// Prompt is a Go text/template; data is map[string]string of
 	// upstream node outputs keyed by node name.
 	Prompt string `yaml:"prompt"`
@@ -254,6 +273,13 @@ type Edge struct {
 	// to the workdir) instead of the pane transcript — the artifact the agent
 	// wrote is the review target, not the terminal scrollback.
 	StateFile string `yaml:"state_file,omitempty"`
+	// Loop (P19) marks this edge as the one that CLOSES a cycle: it gates
+	// re-dispatch only and never gates initial readiness (so the node it points
+	// back at can still be the entry). Unmarked cycles are classified
+	// automatically (DFS back edges) when the crew has an entry; an ambiguous
+	// cycle — e.g. a two-node review loop with no other way in — needs the
+	// marker. A loop edge must be bounded (max_visits).
+	Loop bool `yaml:"loop,omitempty"`
 }
 
 // Load parses and validates crew.yaml content.
@@ -278,11 +304,27 @@ var crewNSRule = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,25}$`)
 // may be empty at parse time — validation rejects empties explicitly).
 var layaWhenRule = regexp.MustCompile(`^laya:choice:(.*)$`)
 
+// verdictWhenRule parses `verdict:<label>` edge gates (P19B): the edge fires
+// only when the producing node's output carries that verdict line (see
+// ParseVerdict). Labels match [a-z0-9_-]+ and are the lowercased verdict token.
+var verdictWhenRule = regexp.MustCompile(`^verdict:([a-z0-9][a-z0-9_-]*)$`)
+
 func (c *Crew) Validate() error {
 	// P13 BUG-21: the crew name lands in run-log filenames and herdr view/tab
 	// sources — empty or path-unsafe names broke log creation silently.
 	if !nameRule.MatchString(c.Name) {
 		return fmt.Errorf("crew name %q violates herdr rule [a-z][a-z0-9_-]{0,31} (it names run logs and view sources)", c.Name)
+	}
+	// P19: patterns instantiate first (they append agents/edges), then the role
+	// pack resolves archetypes onto nodes, then the typed pub/sub derived from
+	// watch/writes adds the subscription edges — all before the ordinary graph
+	// validation below, so nothing a pattern or role produced escapes it.
+	if err := c.expandPatterns(); err != nil {
+		return err
+	}
+	roles := NewRolePack(c.Roles)
+	if err := roles.Validate(c); err != nil {
+		return err
 	}
 	if len(c.Agents) == 0 {
 		return fmt.Errorf("crew has no agents")
@@ -374,12 +416,17 @@ func (c *Crew) Validate() error {
 		if a.Route != "" && !routes[a.Route] {
 			return fmt.Errorf("agent %q: unknown route %q", a.Name, a.Route)
 		}
-		if strings.TrimSpace(a.Prompt) == "" {
+		if strings.TrimSpace(a.Prompt) == "" && a.Role == "" {
 			return fmt.Errorf("agent %q: empty prompt", a.Name)
 		}
 		if a.Memory != "" && a.Memory != "on" && a.Memory != "off" {
 			return fmt.Errorf("agent %q: memory must be on|off (got %q)", a.Name, a.Memory)
 		}
+	}
+	// P19D: typed pub/sub from watch/writes — after role resolution (which fills
+	// defaults), before edge validation (so the derived edges are validated too).
+	if err := c.deriveSubscriptions(); err != nil {
+		return err
 	}
 	if c.Memory != nil { // P14: validate + default the memory block
 		if ns := c.Memory.NS(c.Name); !crewNSRule.MatchString(ns) {
@@ -465,6 +512,10 @@ func (c *Crew) Validate() error {
 			// always promised it; the P13 scheduler re-arms make it meaningful)
 			return fmt.Errorf("edge %d: self-loop on %q needs max_visits", i, e.From)
 		}
+		if e.Loop && e.MaxVisits == 0 {
+			// P19: a loop edge re-dispatches its target, so it must be bounded.
+			return fmt.Errorf("edge %d: loop edge %s→%s needs max_visits (it re-dispatches the target)", i, e.From, e.To)
+		}
 		if e.When == "" {
 			e.When = "idle"
 		}
@@ -481,8 +532,8 @@ func (c *Crew) Validate() error {
 		} else if e.MinConfidence != 0 || e.StateFile != "" {
 			return fmt.Errorf("edge %d: min_confidence/state_file only apply to laya edges", i)
 		}
-		if !strings.HasPrefix(e.When, "re:") && !validStatuses[e.When] && !layaWhenRule.MatchString(e.When) {
-			return fmt.Errorf("edge %d: when %q not a status, re:<regex>, or laya:choice:<instructions>", i, e.When)
+		if !strings.HasPrefix(e.When, "re:") && !validStatuses[e.When] && !layaWhenRule.MatchString(e.When) && !verdictWhenRule.MatchString(e.When) {
+			return fmt.Errorf("edge %d: when %q not a status, re:<regex>, laya:choice:<instructions>, or verdict:<label>", i, e.When)
 		}
 		if strings.HasPrefix(e.When, "re:") {
 			if _, err := regexp.Compile(e.When[3:]); err != nil {
@@ -510,8 +561,13 @@ func (c *Crew) Validate() error {
 	}
 	// P13 BUG-03: a crew whose every node has an incoming edge has NO entry —
 	// nothing can ever start (fan-in AND semantics); fail loudly at validation.
+	// P19: an explicitly marked loop edge (`loop: true`) gates re-dispatch only,
+	// so it does not take away a node's entry status; everything else counts.
 	incomingCount := map[string]int{}
 	for _, e := range c.Edges {
+		if e.Loop {
+			continue
+		}
 		incomingCount[e.To]++
 	}
 	entry := false
@@ -620,18 +676,84 @@ func (c *Crew) Entry() []string {
 // RE-ENTRY edges — the scheduler does not require them for INITIAL dispatch
 // (strict fan-in AND over a back edge would deadlock every cycle: the target
 // would wait for an edge that can only fire after the target itself ran).
+// BackEdges lists the edges that gate RE-DISPATCH only — they never gate
+// initial readiness, so the node they point back at can still be the entry
+// (P13 semantics, refined in P19).
+//
+// An edge is a back edge when either:
+//   - it carries `loop: true` (explicit: "this is the edge that closes a
+//     cycle"), or
+//   - it is a DFS back edge — an edge to a node on the current DFS stack —
+//     discovered from the crew's entry nodes (nodes with no incoming non-loop
+//     edge).
+//
+// The old definition ("target reaches source") marked EVERY edge of a cycle as
+// a back edge, which made a cycle's body dispatch out of order (each body node
+// saw all its incoming edges ignored and became ready at t0). DFS classification
+// marks only the true loop-back, so `x→a→b→a` now runs a → b → a.
+//
+// A crew where every node has a non-loop incoming edge has no entry: forseti
+// rejects it at validation. BackEdges() still answers (falling back to
+// reachability) so the scheduler behaves identically on such a graph.
 func (c *Crew) BackEdges() map[string]bool {
-	adj := map[string][]string{}
-	for _, e := range c.Edges {
-		adj[e.From] = append(adj[e.From], e.To)
-	}
 	out := map[string]bool{}
+	adj := map[string][]string{}
+	hasNonLoopIncoming := map[string]bool{}
 	for _, e := range c.Edges {
-		if reaches(adj, e.To, e.From) {
+		if e.Loop {
 			out[e.From+">"+e.To] = true
+			continue
+		}
+		adj[e.From] = append(adj[e.From], e.To)
+		hasNonLoopIncoming[e.To] = true
+	}
+	roots := 0
+	for _, a := range c.Agents {
+		if hasNonLoopIncoming[a.Name] {
+			continue
+		}
+		roots++
+		dfsBackEdges(adj, a.Name, out)
+	}
+	if roots == 0 {
+		// no entry (invalid crew): keep the previous, conservative answer
+		for _, e := range c.Edges {
+			if reaches(adj, e.To, e.From) {
+				out[e.From+">"+e.To] = true
+			}
 		}
 	}
 	return out
+}
+
+// dfsBackEdges classifies the edges reachable from root as tree/forward/cross
+// or back (target on the current path), recording back edges into out.
+func dfsBackEdges(adj map[string][]string, root string, out map[string]bool) {
+	state := map[string]int{} // 0 unseen, 1 on stack, 2 done
+	type frame struct {
+		node string
+		next int
+	}
+	state[root] = 1
+	stack := []frame{{node: root}}
+	for len(stack) > 0 {
+		f := &stack[len(stack)-1]
+		outs := adj[f.node]
+		if f.next >= len(outs) {
+			state[f.node] = 2
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		to := outs[f.next]
+		f.next++
+		switch state[to] {
+		case 1: // on the current path → the edge closes a cycle
+			out[f.node+">"+to] = true
+		case 0:
+			state[to] = 1
+			stack = append(stack, frame{node: to})
+		}
+	}
 }
 
 // reaches reports whether `to` is reachable from `from` (small graphs; the

@@ -115,7 +115,8 @@ type Run struct {
 	crewTab         string      // P15: crew tab id for the ttt focus bridge (guarded by mu)
 	laya            *LayaClient
 	memory          *MemoryClient
-	runID           string // P14: stable per-run id stamped on memory writes
+	runID           string           // P14: stable per-run id stamped on memory writes
+	roles           *schema.RolePack // P19A: node archetypes (prompt prefixes)
 }
 
 func New(crew *schema.Crew, opts Options) *Run {
@@ -132,6 +133,7 @@ func New(crew *schema.Crew, opts Options) *Run {
 		opts.KeepWorktree = true
 	}
 	r := &Run{Crew: crew, Opts: opts, Nodes: map[string]*NodeState{}, checksDone: map[string]bool{}}
+	r.roles = schema.NewRolePack(crew.Roles)             // P19A
 	r.runID = time.Now().UTC().Format("20060102-150405") // P14: memory-write provenance
 	r.effectiveCwd = opts.Cwd
 	r.backEdges = crew.BackEdges() // P13: cycle re-entry edges
@@ -575,10 +577,14 @@ type edgeState struct {
 
 func (es *edgeState) key(e schema.Edge) string { return e.From + ">" + e.To }
 
+// limit returns the edge's firing cap. 0 (max_visits unset) means UNCAPPED:
+// the edge fires every time its source settles, so a loop body re-arms all the
+// way around. Termination still holds because validation requires at least one
+// max_visits edge ON every cycle, and a re-dispatch can only happen when an
+// edge fires — so each turn around a cycle consumes a bounded edge (P19 fix:
+// the old default of 1 meant only the loop-back edge could re-fire, so a
+// multi-node loop body stalled after one revision).
 func (es *edgeState) limit(e schema.Edge) int {
-	if e.MaxVisits == 0 {
-		return 1
-	}
 	return e.MaxVisits
 }
 
@@ -590,11 +596,14 @@ func (es *edgeState) drain() []Event {
 }
 
 // fireEdge records a matched edge (P13 BUG-02): a re-firing edge into a
-// settled node re-arms it, so bounded cycles (max_visits) actually loop.
-// Called with r.mu held.
+// settled node re-arms it, so cycles actually loop. An edge WITHOUT max_visits
+// fires on every settle of its source (so a loop body re-enters); a capped
+// edge (max_visits) stops re-firing after its budget, and every cycle carries
+// at least one capped edge (schema validation), which is what terminates the
+// run. Called with r.mu held.
 func (r *Run) fireEdge(es *edgeState, e schema.Edge) {
 	key := es.key(e)
-	if es.visited[key] >= es.limit(e) {
+	if lim := es.limit(e); lim > 0 && es.visited[key] >= lim {
 		es.skips = append(es.skips, Event{Type: "edge_skip", Node: e.To,
 			Info: key + " max_visits reached"})
 		return
@@ -1252,8 +1261,16 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 			render = ins + "\n\n" + a.Prompt
 		}
 	}
+	// P19A: the role prefix is MetaGPT's Role._get_prefix — installed in front
+	// of the node's prompt (and used as the whole prompt when the node has none
+	// and the archetype carries an instruction). Role-less nodes are unchanged.
+	render = r.roles.RolePrompt(a, render)
 	tpl, err := template.New(a.Name).Funcs(template.FuncMap{
 		"memory": func(q string) string { return r.recallMemory(a.Name, q) },
+		// P19D: {{ artifact "type" }} resolves the artifact registry — the
+		// latest in-run output published as that type, else the file the last
+		// run left in .forseti/bus/typed/<type>.md.
+		"artifact": func(t string) string { return r.artifact(t) },
 	}).Parse(render)
 	if err != nil {
 		r.fail(a.Name, fmt.Sprintf("prompt template: %v", err))
@@ -1348,6 +1365,18 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		r.mu.Unlock()
 		return
 	}
+	// P19D: publish under the node's artifact type too, so a later run (or a
+	// downstream watcher that renders via {{ artifact "type" }}) can find it
+	// even when the producing node was never an upstream of the consumer.
+	artifactPath := ""
+	if t := a.WritesType(); t != "" && t != a.Name {
+		dir := filepath.Join(r.effectiveCwd, ".forseti", "bus", "typed")
+		_ = os.MkdirAll(dir, 0o755)
+		artifactPath = filepath.Join(dir, t+".md")
+		if err := os.WriteFile(artifactPath, []byte(text), 0o644); err != nil {
+			artifactPath = ""
+		}
+	}
 	r.mu.Lock()
 	st.Output = text
 	st.Status = "done"
@@ -1356,6 +1385,15 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	r.mu.Unlock()
 	r.emit(Event{Type: "node_done", Node: a.Name, Model: resolved, CostUSD: cost, CtxPct: ctxPct,
 		Info: fmt.Sprintf("%d chars → %s", len(text), bus)})
+	// P19B: surface a verdict line as its own event (the ttt badge and watch
+	// read it; it is also what verdict: edges act on).
+	if label, ok := schema.ParseVerdict(text); ok {
+		info := label
+		if artifactPath != "" {
+			info = fmt.Sprintf("%s → %s", label, artifactPath)
+		}
+		r.emit(Event{Type: "verdict", Node: a.Name, Info: info})
+	}
 	// P14 auto-write: post the finished output to the crew memory namespace
 	// (fire-and-forget goroutine — a down service costs an event, never the run).
 	if mem := r.Crew.Memory; mem != nil && mem.AutoWriteOn() && !a.MemoryOff() {
@@ -1413,6 +1451,37 @@ func huskToSweep(err error) string {
 		return ""
 	}
 	return msg[start+1 : i+end]
+}
+
+// artifact resolves an artifact type to the latest published content (P19D):
+// an in-run producer's finished output first (declaration order when several
+// nodes write the type), else the typed file the previous run left behind
+// (.forseti/bus/typed/<type>.md). Empty when nothing published that type — the
+// caller's prompt renders it as an empty string.
+func (r *Run) artifact(t string) string {
+	t = strings.TrimSpace(t)
+	if t == "" {
+		return ""
+	}
+	r.mu.Lock()
+	for i := range r.Crew.Agents {
+		a := &r.Crew.Agents[i]
+		if a.WritesType() != t {
+			continue
+		}
+		if st := r.Nodes[a.Name]; st != nil && st.Status == "done" && st.Output != "" {
+			out := st.Output
+			r.mu.Unlock()
+			return out
+		}
+	}
+	r.mu.Unlock()
+	b, err := os.ReadFile(filepath.Join(r.effectiveCwd, ".forseti", "bus", "typed", t+".md"))
+	if err != nil {
+		r.emit(Event{Type: "artifact_miss", Info: fmt.Sprintf("no artifact of type %q in this run", t)})
+		return ""
+	}
+	return string(b)
 }
 
 // recallMemory queries the shared memory service for a node's prompt render.
@@ -1592,6 +1661,12 @@ func incoming(c *schema.Crew, name string) []schema.Edge {
 }
 
 func edgeSatisfied(e schema.Edge, output string) bool {
+	if label, ok := strings.CutPrefix(e.When, "verdict:"); ok {
+		// P19B: gate on the producer's verdict line (last one wins — the pane
+		// echoes the prompt, which names the expected verdicts).
+		got, found := schema.ParseVerdict(output)
+		return found && got == label
+	}
 	if strings.HasPrefix(e.When, "re:") {
 		re, err := compileCached(e.When[3:])
 		if err != nil {
