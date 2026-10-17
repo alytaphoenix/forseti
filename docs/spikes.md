@@ -1130,39 +1130,41 @@ empty-settle guard re-prompted once, and the retry produced the clean
 `VERDICT: PASS`. So the guard is load-bearing on the hosted free reasoning ids
 too, not just the LAN box.
 
-## S33e — driving the TUI in a real pane: focus + the echo race (Phase 19, 2026-10-17) ✅ resolved (live)
+## S33e — driving the TUI in a real pane: readiness, not focus (Phase 19, 2026-10-17) ✅ resolved (live)
 
 Extending the P11 in-pane driver to the new role/pattern forms
-(`scripts/crew-tui-drive-roles.py`) hit two integration facts the hard way:
+(`scripts/crew-tui-drive-roles.py`) failed twice before it passed. The cause was
+**not** what it first looked like, and both the wrong and the right answer are
+worth recording:
 
-1. **`pane.send_text` / `pane.send_keys` only reach a FOCUSED pane.** A tab
-   created by `layout.apply` with `focus: false` accepts writes to the returned
-   pane id and its shell echoes nothing back into the TUI — the run command was
-   never delivered, and the wait for the TUI header sat until timeout. One
-   `pane.focus` on the new pane fixes it. (Either transport then works —
-  `send_text`, `send_keys` and `send_input` all returned `ok`; the failure mode
-   was a *silent* no-op on an unfocused pane, never an error.)
-- Corollary: the driver must focus the scratch pane it created; the sandbox
-  session's focus state is separate from the live session's, so this does not
-  steal the user's focus.
+- **Wrong guess (retracted):** that `pane.send_text`/`send_keys` need a FOCUSED
+  pane. They do not. Probe: a tab created unfocused (`layout.apply`, `focus:
+  false`), `pane.send_text` + `send_keys ["enter"]` → the shell ran the command
+  and wrote the file (`UNFOCUSED_OK`); the pane's `focused` field stayed
+  `false` throughout. All three transports (`send_text`, `send_keys`,
+  `send_input`) return `ok` and deliver to an unfocused pane.
+- **Real cause:** the readiness wait keyed on the **crew name**, which also
+  appears in the shell's echo of the typed command line
+  (`.../p19-tui-roles-<rand>/crew.yaml`). The wait returned while the shell was
+  still echoing, so the next keystroke (`b`) arrived as **type-ahead**: the TUI
+  installs its input reader during terminal setup and drops input queued before
+  that, so the build key was lost and the screen stayed in `view` mode. Adding
+  `pane.focus` "fixed" it only because it changed the timing — the same drive
+  passes with no focus call once the readiness signal is correct (verified: the
+  final script has no `pane.focus`).
 
-## S34 — TUI readiness must key on the TUI's own output (Phase 19, 2026-10-17) ✅ resolved (live)
-
-The first drive attempt waited for the pane to contain the crew name — which
-also appears in the **echo of the command line** typed into the shell
-(`.../p19-tui-roles-<rand>/crew.yaml`). The wait returned while the shell was
-still echoing, the next keystroke (`b`) landed on the shell's input line, and
-the TUI came up in `view` mode with the build key already consumed. Two rules
-for TUI drives:
+Rules for TUI drives in a pane:
 
 - readiness = a string only the TUI emits (`"CREW: <name> [view]"`), never a
-  path or name the shell also echoes;
-- keep the scratch dir prefix and the crew name distinct.
+  path/name the shell also echoes; keep the scratch dir prefix and the crew name
+  distinct so the two can never alias;
+- a short settle delay after readiness is still worth it — `pane.wait_for_output`
+  returns on the first matching frame, which can precede the fully drawn screen.
 
-Live run (2026-10-17, `beam-free`, `scripts/crew-tui-drive-roles.py`): the build
-mode `l` role form (7 fields) and `g` pattern form (5 fields) plus the agent
-form's `role` field were driven in a real sandbox pane; the saved file came back
-in SOURCE form — `roles:` + `patterns:` + `role: architect`, **no** synthesized
-`rev-reviewer` — and `forseti-crew validate -f` accepted it (exit 0). So TUI
+Live run (2026-10-17, `beam-free`, `scripts/crew-tui-drive-roles.py`): build-mode
+`l` (role form, 7 fields) and `g` (pattern form, 5 fields) plus the agent form's
+`role` field were driven in a real sandbox pane; the saved file came back in
+SOURCE form — `roles:` + `patterns:` + `role: architect`, **no** synthesized
+`rev-reviewer` — and `forseti-crew validate -f` accepted it (exit 0). TUI
 authoring of roles/patterns round-trips through `MarshalSource`/`Load` exactly
 like a hand-written crew.

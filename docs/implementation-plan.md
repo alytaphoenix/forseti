@@ -642,13 +642,14 @@ is byte-for-byte the old behavior.
   (19E), so a pattern added to an already-expanded crew re-expands exactly
   once — the round-trip test and the live drive both assert no synthesized
   node is ever written.
-- Live verification (S33e/S34): `scripts/crew-tui-drive-roles.py` drives both
-  forms + the role field in a REAL herdr sandbox pane and asserts on the saved
-  file (`roles:`, `patterns:`, `role: architect`, no `rev-reviewer`) plus
-  `validate -f` exit 0. Two integration facts were found and are documented:
-  `pane.send_text`/`send_keys` only reach a FOCUSED pane, and a readiness wait
-  must key on TUI-only output (the crew name also appears in the shell's echo
-  of the command line).
+- Live verification (S33e): `scripts/crew-tui-drive-roles.py` drives both forms
+  + the role field in a REAL herdr sandbox pane and asserts on the saved file
+  (`roles:`, `patterns:`, `role: architect`, no `rev-reviewer`) plus
+  `validate -f` exit 0. One integration rule came out of the drive: readiness
+  must key on TUI-only output (the crew name also appears in the shell's echo of
+  the command line, and a TUI drops keystrokes queued before it installs its
+  input reader). `pane.send_text`/`send_keys` were probed and do NOT need a
+  focused pane (the first hypothesis, retracted in S33e).
 
 ### Engine refinement (needed by the loops) ✅
 - `BackEdges` is now **DFS-classified** from the entry nodes (plus an explicit

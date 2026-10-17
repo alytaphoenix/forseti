@@ -116,15 +116,13 @@ agents:
         return walk(node["first"]) if "first" in node else walk(node["second"])
     pane, tab = walk(r["layout"]["root"]), r["layout"]["tab_id"]
     print(f"pane {pane} tab {tab}")
-    # the tab was created unfocused; pane.send_text only reaches a FOCUSED pane
-    # (verified live — the first drive attempt died here)
-    ok(call("pane.focus", {"pane_id": pane}, 10), "pane.focus")
 
     send_text(pane, f"{BIN} run -f {WORK}/crew.yaml")
     key(pane, "enter")
-    # readiness = the TUI HEADER, not the crew name: the path typed above is
-    # echoed by the shell and contains the crew name too (the first drive
-    # attempt raced the TUI's start on exactly this substring)
+    # readiness = the TUI HEADER, never a string the shell also echoes: the
+    # command line above contains the crew file's path, so a crew-name wait
+    # matched the ECHO and the next keystroke arrived as type-ahead — before
+    # the TUI had installed its input reader, which drops it (S33e)
     wait_for(pane, "CREW: p19-tui-roles [view]", 30)
     print("tui up")
 
