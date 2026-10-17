@@ -250,7 +250,9 @@ surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
 - `switchyard-server 0.2.0` (crates.io) installed; crew spawns a per-run proxy
   only when the crew file declares `routes:`.
 
-## Phase 6 — observability + agent sandbox/E2E — ✅ **implemented + verified live** (2026-10-01)Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
+## Phase 6 — observability + agent sandbox/E2E — ✅ **implemented + verified live** (2026-10-01)
+
+Spikes S11–S15 resolved live (see `docs/spikes.md`). Shipped:
 
 | Task | Status |
 |---|---|
