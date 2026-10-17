@@ -134,6 +134,59 @@ Phase 6 additions:
 closes only the tab the run created. Example: planner → coder pipeline that
 actually ships a file end-to-end (`examples/crew.yaml`).
 
+Phase 19 additions — roles & SOP patterns:
+
+- **Role archetypes**: `roles:` (or the built-in library: `planner`,
+  `researcher`, `engineer`, `reviewer`, `security_reviewer`, `judge`,
+  `verifier`, …) prefixes a node's prompt with a MetaGPT-style
+  profile/goal/constraints and resolves a **tier** (`efficient`/`capable`)
+  through the crew's `models:` map — archetypes never pin churning model ids.
+- **Patterns**: `patterns: [{id, pattern, subject, params}]` compiles a whole
+  SOP into the same deterministic graph — `reviewer_loop`, `security_review`,
+  `adversarial_panel` (2–7 critics → judge) and `executor` (implementer →
+  verifier + real shell `checks`). Loops gate on `when: verdict:lgtm` edges;
+  `params.criteria` is the acceptance standard the verdict is judged against;
+  `then:` chains stage to stage (`examples/crew-sop.yaml`).
+- **TUI**: build mode `l`/`g` open the role/pattern forms and the agent form has
+  a `role` field; a save writes the SOURCE form, so a pattern crew re-expands
+  instead of duplicating its synthesized nodes.
+```
+
+Wait — I must not break the markdown. The original ends with:
+
+```
+- **Outage override**: ... crew files.
+
+`blocked` agents surface ...
+```
+
+So I add my section after that paragraph, keeping the closing "```" of the earlier code block intact (the code block closed at line 110). Yes, my addition is placed after line 135 paragraph and doesn't touch code fences. But my new text ends with a trailing "```" — no, I must not add a code fence. Let me be careful in the edit: my newString ends with the TUI bullet, no fence.
+
+Let me do the edit without the stray fence.</think>
+
+<｜DSML｜ calls>
+<｜DSML｜ invoke name="edit">
+<｜DSML｜ parameter name="newString" string="true">`blocked` agents surface in the TUI and are never auto-answered; teardown
+closes only the tab the run created. Example: planner → coder pipeline that
+actually ships a file end-to-end (`examples/crew.yaml`).
+
+Phase 19 additions — roles & SOP patterns:
+
+- **Role archetypes**: `roles:` (or the built-in library: `planner`,
+  `researcher`, `engineer`, `reviewer`, `security_reviewer`, `judge`,
+  `verifier`) prefix a node's prompt with a MetaGPT-style profile/goal/
+  constraints and resolve a tier (`efficient`/`capable`) through the crew's
+  `models:` map — archetypes never pin churning model ids.
+- **Patterns**: `patterns: [{id, pattern, subject, params}]` compiles a whole SOP
+  into the same deterministic graph — `reviewer_loop`, `security_review`,
+  `adversarial_panel` (2–7 critics → judge) and `executor` (implementer →
+  verifier + real shell `checks`). Loops gate on `when: verdict:lgtm` edges;
+  `params.criteria` is the acceptance standard a verdict is judged against;
+  `then:` chains stage to stage (`examples/crew-sop.yaml`).
+- **TUI**: build mode `l`/`g` open the role/pattern forms, and the agent form has
+  a `role` field; a save writes the SOURCE form, so a pattern crew re-expands
+  instead of duplicating its synthesized nodes.
+
 ## Install (all three, from this public repo)
 
 ```sh

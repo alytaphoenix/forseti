@@ -626,6 +626,30 @@ is byte-for-byte the old behavior.
   asserts the function form — the smoke gate was green throughout, because
   template PARSE happens at dispatch (`runNode`), not at `Validate`.
 
+### 19G — TUI authoring of roles/patterns ✅ (2026-10-17)
+- Build mode gains `l` (role form: name/profile/goal/constraints/tier/
+  instruction/writes) and `g` (pattern form: id/kind/subject/criteria/then);
+  the agent form gains a fifth `role` field. `buildRole`/`buildPattern` are
+  pure submit validators (name rules, the kind/tier enums, profile+goal
+  required, duplicate handling: re-declaring a role name OVERRIDES it, a
+  duplicate pattern id is refused), so the rules are unit-tested
+  (`cmd/forseti-crew/tui_test.go`: form opening, an end-to-end
+  walk-and-submit through `handleKey`, the build-panel rendering).
+- Only the common dials are fields; `members`, `lenses`, `critics`,
+  `max_revisions`, `max_fixes`, `checks` stay YAML-only by design (a pattern's
+  `params` is open-ended).
+- Saving/`r`-running a crew edited this way goes through `MarshalSource`
+  (19E), so a pattern added to an already-expanded crew re-expands exactly
+  once — the round-trip test and the live drive both assert no synthesized
+  node is ever written.
+- Live verification (S33e/S34): `scripts/crew-tui-drive-roles.py` drives both
+  forms + the role field in a REAL herdr sandbox pane and asserts on the saved
+  file (`roles:`, `patterns:`, `role: architect`, no `rev-reviewer`) plus
+  `validate -f` exit 0. Two integration facts were found and are documented:
+  `pane.send_text`/`send_keys` only reach a FOCUSED pane, and a readiness wait
+  must key on TUI-only output (the crew name also appears in the shell's echo
+  of the command line).
+
 ### Engine refinement (needed by the loops) ✅
 - `BackEdges` is now **DFS-classified** from the entry nodes (plus an explicit
   `loop: true` marker for ambiguous cycles) instead of "target reaches source".

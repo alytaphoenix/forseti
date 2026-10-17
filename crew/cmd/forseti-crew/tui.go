@@ -265,7 +265,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "b":
 		m.mode = "build"
-		m.buildMsg = "a=add agent · e=add edge · R=add route · p=add phase · T=add tool · P=probe tools · A=adopt live · s=save · q=back"
+		m.buildMsg = "a=add agent · e=add edge · R=add route · p=add phase · l=add role · g=add pattern · T=add tool · P=probe tools · A=adopt live · s=save · q=back"
 	case "v":
 		m.mode = "view"
 	case "a":
@@ -287,6 +287,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		if m.mode == "build" {
 			m.startPhaseForm()
+		}
+	case "l":
+		// P19: declare/override a role archetype
+		if m.mode == "build" {
+			m.startRoleForm()
+		}
+	case "g":
+		// P19: declare an SOP pattern (compiled to nodes at run/save)
+		if m.mode == "build" {
+			m.startPatternForm()
 		}
 	case "P":
 		if m.mode == "build" {
@@ -378,6 +388,9 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(vals) > 3 && vals[3] != "" {
 				a.Route = vals[3]
 			}
+			if len(vals) > 4 && strings.TrimSpace(vals[4]) != "" { // P19: role archetype
+				a.Role = strings.TrimSpace(vals[4])
+			}
 			m.crew.Agents = append(m.crew.Agents, a)
 			m.buildMsg = "agent " + vals[0] + " added"
 		case "edge":
@@ -455,6 +468,45 @@ func (m *model) formKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tool":
 			msg := m.saveTool(vals)
 			m.buildMsg = msg
+		case "role":
+			// P19: validate on submit — name rule, a profile (the system
+			// prompt's "You are a <profile>…" lead), the tier enum, and a
+			// non-duplicate name. A re-declared builtin name overrides it.
+			r, err := buildRole(vals)
+			if err != nil {
+				m.buildMsg = err.Error()
+				m.form = nil
+				return m, nil
+			}
+			for i := range m.crew.Roles {
+				if m.crew.Roles[i].Name == r.Name {
+					m.crew.Roles[i] = r
+					m.buildMsg = fmt.Sprintf("role %s overridden (builtin or earlier declaration)", r.Name)
+					m.form = nil
+					return m, nil
+				}
+			}
+			m.crew.Roles = append(m.crew.Roles, r)
+			m.buildMsg = fmt.Sprintf("role %s declared (tier %s) — attach with an agent's role field", r.Name, roleTierTag(r.Tier))
+		case "pattern":
+			// P19: patterns compile into the graph at Validate (run/save), so
+			// submit only checks what the form can know — the id rule, the
+			// kind enum, and a fresh id.
+			p, err := buildPattern(vals)
+			if err != nil {
+				m.buildMsg = err.Error()
+				m.form = nil
+				return m, nil
+			}
+			for _, old := range m.crew.Patterns {
+				if old.ID == p.ID {
+					m.buildMsg = "pattern id " + p.ID + " already declared"
+					m.form = nil
+					return m, nil
+				}
+			}
+			m.crew.Patterns = append(m.crew.Patterns, p)
+			m.buildMsg = fmt.Sprintf("pattern %s (%s) declared — synthesized nodes appear on run/save", p.ID, p.Pattern)
 		}
 		m.form = nil
 		return m, nil
@@ -474,11 +526,14 @@ func (m *model) startAgentForm() {
 	ti3.Placeholder = "Plan the task. Output a numbered plan."
 	ti4 := textinput.New()
 	ti4.Placeholder = "route id (blank = use model)"
+	ti5 := textinput.New()
+	ti5.Placeholder = "role: planner | reviewer | engineer | judge | … (blank = none)"
 	m.form = &form{kind: "agent", fields: []formField{
 		{label: "name", input: ti},
 		{label: "model", input: ti2},
 		{label: "prompt", input: ti3},
 		{label: "route", input: ti4},
+		{label: "role", input: ti5},
 	}}
 }
 
@@ -502,6 +557,158 @@ func (m *model) startPhaseForm() {
 		{label: "instructions", input: ti2},
 		{label: "agents", input: ti3},
 	}}
+}
+
+// startRoleForm (P19): declare or override a role archetype. The built-in
+// library is merged at load, so re-using a builtin name overrides it for this
+// crew; a fresh name adds a new archetype. `tier` resolves through the crew's
+// models: map — the form cannot resolve it, so schema.Load reports a missing
+// map at save/run time.
+func (m *model) startRoleForm() {
+	ti := textinput.New()
+	ti.Placeholder = "architect"
+	ti.Focus()
+	ti2 := textinput.New()
+	ti2.Placeholder = "Architect"
+	ti3 := textinput.New()
+	ti3.Placeholder = "decide the shape of the change"
+	ti4 := textinput.New()
+	ti4.Placeholder = "no implementation — decide and name what you rejected"
+	ti5 := textinput.New()
+	ti5.Placeholder = strings.Join(schema.ValidTiers, " | ") + " (resolved via the crew's models: map)"
+	ti6 := textinput.New()
+	ti6.Placeholder = "default task when a node sets no prompt"
+	ti7 := textinput.New()
+	ti7.Placeholder = "artifact type published (blank = node name)"
+	m.form = &form{kind: "role", fields: []formField{
+		{label: "name", input: ti},
+		{label: "profile", input: ti2},
+		{label: "goal", input: ti3},
+		{label: "constraints", input: ti4},
+		{label: "tier", input: ti5},
+		{label: "instruction", input: ti6},
+		{label: "writes", input: ti7},
+	}}
+}
+
+// startPatternForm (P19): declare an SOP pattern. The common dials are fields;
+// the rest of `params:` (lenses, critics, max_rounds, max_fixes, checks,
+// members) is YAML-edited by design — a form cannot carry a free-form map.
+func (m *model) startPatternForm() {
+	names := []string{}
+	for _, a := range m.crew.Agents {
+		names = append(names, a.Name)
+	}
+	ti := textinput.New()
+	ti.Placeholder = "rev"
+	ti.Focus()
+	ti2 := textinput.New()
+	ti2.Placeholder = strings.Join(schema.KnownPatterns, " | ")
+	ti3 := textinput.New()
+	ti3.Placeholder = "subject node (" + strings.Join(names, "|") + ")"
+	ti4 := textinput.New()
+	ti4.Placeholder = "acceptance criteria the verdict is judged against"
+	ti5 := textinput.New()
+	ti5.Placeholder = "then: next node or pattern id (blank = end of SOP)"
+	m.form = &form{kind: "pattern", fields: []formField{
+		{label: "id", input: ti},
+		{label: "kind", input: ti2},
+		{label: "subject", input: ti3},
+		{label: "criteria", input: ti4},
+		{label: "then", input: ti5},
+	}}
+}
+
+// buildRole validates the role form values (name, profile, goal, constraints,
+// tier, instruction, writes) into the archetype to declare. Extracted from the
+// key handler so the rules are unit-testable without a tea program.
+func buildRole(vals []string) (schema.Role, error) {
+	get := func(i int) string {
+		if i < len(vals) {
+			return strings.TrimSpace(vals[i])
+		}
+		return ""
+	}
+	r := schema.Role{
+		Name:        get(0),
+		Profile:     get(1),
+		Goal:        get(2),
+		Constraints: get(3),
+		Tier:        get(4),
+		Instruction: get(5),
+		Writes:      get(6),
+	}
+	if !schema.ValidName(r.Name) {
+		return r, fmt.Errorf("role name must match [a-z][a-z0-9_-]{0,31} (got %q)", r.Name)
+	}
+	if r.Profile == "" {
+		return r, fmt.Errorf("role %s: profile required (the prompt leads \"You are a <profile>…\")", r.Name)
+	}
+	if r.Tier != "" {
+		ok := false
+		for _, t := range schema.ValidTiers {
+			if t == r.Tier {
+				ok = true
+			}
+		}
+		if !ok {
+			return r, fmt.Errorf("tier must be %s (got %q)", strings.Join(schema.ValidTiers, " or "), r.Tier)
+		}
+	}
+	if r.Goal == "" {
+		return r, fmt.Errorf("role %s: goal required", r.Name)
+	}
+	return r, nil
+}
+
+// buildPattern validates the pattern form values (id, kind, subject, criteria,
+// then) into the pattern to declare. Kind-specific dials beyond criteria/then
+// are YAML-only; the acceptance criteria is a field because a criteria-less
+// verdict-gated pattern loops to a negative verdict and skips downstream work.
+func buildPattern(vals []string) (schema.Pattern, error) {
+	var p schema.Pattern
+	get := func(i int) string {
+		if i < len(vals) {
+			return strings.TrimSpace(vals[i])
+		}
+		return ""
+	}
+	p.ID = get(0)
+	p.Pattern = get(1)
+	p.Subject = get(2)
+	criteria, then := get(3), get(4)
+	if !schema.ValidName(p.ID) {
+		return p, fmt.Errorf("pattern id must match [a-z][a-z0-9_-]{0,31} (got %q)", p.ID)
+	}
+	known := false
+	for _, k := range schema.KnownPatterns {
+		if k == p.Pattern {
+			known = true
+		}
+	}
+	if !known {
+		return p, fmt.Errorf("pattern kind must be one of %s (got %q)",
+			strings.Join(schema.KnownPatterns, ", "), p.Pattern)
+	}
+	if criteria != "" || then != "" {
+		p.Params = map[string]any{}
+		if criteria != "" {
+			p.Params["criteria"] = criteria
+		}
+		if then != "" {
+			p.Params["then"] = then
+		}
+	}
+	return p, nil
+}
+
+// roleTierTag renders the tier for the build message (a blank tier is legal:
+// the node's own model: wins).
+func roleTierTag(t string) string {
+	if t == "" {
+		return "none — the node's model/route decides"
+	}
+	return t
 }
 
 func (m *model) startEdgeForm() {
@@ -836,7 +1043,27 @@ func (m *model) View() string {
 			if a.Route != "" {
 				resolved = "⇄" + a.Route
 			}
-			left.WriteString("  · " + a.Name + " (" + resolved + ")\n")
+			role := ""
+			if a.Role != "" {
+				role = " role=" + a.Role
+			}
+			left.WriteString("  · " + a.Name + " (" + resolved + ")" + role + "\n")
+		}
+		if len(m.crew.Roles) > 0 { // P19: declared archetypes (builtins merged at load)
+			left.WriteString("roles:\n")
+			for _, r := range m.crew.Roles {
+				left.WriteString(fmt.Sprintf("  · %s (%s)\n", r.Name, roleTierTag(r.Tier)))
+			}
+		}
+		if len(m.crew.Patterns) > 0 { // P19: patterns expand into nodes on run/save
+			left.WriteString("patterns:\n")
+			for _, p := range m.crew.Patterns {
+				subj := p.Subject
+				if subj == "" {
+					subj = "…"
+				}
+				left.WriteString(fmt.Sprintf("  · %s %s (%s)\n", p.Pattern, p.ID, subj))
+			}
 		}
 		if len(m.crew.Phases) > 0 { // P11
 			left.WriteString("phases:\n")
@@ -851,7 +1078,7 @@ func (m *model) View() string {
 		for _, rt := range m.crew.Routes {
 			left.WriteString(fmt.Sprintf("  route · %s: efficient=%s capable=%s\n", rt.ID, rt.Efficient, rt.Capable))
 		}
-		left.WriteString("\na=add agent · e=add edge · R=add route · p=add phase · A=adopt live · s=save · q=back")
+		left.WriteString("\na=add agent · e=add edge · R=add route · p=add phase · l=add role · g=add pattern · A=adopt live · s=save · q=back")
 	}
 	if m.buildMsg != "" {
 		left.WriteString("\n" + m.buildMsg)
