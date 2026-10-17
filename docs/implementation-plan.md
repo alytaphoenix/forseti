@@ -522,7 +522,7 @@ coupling, loses crash isolation; S28).
 - Staged Rust port of the runner/TUI onto `forseti-host`, with the Go engine as
   the compatibility surface.
 
-## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified (unit/validate/docs, live smoke; the SOP live leg is PARTIAL)** (2026-10-16)
+## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified end to end LIVE** (2026-10-17)
 
 Direction (user): move the crew layer from ad-hoc prompts to MetaGPT-style
 roles/actions/SOPs — a **role archetype library** plus **declarative
@@ -645,6 +645,24 @@ is byte-for-byte the old behavior.
   patterns expand, one ENTRY node, verdict gates present.
 - `scripts/crew-smoke.sh` asserts the expansion (no herdr needed for the
   validate leg).
+- Live gate — **FULL live SOP run, all four patterns** (2026-10-17,
+  `opencode-go/beam-free`, 45 s wall):
+  `forseti-crew run --headless -f crew/examples/crew-sop.yaml --session sandbox
+  --worktree sop-free` → `run_end done=10 cost=$0.0000` (exit 0). Every leg
+  verified live: `plan` → `design` → `rev-reviewer` **LGTM** (its `verdict:lbtm`
+  loop-back edge skipped, correct) → `sec-security_reviewer` **PASS** →
+  three critics dispatched in parallel → `adv-judge` **accept** → executor
+  `run-implement` → **both shell checks `check_pass`** → `run-verify`
+  **PASS** (its fix edge skipped) → teardown removed the worktree. The
+  criteria-less first attempt (design → `rev-reviewer` LBTM, revision → LBTM
+  again, then the `verdict:lgtm` edge skipped and every downstream stage with
+  it) is the S33c finding that produced `criteria:`.
+  One `node_retry` live: `run-verify` settled with a negative pane delta and
+  the extended empty-settle guard re-prompted once — the retry is what produced
+  a clean verdict, so the guard is load-bearing on the free reasoning ids too.
+  Run log `.forseti/runs/202610-112306…-crew-sop.jsonl` (10 `node_start`, all
+  `"model":"opencode-go/beam-free"`; 4 `edge_skip` = the four correct
+  verdict-edge non-firings; 2 `check_pass`; 1 `node_retry`).
 - Live gate (**2026-10-17, current model**): `bash scripts/crew-smoke.sh` — PASS
   with NO override, on `opencode-go/beam-free` (the script defaults
   `FORSETI_CREW_MODEL` to the free id). Checked crew in the sandbox session

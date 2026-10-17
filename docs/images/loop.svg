@@ -30,7 +30,7 @@
     <rect x="650" y="250" width="240" height="90" rx="10" fill="#161b22" stroke="#79c0ff" stroke-width="1.5"/>
     <text x="770" y="274" text-anchor="middle" fill="#79c0ff" font-size="13" font-weight="bold">3 · pi answers</text>
     <text x="770" y="296" text-anchor="middle" fill="#c9d1d9" font-size="11">pane auto-focuses, answer streams</text>
-    <text x="770" y="314" text-anchor="middle" fill="#8b949e" font-size="10">(glm-5.3-flash via OpenCode Go)</text>
+    <text x="770" y="314" text-anchor="middle" fill="#8b949e" font-size="10">(beam-free via OpenCode Go)</text>
   </g>
 
   <!-- 4 -->

@@ -1086,3 +1086,46 @@ prompts. The crew file owns the standard; the model only decides against it.
 no-security-surface criterion for the security lens, and the
 objections-out-of-scope criterion for the panel —
 `pattern_test.go: TestPatternCriteriaLandsInEveryVerdictPrompt`.
+
+## S33d — the full SOP run, live on a free hosted model (2026-10-17) ✅ resolved (live)
+
+After `criteria:` landed, `forseti-crew run --headless -f
+crew/examples/crew-sop.yaml --session sandbox --worktree sop-free` (10 agents,
+20 edges) ran end to end in **45 s** and exited 0:
+
+```
+11:23:11 node_start  plan
+11:23:14 node_done   plan                      6543 chars
+11:23:14 node_start  design
+11:23:17 node_done   design                   19462 chars
+11:23:17 node_start  rev-reviewer
+11:23:22 node_done   rev-reviewer             47738 chars
+11:23:22 verdict     rev-reviewer             lgtm
+11:23:22 edge_skip   design   rev-reviewer>design when "verdict:lbtm" not matched
+11:23:22 node_start  sec-security_reviewer
+11:23:26 verdict     sec-security_reviewer    pass
+11:23:26 edge_skip   design   sec>design when "verdict:fail" not matched
+11:23:26 node_start  adv-critic-1/2/3         (parallel)
+11:23:32 node_done   adv-critic-*             accept, accept, revise
+11:23:32 node_start  adv-judge
+11:23:39 verdict     adv-judge                accept
+11:23:39 node_start  run-implement            (executor)
+11:23:45 check_pass  run-check-1 / run-check-2
+11:23:45 node_start  run-verify
+11:23:56 verdict     run-verify               pass
+11:23:56 run_end     done=10 cost=$0.0000
+11:23:56 teardown    worktree removed
+```
+
+All four pattern legs proven against a live model: the reviewer loop, the
+security lens, the three-critic panel fan-in (dispatched concurrently the
+instant the verdict edge fired) + judge, and the executor's implementer →
+**real shell checks** → verifier. Every `node_start` carries
+`"model":"opencode-go/beam-free"` — a hosted free id, no LAN box. The four
+`edge_skip`s are the corrects: each negative-verdict edge simply did not fire.
+
+One live `node_retry` is worth keeping: `run-verify` settled with a **negative
+pane delta** (`-278 chars` — the pane shrank), the extended reasoning-model
+empty-settle guard re-prompted once, and the retry produced the clean
+`VERDICT: PASS`. So the guard is load-bearing on the hosted free reasoning ids
+too, not just the LAN box.
