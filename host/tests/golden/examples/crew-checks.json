@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "crew/examples/crew-checks.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "crew/examples/crew-checks.yaml",
+  "stderr": "",
+  "stdout": "crew demo-planner-builder-checked\nnodes:\n  planner                  model=opencode-go/beam-free writes=planner ENTRY\n  builder                  model=opencode-go/beam-free writes=builder\n                             \u2190 planner [re:PLAN_READY]\nchecks:\n  after planner              grep -q PLAN_READY .forseti/bus/planner.md\n  after builder              test -f HELLO_CREW.md && grep -q 'crew pipeline works' HELLO_CREW.md\ncrew/examples/crew-checks.yaml valid\n"
+}

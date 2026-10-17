@@ -1,0 +1,6 @@
+name: t
+memory:
+  write_max_chars: -2
+agents:
+  - name: a
+    prompt: x

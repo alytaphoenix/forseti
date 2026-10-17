@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-passthrough-no-capable.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-passthrough-no-capable.yaml",
+  "stderr": "INVALID: route \"r\": type passthrough needs capable (the single target)\n",
+  "stdout": ""
+}

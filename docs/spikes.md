@@ -1168,3 +1168,51 @@ SOURCE form — `roles:` + `patterns:` + `role: architect`, **no** synthesized
 `rev-reviewer` — and `forseti-crew validate -f` accepted it (exit 0). TUI
 authoring of roles/patterns round-trips through `MarshalSource`/`Load` exactly
 like a hand-written crew.
+
+## S34 — porting the crew schema to Rust: the oracle harness and its edges (Phase 18D-1, 2026-10-17) ✅ resolved (unit + live CLI)
+
+Stage 18D-1 moves `crew validate` into the Rust host (`forseti-host crew
+validate -f FILE [--explain]`, `host/src/crew/*`) with the Go engine as the
+compatibility oracle. Findings:
+
+- **The oracle must be a *recorded* comparison, not a spawn.** `scripts/
+  crew-host-oracle.py` captures `{file, argv, exit, stdout, stderr}` per crew
+  from the Go binary into `host/tests/golden/<kind>/*.json`; the Rust side is a
+  plain integration test (`host/tests/crew_oracle.rs`) that replays them, so
+  `cargo test` needs no Go toolchain and no network. `--check` re-captures and
+  diffs byte for byte. Corpus = 8 examples (minus the pinned `crew-sop.yaml`,
+  which needs 18D-2) + 2 valid fixtures + 50 invalid fixtures, one rule each:
+  **60 records**.
+- **The Go `validate` shell-outs to the router, so the oracle needs a stub.**
+  With `routes:` present, `validate` runs `forseti-host --config … --dry-run`.
+  Pointing `FORSETI_CREW_ROUTER_BIN` at an `exit 0` script removes the dry-run
+  note and makes the capture router-build-independent. Verified that the stub is
+  load-bearing: a failing stub turns the same command into
+  `INVALID (routes): forseti-host --dry-run: …: exit status 3`. (The Rust engine
+  has no dry-run yet — a later stage; `validate` in Rust therefore cannot
+  diverge here.)
+- **`explain`'s arrow line is not the obvious `%-24s`.** The incoming-edge line
+  is `"  %-24s   ← %s\n"` (three spaces, a literal `←`, then the label) — a
+  field-width port alone is off by one column. Everything else is plain `%-24s`
+  / `%-20s` / `%-10s`. 8/8 base examples now match byte for byte, including
+  `← planner [re:PLAN_READY]` and `← planner [laya:choice:…]`.
+- **Go subtleties the port forced out of hiding** (unit tests pinned them):
+  `Crew.Entry()` counts loop edges as incoming, while the *validation* entry
+  check deliberately ignores `loop: true` edges — so `a→b, b→a(loop)` has an
+  empty `Entry()` yet still validates. A self-loop (`a→a` with `max_visits`) is a
+  normal edge, so a crew whose only node self-loops has **no entry** and is
+  rejected; it needs a separate entry node. `BackEdges` DFS-classification from
+  the roots (not "target reaches source") means `c→a→b→a` yields exactly one
+  back edge (`b>a`) — the old rule marked both cycle edges.
+- **Documented divergences, both parse-level and outside the corpus:** bad user
+  regexes report the Rust `regex` crate's message (Go reports RE2's) and a
+  malformed YAML document reports serde_norway's (Go yaml.v3's). The Go
+  *prefixes* are preserved (`edge N: bad regex %q: …`, `parse crew.yaml: …`), and
+  the rule still fires — unit tests assert both. Only *validation* error strings
+  aim for byte parity.
+- **Defaults are applied during validation, not at use** (Go does the same), so
+  `explain` shows them: `kind: pi`, `when: idle`, `check-<after>-<i>` names,
+  memory `recall_k 3` / `write_max_chars 4000`, route `picker
+  efficient_first` / `confidence 0.5`. The Rust `memory_ns()` mirrors
+  `MemorySpec.NS`: the memory block absent or `namespace:` empty → the crew name.
+

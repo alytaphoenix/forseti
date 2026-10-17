@@ -1,22 +1,26 @@
-// Forseti host — Phase 18A
+// Forseti host — Phase 18A (in-process router) + Phase 18D (crew engine)
 //
-// Embeds the switchyard routing server *in this process* instead of spawning
-// `switchyard-server` as a child. Verified against switchyard-server 0.3.0:
-// the crate ships a library (`[lib] name = "switchyard_server"`) exposing
+// Phase 18A: embeds the switchyard routing server *in this process* instead of
+// spawning `switchyard-server` as a child. Verified against switchyard-server
+// 0.3.0: the crate ships a library exposing
 //   - config::load_server_state(path) -> ServerState
 //   - ServerState::{from_runner, with_routing_log, models, caller_auth_kind}
 //   - BoundServer::bind(state, ServerRunOptions) -> BoundServer
 //        .local_addr()            (OS-assigned port when addr port == 0)
-#![allow(unused)] // 18A scaffold: TUI/runner port lands on top of this.
-//     .serve(shutdown)         (async, drains on shutdown)
-//   ServerRunOptions { addr, backlog, dry_run, shutdown_timeout, tls }
-//
+//        .serve(shutdown)         (async, drains on shutdown)
+//   - ServerRunOptions { addr, backlog, dry_run, shutdown_timeout, tls }
 // We do NOT reimplement routing: the algorithm config is the same TOML the
 // standalone server takes, and we hand pi the loopback port we bound.
+//
+// Phase 18D: the `crew` subcommand validates crew.yaml with the Rust crew model
+// (`forseti_host::crew`), pinned to the Go engine by the oracle goldens. The
+// router flags keep working unchanged, so the Go crew runner keeps spawning
+// this binary as its router.
+#![allow(unused)] // the router path keeps its own scaffolding.
 
-use std::net::SocketAddr;
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{BoundServer, ServerRunOptions};
 
@@ -24,12 +28,15 @@ use switchyard_server::{BoundServer, ServerRunOptions};
 #[command(
     name = "forseti-host",
     version,
-    about = "Forseti host — runs the switchyard router in-process"
+    about = "Forseti host — switchyard router in-process, plus the crew engine (Phase 18D)"
 )]
 struct Args {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
     /// Routes TOML (the same schema `switchyard-server --config` accepts).
     #[arg(long)]
-    config: std::path::PathBuf,
+    config: Option<std::path::PathBuf>,
 
     /// Bind address. Port 0 = let the OS choose (we print the real port).
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -44,18 +51,61 @@ struct Args {
     dry_run: bool,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Cmd {
+    /// Crew commands (Phase 18D). `validate` is the Go-compatible schema gate.
+    Crew {
+        #[command(subcommand)]
+        cmd: CrewCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum CrewCmd {
+    /// Validate a crew file (the base graph; roles/patterns land in 18D-2).
+    Validate {
+        /// Crew file.
+        #[arg(short = 'f', default_value = "crew.yaml")]
+        file: String,
+
+        /// Print the resolved graph (models, nodes, edges, checks, memory).
+        #[arg(long)]
+        explain: bool,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    if let Some(Cmd::Crew { cmd }) = &args.cmd {
+        match cmd {
+            CrewCmd::Validate { file, explain } => {
+                let out = forseti_host::crew::validate(file, *explain);
+                use std::io::Write;
+                print!("{}", out.stdout);
+                eprint!("{}", out.stderr);
+                let _ = std::io::stdout().flush();
+                let _ = std::io::stderr().flush();
+                std::process::exit(out.exit);
+            }
+        }
+    }
+
+    let Some(config) = args.config.clone() else {
+        eprintln!("forseti-host: --config is required (or use `crew validate -f FILE`)");
+        std::process::exit(2);
+    };
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| anyhow::anyhow!("tokio runtime: {e}"))?;
-    rt.block_on(run(args))
+    rt.block_on(run(&args, &config))
 }
 
-async fn run(args: Args) -> anyhow::Result<()> {
-    let state = load_server_state(&args.config)
-        .map_err(|e| anyhow::anyhow!("load {}: {e}", args.config.display()))?;
+async fn run(args: &Args, config: &std::path::Path) -> anyhow::Result<()> {
+    let state =
+        load_server_state(config).map_err(|e| anyhow::anyhow!("load {}: {e}", config.display()))?;
 
     let state = match &args.routing_log {
         Some(path) => state
@@ -79,8 +129,8 @@ async fn run(args: Args) -> anyhow::Result<()> {
         tls: None,
     };
 
-    let bound = BoundServer::bind(state, opts)
-        .map_err(|e| anyhow::anyhow!("bind {}: {e}", args.addr))?;
+    let bound =
+        BoundServer::bind(state, opts).map_err(|e| anyhow::anyhow!("bind {}: {e}", args.addr))?;
     let addr = bound.local_addr();
 
     // Machine-readable handshake: the supervisor (crew runner) reads this line

@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/memory-negative-write.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/memory-negative-write.yaml",
+  "stderr": "INVALID: memory.write_max_chars must be >= 0\n",
+  "stdout": ""
+}

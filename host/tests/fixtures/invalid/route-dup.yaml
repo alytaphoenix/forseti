@@ -1,0 +1,11 @@
+name: t
+routes:
+  - id: r
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+  - id: r
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+agents:
+  - name: a
+    prompt: x

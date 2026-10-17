@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/valid/verdict-edge.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "host/tests/fixtures/valid/verdict-edge.yaml",
+  "stderr": "",
+  "stdout": "crew vloop\nnodes:\n  start                    writes=start ENTRY\n  author                   writes=author\n                             \u2190 start [idle]\n                             \u2190 reviewer [verdict:lbtm] max_visits=2\n  reviewer                 writes=reviewer\n                             \u2190 author [idle]\nhost/tests/fixtures/valid/verdict-edge.yaml valid\n"
+}

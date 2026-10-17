@@ -1,0 +1,7 @@
+name: t
+routes:
+  - id: r
+    type: passthrough
+agents:
+  - name: a
+    prompt: x

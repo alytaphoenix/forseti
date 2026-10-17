@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/edge-loop-unbounded.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/edge-loop-unbounded.yaml",
+  "stderr": "INVALID: edge 1: loop edge b\u2192a needs max_visits (it re-dispatches the target)\n",
+  "stdout": ""
+}

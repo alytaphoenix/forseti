@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/agent-model-and-route.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/agent-model-and-route.yaml",
+  "stderr": "INVALID: agent \"a\": set model or route, not both\n",
+  "stdout": ""
+}

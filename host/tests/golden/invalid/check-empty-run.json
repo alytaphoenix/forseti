@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/check-empty-run.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/check-empty-run.yaml",
+  "stderr": "INVALID: check 0: empty run\n",
+  "stdout": ""
+}

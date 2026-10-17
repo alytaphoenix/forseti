@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-option-driven-empty.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-option-driven-empty.yaml",
+  "stderr": "INVALID: route \"r\": type composite is option-driven \u2014 set options: with its switchyard keys\n",
+  "stdout": ""
+}

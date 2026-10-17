@@ -1,0 +1,8 @@
+name: t
+routes:
+  - id: "Bad"
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+agents:
+  - name: a
+    prompt: x

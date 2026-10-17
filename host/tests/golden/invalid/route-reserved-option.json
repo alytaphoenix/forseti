@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-reserved-option.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-reserved-option.yaml",
+  "stderr": "INVALID: route \"r\": options.picker duplicates the stage_router field forseti derives\n",
+  "stdout": ""
+}

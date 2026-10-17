@@ -1,0 +1,18 @@
+name: defaults
+memory:
+  namespace: scratch
+  auto_recall: false
+agents:
+  - name: only
+    prompt: hello
+  - name: routed
+    route: tier
+    prompt: routed work
+routes:
+  - id: tier
+    type: auto
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+checks:
+  - after: only
+    run: "true"

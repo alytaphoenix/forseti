@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/phase-agent-unphased.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/phase-agent-unphased.yaml",
+  "stderr": "INVALID: agent \"b\": not in any phase (phases are declared \u2014 add it to one)\n",
+  "stdout": ""
+}

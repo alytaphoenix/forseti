@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-classifier-no-judge.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-classifier-no-judge.yaml",
+  "stderr": "INVALID: route \"r\": type llm_classifier needs a judge (judge: provider/model, or options.classifier_target)\n",
+  "stdout": ""
+}

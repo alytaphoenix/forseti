@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/graph-unbounded-cycle.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/graph-unbounded-cycle.yaml",
+  "stderr": "INVALID: cycle a \u2192 b has no edge with max_visits \u2014 refusing unbounded loop\n",
+  "stdout": ""
+}

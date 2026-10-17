@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/memory-bad-namespace.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/memory-bad-namespace.yaml",
+  "stderr": "INVALID: memory namespace \"Bad NS\" must match [a-z0-9][a-z0-9_-]{0,25}\n",
+  "stdout": ""
+}

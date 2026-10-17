@@ -1,0 +1,7 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+checks:
+  - after: a
+    run: "  "

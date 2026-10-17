@@ -1,0 +1,6 @@
+name: t
+memory:
+  recall_k: -1
+agents:
+  - name: a
+    prompt: x

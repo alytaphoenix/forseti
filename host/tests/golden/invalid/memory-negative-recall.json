@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/memory-negative-recall.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/memory-negative-recall.yaml",
+  "stderr": "INVALID: memory.recall_k must be >= 0\n",
+  "stdout": ""
+}

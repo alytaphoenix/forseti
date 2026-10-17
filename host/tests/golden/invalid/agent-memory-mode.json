@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/agent-memory-mode.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/agent-memory-mode.yaml",
+  "stderr": "INVALID: agent \"a\": memory must be on|off (got \"maybe\")\n",
+  "stdout": ""
+}

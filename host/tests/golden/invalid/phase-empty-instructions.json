@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/phase-empty-instructions.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/phase-empty-instructions.yaml",
+  "stderr": "INVALID: phase \"p1\": empty instructions\n",
+  "stdout": ""
+}

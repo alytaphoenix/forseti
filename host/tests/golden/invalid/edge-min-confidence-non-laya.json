@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/edge-min-confidence-non-laya.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/edge-min-confidence-non-laya.yaml",
+  "stderr": "INVALID: edge 0: min_confidence/state_file only apply to laya edges\n",
+  "stdout": ""
+}

@@ -1,0 +1,11 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+  - name: b
+    prompt: y
+edges:
+  - from: a
+    to: b
+    when: "laya:choice:is it ready"
+    min_confidence: 1.5

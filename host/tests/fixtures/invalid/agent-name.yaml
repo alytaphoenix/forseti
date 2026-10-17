@@ -1,0 +1,4 @@
+name: t
+agents:
+  - name: A
+    prompt: x

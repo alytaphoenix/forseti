@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-option-id.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-option-id.yaml",
+  "stderr": "INVALID: route \"r\": options.id is set by forseti\n",
+  "stdout": ""
+}

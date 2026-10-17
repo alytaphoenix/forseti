@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/phase-dup.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/phase-dup.yaml",
+  "stderr": "INVALID: duplicate phase name \"p1\"\n",
+  "stdout": ""
+}

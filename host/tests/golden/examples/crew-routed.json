@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "crew/examples/crew-routed.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "crew/examples/crew-routed.yaml",
+  "stderr": "",
+  "stdout": "crew demo-routed-pool\nnodes:\n  scout-a                  route=auto-pool writes=scout-a ENTRY\n  scout-b                  route=auto-pool writes=scout-b ENTRY\ncrew/examples/crew-routed.yaml valid\n"
+}

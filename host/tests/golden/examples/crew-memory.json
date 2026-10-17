@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "crew/examples/crew-memory.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "crew/examples/crew-memory.yaml",
+  "stderr": "",
+  "stdout": "crew crew-memdemo\nnodes:\n  planner                  model=opencode-go/beam-free writes=planner ENTRY\n  builder                  model=opencode-go/beam-free writes=builder\n                             \u2190 planner [re:PLAN_READY]\nmemory: namespace=crew-memdemo recall_k=3 write_max_chars=4000\ncrew/examples/crew-memory.yaml valid\n"
+}

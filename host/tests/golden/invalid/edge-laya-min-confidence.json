@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/edge-laya-min-confidence.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/edge-laya-min-confidence.yaml",
+  "stderr": "INVALID: edge 0: min_confidence must be in (0,1]\n",
+  "stdout": ""
+}

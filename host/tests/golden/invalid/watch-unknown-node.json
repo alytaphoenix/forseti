@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/watch-unknown-node.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/watch-unknown-node.yaml",
+  "stderr": "INVALID: watch 0: node \"zz\" is not an agent\n",
+  "stdout": ""
+}

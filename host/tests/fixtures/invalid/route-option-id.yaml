@@ -1,0 +1,9 @@
+name: t
+routes:
+  - id: r
+    type: noop
+    options:
+      id: other
+agents:
+  - name: a
+    prompt: x

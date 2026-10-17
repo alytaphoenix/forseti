@@ -1,0 +1,8 @@
+name: t
+routes:
+  - id: r
+    type: stage_router
+    efficient: opencode-go/beam-free
+agents:
+  - name: a
+    prompt: x

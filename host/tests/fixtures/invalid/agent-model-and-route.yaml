@@ -1,0 +1,6 @@
+name: t
+agents:
+  - name: a
+    model: opencode-go/beam-free
+    route: r
+    prompt: x

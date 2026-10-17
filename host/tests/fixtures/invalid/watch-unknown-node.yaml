@@ -1,0 +1,7 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+watch:
+  - node: zz
+    match: "READY"

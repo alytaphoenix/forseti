@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "crew/examples/crew-laya.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "crew/examples/crew-laya.yaml",
+  "stderr": "",
+  "stdout": "crew demo-laya-triage\nnodes:\n  planner                  model=opencode-go/beam-free writes=planner ENTRY\n  opsfix                   model=opencode-go/beam-free writes=opsfix\n                             \u2190 planner [laya:choice:access, availability or outage problem \u2014 on-call ops owns it]\n  codefix                  model=opencode-go/beam-free writes=codefix\n                             \u2190 planner [laya:choice:a code defect in the product \u2014 a developer owns it]\ncrew/examples/crew-laya.yaml valid\n"
+}

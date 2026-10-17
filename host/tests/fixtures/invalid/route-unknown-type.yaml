@@ -1,0 +1,7 @@
+name: t
+routes:
+  - id: r
+    type: bogus
+agents:
+  - name: a
+    prompt: x

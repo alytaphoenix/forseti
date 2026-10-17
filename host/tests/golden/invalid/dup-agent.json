@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/dup-agent.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/dup-agent.yaml",
+  "stderr": "INVALID: duplicate agent name \"a\"\n",
+  "stdout": ""
+}

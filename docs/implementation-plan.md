@@ -520,9 +520,75 @@ coupling, loses crash isolation; S28).
   `forseti-crew validate` now runs it (`crew/examples/crew-routes.yaml`
   exercises stage_router/auto/plan_execute/llm_classifier+judge/advisor).
 
-### 18D — runner/TUI on the host (next)
-- Staged Rust port of the runner/TUI onto `forseti-host`, with the Go engine as
-  the compatibility surface.
+### 18D — runner/TUI on the host (staged Rust port) ✅ **18D-1 implemented + oracle-gated** (2026-10-17)
+
+Direction (agreed): `forseti-host` grows from "embedded router" into the crew
+**engine** (herdr client, scheduler, runner, TUI) while the Go `forseti-crew`
+stays the **compatibility surface**. Every stage is gated by byte-identical
+output against the Go engine, so the port can be finished incrementally without
+freezing either engine: `scripts/crew-host-oracle.py` captures goldens from
+`forseti-crew validate -f FILE --explain` and the Rust engine must reproduce
+them exactly (stdout, stderr, exit code).
+
+1. **18D-1 ✅ done** — the crew model + YAML load + validation + `explain` in
+   Rust, exposed as `forseti-host crew validate -f FILE [--explain]`. Scope = the
+   base graph (agents/edges/phases/checks/watch/memory/routes). `roles:`/
+   `patterns:`/an agent's `role:` parse but are **rejected** with the constant
+   `validate::STAGE_2_UNSUPPORTED` rather than silently ignored — the divergence
+   is visible, never a wrong "valid".
+   - Crate layout: `host/` gained `[lib] forseti_host`; the crew port lives in
+   `host/src/crew/{mod,model,routes,validate,explain,command}.rs`. Deps added:
+   `serde_norway` 0.9 (maintained serde_yaml fork), `regex`; dev-dep `serde_json`.
+   The router path (`--config/--addr/--routing-log/--dry-run` → `BoundServer`) is
+   untouched, so the Go runner keeps spawning this binary as its router.
+   - Oracle: `scripts/crew-host-oracle.py [--check]` captures
+     `forseti-crew validate -f FILE --explain` per crew into
+     `host/tests/golden/<kind>/<crew>.json` (`{file, argv, exit, stdout, stderr}`)
+     and `host/tests/crew_oracle.rs` replays every record through the Rust engine
+     — so `cargo test` needs no Go. `--check` fails on a stale/missing/unexpected
+     golden. The corpus is `crew/examples/*.yaml` (minus the **pinned**
+     `STAGE_18D2_SKIP = {crew-sop.yaml}`, which asserts rather than silently
+     narrowing) + `host/tests/fixtures/{valid,invalid}/*.yaml` — 60 records
+     (8 examples, 2 valid, 50 one-rule-per-file invalid fixtures). Route dry-run
+     nondeterminism is removed by pointing `FORSETI_CREW_ROUTER_BIN` at a
+     `exit 0` stub (the Rust engine has no dry-run yet).
+   - Documented divergences (outside the corpus): regex-engine error text (Go RE2
+     vs the Rust `regex` crate) and YAML parse-error text; both keep Go's prefixes
+     (`edge N: bad regex …`, `parse crew.yaml: …`).
+   - Unit tests cover what the oracle cannot: the stage-18D-2 rejection, the two
+     regex-error rules, every valid `when` form + defaults, and the graph helpers
+     (`find_cycles`, `back_edges` DFS classification, `derive_subscriptions`,
+     `entry`, `writes_type`, the CLI missing-file message).
+2. **18D-2 (next)** — role archetypes + SOP patterns + typed pub/sub + verdict
+   gates (the P19 layer). The oracle then covers `crew-sop.yaml` too.
+3. **18D-3** — herdr socket client: NDJSON framing, dial-per-call one-shots,
+   `events.subscribe`, `layout.apply`, `agent.*`, `pane.*`, `worktree.*`.
+4. **18D-4** — the scheduler: fan-in AND, DFS-classified back edges +
+   `max_visits`, phases, verdict gates, per-visit checks — ported against the Go
+   scheduler's unit tests.
+5. **18D-5** — the runner: pane dispatch, prompt+settle (`agent.prompt.wait`, the
+   reasoning-model empty-settle guard), templates (`{{ .upstream }}`,
+   `{{ node }}`, `{{ artifact }}`, `{{ memory }}`), run log, memory/bus.
+6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
+   compared side by side; the Go engine retires only once the Rust engine passes
+   the smoke gate unsupervised.
+
+### Gates (18D-1)
+- `cargo test` in `host/` — 14 unit tests + the oracle integration test
+  (`host/tests/crew_oracle.rs`) replaying all **60 goldens** green; `cargo clippy
+  --all-targets` and `cargo fmt --check` clean.
+- `scripts/crew-host-oracle.py --check` → `goldens current (60 records)`, i.e. the
+  committed goldens equal a fresh capture from the Go engine.
+- The Go side is unchanged and green: `gofmt -l .` empty, `go test ./...` in
+  `crew/` ok; `forseti-crew validate -f crew/examples/crew-routes.yaml` still
+  dry-runs the routes against the real `forseti-host` (RouterHost) — verified by
+  pointing `FORSETI_CREW_ROUTER_BIN` at a failing stub, which turns the run into
+  `INVALID (routes): forseti-host --dry-run: …`.
+- `scripts/crew-smoke.sh` runs `crew-host-oracle.py --check` before the live leg.
+- Spot check (8 base examples): `forseti-host crew validate -f FILE --explain`
+  is byte-identical to `forseti-crew validate -f FILE --explain`, including the
+  `← <from> [when]` arrow lines and every default (`kind: pi`, `when: idle`,
+  check names, memory recall_k/write_max_chars, route picker/confidence).
 
 ## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified end to end LIVE** (2026-10-17)
 

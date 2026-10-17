@@ -1,0 +1,11 @@
+name: t
+phases:
+  - name: p1
+    instructions: first
+    agents: [a]
+  - name: p2
+    instructions: second
+    agents: [a]
+agents:
+  - name: a
+    prompt: x

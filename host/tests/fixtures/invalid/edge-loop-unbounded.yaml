@@ -1,0 +1,16 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+  - name: b
+    prompt: y
+  - name: c
+    prompt: z
+edges:
+  - from: a
+    to: b
+  - from: b
+    to: a
+    loop: true
+  - from: b
+    to: c

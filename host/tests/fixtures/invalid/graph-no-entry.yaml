@@ -1,0 +1,13 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+  - name: b
+    prompt: y
+edges:
+  - from: a
+    to: b
+    max_visits: 2
+  - from: b
+    to: a
+    max_visits: 2

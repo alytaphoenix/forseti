@@ -1,0 +1,17 @@
+name: vloop
+agents:
+  - name: start
+    prompt: kick off
+  - name: author
+    prompt: write the draft
+  - name: reviewer
+    prompt: review the draft
+edges:
+  - from: start
+    to: author
+  - from: author
+    to: reviewer
+  - from: reviewer
+    to: author
+    when: verdict:lbtm
+    max_visits: 2

@@ -1,0 +1,8 @@
+name: t
+routes:
+  - id: r
+    type: noop
+    confidence: 0.3
+agents:
+  - name: a
+    prompt: x

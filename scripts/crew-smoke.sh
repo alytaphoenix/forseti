@@ -25,6 +25,14 @@ PHASES="$WORK/phases.jsonl"
 echo "crew-smoke: building…"
 ( cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew )
 
+# Phase 18D-1: the Rust crew engine must reproduce the Go engine's validate
+# output byte for byte. Static leg (no herdr) — fail fast before the live run.
+echo "crew-smoke: checking the Rust host's crew goldens (18D oracle)…"
+if ! python3 scripts/crew-host-oracle.py --check; then
+  echo "crew-smoke: FAIL — Rust crew engine drifted from the Go oracle"
+  exit 1
+fi
+
 echo "crew-smoke: validating examples…"
 "$BIN" validate -f "crew/examples/crew.yaml" >/dev/null
 "$BIN" validate -f "$CREWFILE" >/dev/null

@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/check-unknown-after.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/check-unknown-after.yaml",
+  "stderr": "INVALID: check 0: after \"zz\" is not an agent\n",
+  "stdout": ""
+}

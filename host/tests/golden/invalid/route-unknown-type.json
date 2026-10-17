@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-unknown-type.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-unknown-type.yaml",
+  "stderr": "INVALID: route \"r\": unknown switchyard type \"bogus\" (known: stage_router, auto, plan_execute, llm_classifier, passthrough, random, noop, composite, advisor, prefill_router)\n",
+  "stdout": ""
+}

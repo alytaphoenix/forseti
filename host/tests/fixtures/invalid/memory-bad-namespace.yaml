@@ -1,0 +1,6 @@
+name: t
+memory:
+  namespace: "Bad NS"
+agents:
+  - name: a
+    prompt: x

@@ -1,0 +1,10 @@
+name: t
+routes:
+  - id: r
+    type: stage_router
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+    picker: fastest
+agents:
+  - name: a
+    prompt: x

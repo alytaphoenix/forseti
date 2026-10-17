@@ -1,0 +1,4 @@
+name: Bad Name
+agents:
+  - name: a
+    prompt: x

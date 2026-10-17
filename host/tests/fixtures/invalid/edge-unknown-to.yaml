@@ -1,0 +1,9 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+  - name: b
+    prompt: y
+edges:
+  - from: a
+    to: zz

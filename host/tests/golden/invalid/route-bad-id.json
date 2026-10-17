@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/route-bad-id.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/route-bad-id.yaml",
+  "stderr": "INVALID: route 0: id \"Bad\" must match [a-z0-9][a-z0-9_-]{0,31}\n",
+  "stdout": ""
+}

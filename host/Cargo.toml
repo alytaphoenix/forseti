@@ -3,8 +3,12 @@ name = "forseti-host"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Forseti host: in-process switchyard router (no separate server process)"
+description = "Forseti host: in-process switchyard router + the crew engine (Phase 18D)"
 license = "MIT"
+
+[lib]
+name = "forseti_host"
+path = "src/lib.rs"
 
 [dependencies]
 # Embeddable switchyard server library (Phase 18A). Verified surface:
@@ -16,6 +20,15 @@ switchyard-server = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+# Phase 18D: the crew schema. serde_norway is the maintained serde_yaml fork (the
+# same 0.9 API); the crew file is YAML, and the Go engine is the oracle for what
+# a valid crew means (scripts/crew-host-oracle.py).
+serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9"
+regex = "1"
+
+[dev-dependencies]
+serde_json = "1"
 
 [[bin]]
 name = "forseti-host"

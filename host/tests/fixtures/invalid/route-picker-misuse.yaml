@@ -1,0 +1,8 @@
+name: t
+routes:
+  - id: r
+    type: noop
+    picker: efficient_first
+agents:
+  - name: a
+    prompt: x

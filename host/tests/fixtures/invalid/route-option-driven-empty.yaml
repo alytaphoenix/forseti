@@ -1,0 +1,7 @@
+name: t
+routes:
+  - id: r
+    type: composite
+agents:
+  - name: a
+    prompt: x

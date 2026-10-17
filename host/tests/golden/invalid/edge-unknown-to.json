@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/edge-unknown-to.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/edge-unknown-to.yaml",
+  "stderr": "INVALID: edge 0: unknown to \"zz\"\n",
+  "stdout": ""
+}
