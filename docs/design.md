@@ -271,12 +271,12 @@ name: demo-planner-coder
 agents:
   - name: planner                      # herdr rule [a-z][a-z0-9_-]{0,31}
     kind: pi                           # v1: pi only (default)
-    model: opencode-go/glm-5.3-flash   # per-node model → pi --model (S9 verified)
+    model: opencode-go/beam-free       # per-node model → pi --model (S9 verified)
     args: []                           # extra pi argv appended after --model
     prompt: |
       You are the planner. ... End with PLAN_READY.
   - name: builder
-    model: opencode-go/glm-5.3-flash
+    model: opencode-go/beam-free
     prompt: |
       Execute this plan exactly:
       {{ .planner }}                   # upstream output templated by node name
@@ -845,9 +845,10 @@ contract or semantics — mechanical fixes are in the code and the spike record:
   node, or a `check_fail` event, or a **blocked** node (a blocked run needs a
   human — exit nonzero) — blocked also forces KeepTab + KeepWorktree so the
   state survives for takeover.
-- The empty-settle re-prompt guard is LAN-box-only (`halogen`/`valhalla` in the
-  resolved model) — on healthy models it false-positived on every
-  short-prompt/short-answer node (double cost).
+- The empty-settle re-prompt guard covers reasoning models only
+  (`runner.emptySettleProne`: `halogen`/`valhalla` LAN box + OpenCode Go's
+  `beam-free`/`longcat-*` free ids) — on healthy non-reasoning models it
+  false-positived on every short-prompt/short-answer node (double cost).
 
 ### Client fixes worth remembering
 
@@ -1014,8 +1015,8 @@ graph it did before.
 ```yaml
 name: crew-sop
 models:                       # tier → provider/model (roles name tiers, not ids)
-  efficient: valhalla/valhalla-flash-next
-  capable:   valhalla/valhalla-flash-next
+  efficient: opencode-go/beam-free
+  capable:   opencode-go/longcat-2.5-preview-free
 roles:                        # optional: add/override an archetype
   - {name: architect, profile: Architect, goal: …, tier: capable,
      writes: design, instruction: "Write the design."}
@@ -1026,7 +1027,8 @@ agents:
   - {name: design, role: architect, watch: [plan], prompt: "…{{ artifact \"plan\" }}"}
 patterns:
   - {id: rev, pattern: reviewer_loop, subject: design,
-     params: {max_revisions: 2, then: sec}}
+     params: {max_revisions: 2, then: sec,
+              criteria: "the file SOP_DEMO.md with the exact required line; nothing else is in scope"}}
   - {id: sec, pattern: security_review, subject: design,
      params: {max_revisions: 2, then: adv}}
   - {id: adv, pattern: adversarial_panel, subject: design,
@@ -1088,11 +1090,22 @@ rather than guessing.
   materialises real shell checks after the executor's implementer; `task:`
   seeds a subject-less executor; `subject_label:` names the artifact in the
   reviewer's prose ("the design") instead of the default phrasing.
+- `criteria:` is the **acceptance standard the verdict is judged against**, and
+  every verdict-gated pattern takes it (`reviewer_loop`, `security_review`,
+  `adversarial_panel`). It renders into the reviewer/critic/judge prompt as
+  "judge against these and nothing else; an objection that does not violate them
+  is out of scope". This is not decoration: a reviewer briefed only to "list
+  defects" can always find one, so with no criteria the bounded loop burns its
+  revisions and the positive-verdict edge skips the whole downstream pipeline
+  (hit live — S33c). The SOP owns the standard; the model only decides against
+  it. An executor needs none — its `checks:` *are* the criteria.
 - Synthesized nodes are `<pattern-id>-<part>`, and in a phased crew they join
   their subject's phase — the loop-back stays intra-phase.
-- Pre-existing P13 behavior kept: a node's declared `checks:` run on its first
-  settle only, so an executor loop's shell checks do not re-run after a fix —
-  the synthesized verifier re-establishes PASS/FAIL each iteration.
+- A node's declared `checks:` re-run **per visit** (2026-10-17): the done-flag is
+  keyed on the after-node's visit and a passing re-run clears the failure
+  marker, so an executor `max_fixes` round re-runs its shell checks and the exit
+  code follows the latest iteration. Same-visit re-checks stay no-ops, which
+  keeps acyclic crews byte-identical to the old behavior.
 
 ### Loop semantics (why verdicts, and the back-edge fix)
 

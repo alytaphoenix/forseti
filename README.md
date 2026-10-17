@@ -122,12 +122,13 @@ Phase 6 additions:
   stream + blocked alerts; herdr sidebar projection; ttt status-bar badge
   (`crew demo 2/3 !`); monitor meta tab (`tab` key) with per-node cost/ctx.
 - **Model routing**: `routes:` + `route:` attach agents to a Switchyard
-  stage_router pool (efficient=halogen, capable=glm) — per-call model choice,
-  edges stay deterministic (`examples/crew-routed.yaml`). When an upstream is
-  down, Switchyard falls back to the other tier, so routed crews survive
-  outages that kill direct-model crews.
+  stage_router pool (efficient=beam-free, capable=longcat-2.5-preview-free —
+  two free OpenCode Go ids) — per-call model choice, edges stay deterministic
+  (`examples/crew-routed.yaml`). When an upstream is down, Switchyard falls back
+  to the other tier, so routed crews survive outages that kill direct-model
+  crews.
 - **Outage override**: `--model <p/m>` / `FORSETI_CREW_MODEL` swaps direct-model
-  nodes for one run without editing the halogen-pinned files.
+  nodes for one run without editing the pinned crew files.
 
 `blocked` agents surface in the TUI and are never auto-answered; teardown
 closes only the tab the run created. Example: planner → coder pipeline that
@@ -159,15 +160,15 @@ multi-agent runner, the Phase 6 observability/sandbox/routing layer
 ttt bridge, switchyard routing), and the lazygit git surface (pane app +
 back-dispatch loop). See the [plan](docs/implementation-plan.md) for the test
 matrix. Gates: `scripts/smoke.sh` (IDE loop) +
-`scripts/crew-smoke.sh` (checked crew in a sandbox session on the free halogen
+`scripts/crew-smoke.sh` (checked crew in a sandbox session on a free OpenCode Go
 model), both green.
 
 ## Model setup
 
 pi's provider/auth is your own (`/login` inside pi). This repo pins pi's default
-model via `.pi/settings.json` (OpenCode Go `glm-5.3-flash` at author time) and works
-with any provider pi speaks. Templates: `herdr-plugin` needs herdr ≥ 0.7.0,
-`ttt-plugin` needs ttt ≥ 1.6.0 running with `--listen`.
+model via `.pi/settings.json` (OpenCode Go `beam-free`, a zero-cost id, at author
+time) and works with any provider pi speaks. Templates: `herdr-plugin` needs
+herdr ≥ 0.7.0, `ttt-plugin` needs ttt ≥ 1.6.0 running with `--listen`.
 
 ## Known constraints (v1, by design)
 

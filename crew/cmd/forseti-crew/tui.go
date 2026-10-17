@@ -469,7 +469,7 @@ func (m *model) startAgentForm() {
 	ti.Placeholder = "planner"
 	ti.Focus()
 	ti2 := textinput.New()
-	ti2.Placeholder = "halogen/halogen-qwen3.8-flash-next (or leave blank for route)"
+	ti2.Placeholder = "opencode-go/beam-free (or leave blank for route)"
 	ti3 := textinput.New()
 	ti3.Placeholder = "Plan the task. Output a numbered plan."
 	ti4 := textinput.New()
@@ -527,9 +527,9 @@ func (m *model) startRouteForm() {
 	ti.Placeholder = "auto-pool"
 	ti.Focus()
 	ti2 := textinput.New()
-	ti2.Placeholder = "efficient: halogen/halogen-qwen3.8-flash-next"
+	ti2.Placeholder = "efficient: opencode-go/beam-free"
 	ti3 := textinput.New()
-	ti3.Placeholder = "capable: opencode-go/glm-5.3-flash"
+	ti3.Placeholder = "capable: opencode-go/longcat-2.5-preview-free"
 	ti4 := textinput.New()
 	ti4.Placeholder = "picker: efficient_first | capable_first"
 	ti5 := textinput.New()

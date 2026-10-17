@@ -88,7 +88,7 @@ type Agent struct {
 	Name  string   `yaml:"name"`
 	Kind  string   `yaml:"kind,omitempty"`  // currently only "pi"
 	Role  string   `yaml:"role,omitempty"`  // archetype from the role library (P19A)
-	Model string   `yaml:"model,omitempty"` // e.g. halogen/halogen-qwen3.8-flash-next
+	Model string   `yaml:"model,omitempty"` // e.g. opencode-go/beam-free
 	Route string   `yaml:"route,omitempty"` // switchyard route id (mutually exclusive with Model)
 	Args  []string `yaml:"args,omitempty"`  // extra pi argv (appended after --model)
 	// Watch lists artifact types this node reacts to; Writes names the type its

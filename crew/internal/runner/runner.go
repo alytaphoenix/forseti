@@ -965,13 +965,20 @@ func (r *Run) watchLoop(ctx context.Context, c *herdrd.Client, w schema.Watcher)
 // emit → checksFailedCount).
 func (r *Run) runDueChecks(c *herdrd.Client) {
 	for i, ch := range r.Crew.Checks {
-		key := fmt.Sprintf("check:%d", i)
 		r.mu.Lock()
-		doneKey := r.checksDone[key]
 		var status string
+		visits := 0
 		if st := r.Nodes[ch.After]; st != nil {
 			status = st.Status
+			visits = st.Visits
 		}
+		// P19 follow-up: the done-flag is keyed on the after-node's VISIT, so a
+		// re-dispatched node (loop body, executor fix round) re-runs its
+		// declared checks instead of proving the first iteration forever. A
+		// later PASS also clears the failure marker, so the exit code reflects
+		// the LATEST iteration rather than any past one.
+		key := fmt.Sprintf("check:%d#%d", i, visits)
+		doneKey := r.checksDone[key]
 		r.mu.Unlock()
 		if doneKey {
 			continue
@@ -997,12 +1004,15 @@ func (r *Run) runDueChecks(c *herdrd.Client) {
 		}
 		pass, tail := runCheck(ch.Run, r.effectiveCwd)
 		ev := Event{Type: "check_pass", Node: ch.Name}
-		if !pass {
+		r.mu.Lock()
+		if pass {
+			// clear a previous iteration's failure: the latest evidence wins
+			delete(r.checksDone, ch.Name+"_failed")
+		} else {
 			ev.Type = "check_fail"
-			r.mu.Lock()
 			r.checksDone[ch.Name+"_failed"] = true
-			r.mu.Unlock()
 		}
+		r.mu.Unlock()
 		ev.Info = strings.TrimSpace(tail)
 		r.emit(ev)
 	}
@@ -1333,13 +1343,15 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		r.fail(a.Name, fmt.Sprintf("agent.read: %v", err))
 		return
 	}
-	// LAN-box empty-content guard (6A-3): the pane grew almost nothing →
-	// re-prompt once (S15 quirk: empty content on small max_tokens).
-	// P13 BUG-23: box-only — the guard's false positives re-prompted every
-	// short-prompt/short-answer node on healthy models (double cost).
+	// Reasoning-model empty-content guard (6A-3): the pane grew almost nothing
+	// → re-prompt once (S15 quirk: empty content on small max_tokens, because
+	// the whole budget went to reasoning). P13 BUG-23: keep it off healthy
+	// non-reasoning models — the guard's false positives re-prompted every
+	// short-prompt/short-answer node (double cost).
 	// 2026-10-05: the llama-swap box rebranded halogen→valhalla, same quirk.
-	if (strings.Contains(resolved, "halogen") || strings.Contains(resolved, "valhalla")) &&
-		paneDelta(baseline, text) < 150 && retries == 0 {
+	// 2026-10-17: OpenCode Go's free ids (beam-free, longcat-2.5-preview-free)
+	// are reasoning models with the same failure mode, so they are covered too.
+	if emptySettleProne(resolved) && paneDelta(baseline, text) < 150 && retries == 0 {
 		r.mu.Lock()
 		st.Retries++
 		r.mu.Unlock()
@@ -1414,6 +1426,20 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 // settle grows the pane by the echo alone.
 func paneDelta(baseline, after string) int {
 	return len(strings.TrimSpace(after)) - len(strings.TrimSpace(baseline))
+}
+
+// emptySettleProne reports whether a resolved provider/model can settle with
+// empty content when the whole token budget is spent on reasoning. The
+// llama-swap LAN box (halogen→valhalla) does this on small max_tokens (S15),
+// and so do OpenCode Go's free reasoning ids; all other providers skip the
+// retry so a healthy short answer is never paid for twice.
+func emptySettleProne(resolved string) bool {
+	for _, m := range []string{"halogen", "valhalla", "beam-free", "longcat"} {
+		if strings.Contains(resolved, m) {
+			return true
+		}
+	}
+	return false
 }
 
 var (

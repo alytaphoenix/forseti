@@ -12,6 +12,10 @@
 #                artifact type; {{ artifact "type" }} renders the value.
 #   * verdicts:  a reviewer's output MUST end with a VERDICT line; `verdict:`
 #                edges loop only on the negative label (bounded by max_visits).
+#   * criteria:  `params.criteria` is the acceptance standard the verdict is
+#                judged against. Without it a reviewer can always find an
+#                objection, so a bounded loop exhausts its revisions and skips
+#                every downstream stage (observed live — docs/spikes.md S33c).
 #
 # Run:  forseti-crew validate -f crew/examples/crew-sop.yaml
 #       forseti-crew run -f crew/examples/crew-sop.yaml    # needs herdr
@@ -25,14 +29,15 @@
 #
 #   forseti-crew run -f crew/examples/crew-sop.yaml --worktree sop-demo
 #
-# The valhalla box is the free/test provider (AGENTS.md). Override every direct
-# model node with: FORSETI_CREW_MODEL=valhalla/valhalla-flash-next
+# The live/test provider is now OpenCode Go's free tier (beam-free) — the LAN
+# box is reserved for clustering work and the paid Go ids are unfunded.
+# Override every direct model node with: FORSETI_CREW_MODEL=opencode-go/beam-free
 name: crew-sop
 
 # tiers: role archetypes name a class, never a model id (model ids churn).
 models:
-  efficient: valhalla/valhalla-flash-next
-  capable: valhalla/valhalla-flash-next
+  efficient: opencode-go/beam-free
+  capable: opencode-go/beam-free
 
 # archetypes: built-ins (planner, researcher, engineer, reviewer,
 # security_reviewer, adversarial_reviewer, judge, verifier) are always
@@ -41,7 +46,7 @@ roles:
   - name: architect
     profile: Architect
     goal: decide the smallest design that satisfies the request
-    constraints: no code — choose, and say what you rejected and why
+    constraints: no code — choose, and say what you rejected and why; the whole design fits in 10 lines
     tier: capable
     writes: design
     instruction: "Write the design: the decision, the shape of the change, and the risks."
@@ -59,6 +64,7 @@ agents:
       containing exactly the line `sop pipeline works`.
 
       Plan the change: the file to add and the check that proves it.
+      At most 4 short lines — no restated context.
       Plan only — do not create the file; the implementer is who edits.
 
   # watches `plan` → the edge plan→design is derived from the artifact types
@@ -66,13 +72,19 @@ agents:
     role: architect
     watch: [plan]
     prompt: |-
-      Turn this plan into a concrete design.
+      Turn this plan into a concrete design. Keep it under 10 lines and stop.
 
       {{ artifact "plan" }}
 
   # the implementer is synthesized by the executor pattern below, which
   # implements the design it watches.
 patterns:
+  # `criteria:` is the acceptance standard the verdict is judged against. It is
+  # what makes a verdict gate converge: a reviewer briefed only to "list
+  # defects" can always find one, so a bounded loop would exhaust its revisions
+  # and skip every downstream stage (observed live). State what "done" means and
+  # what is out of scope, and the gate decides instead of the model's mood.
+  #
   # 1. plain reviewer loop over the design: an LBTM verdict loops the architect
   #    (bounded), an LGTM verdict continues into the security review.
   - id: rev
@@ -81,6 +93,11 @@ patterns:
     params:
       max_revisions: 2
       then: sec
+      criteria: >-
+        The design must state (a) the file to add — SOP_DEMO.md at the
+        repository root — and (b) its exact content: the single line
+        `sop pipeline works`. That one-line addition is the entire change, so
+        scope, style, tooling, testing and process suggestions are out of scope.
 
   # 2. security review of the design: a security-lensed reviewer; FAIL loops
   #    back to the architect, PASS continues to the adversarial panel.
@@ -91,6 +108,10 @@ patterns:
       max_revisions: 2
       lenses: ["injection", "secrets and credentials", "authorization", "data exposure"]
       then: adv
+      criteria: >-
+        The change adds one static markdown file and touches no input, network,
+        credential, authorization or data path. There is no security-relevant
+        surface here, so a lens with nothing to say is a PASS for that lens.
 
   # 3. adversarial panel: three independent critics, one per lens, fan into a
   #    judge; the judge's REVISE verdict loops the architect (bounded), ACCEPT
@@ -103,6 +124,10 @@ patterns:
       max_rounds: 2
       lenses: ["correctness", "failure modes and edge cases", "cost and complexity"]
       then: run
+      criteria: >-
+        The design must be a one-line file addition that satisfies the request;
+        objections about scope, style, tooling or future work are out of scope.
+        Attack only what would stop this change from working.
 
   # 4. executor: implement from the design, verify by running the checks; a
   #    FAIL verdict loops the implementer (bounded), PASS is the end of the SOP.

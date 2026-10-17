@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# crew-smoke.sh — Phase 6 gate: check-node crew run in a sandbox session on halogen.
-# The harness proves itself: assertions live in the crew file (6A-1), the run is
-# hermetic (6A-2 --session sandbox), and the model is the free LAN model (6A-3).
+# crew-smoke.sh — Phase 6 gate: check-node crew run in a sandbox session on the
+# free OpenCode Go model. The harness proves itself: assertions live in the crew
+# file (6A-1), the run is hermetic (6A-2 --session sandbox), and the model is a
+# free (zero-cost) provider id (6A-3), so the gate needs no LAN box.
 # P11 extension: a second, PHASED crew proves the strict barrier — the build
 # phase may only dispatch after the research phase fully settles (phase events
 # in the run log are the evidence).
-# Requires: herdr server running, pi configured (halogen reachable), crew built.
+# Requires: herdr server running, pi configured (the free Go ids reachable), crew built.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,12 +43,14 @@ done
 grep -q 'ENTRY' "$SOPEXPLAIN" || { echo "crew-smoke: FAIL — SOP graph has no entry node"; exit 1; }
 grep -q 'verdict:lbtm' "$SOPEXPLAIN" || { echo "crew-smoke: FAIL — reviewer loop has no verdict gate"; exit 1; }
 
-# Model override (outage): FORSETI_CREW_MODEL swaps direct-model nodes without
-# touching the pinned crew files. Status 2026-10-05: the LAN box rebranded
-# halogen→valhalla and opencode-go is out of funds, so the working gate value is
-#   FORSETI_CREW_MODEL=valhalla/valhalla-flash-next
+# Model: the crew files pin opencode-go/beam-free, a FREE OpenCode Go id
+# (zero cost, no LAN box). FORSETI_CREW_MODEL swaps every direct-model node for
+# one run without editing the pinned files (route nodes keep their pools) — use
+# it to ride out a provider outage or to pin a different free id:
+#   FORSETI_CREW_MODEL=opencode-go/longcat-2.5-preview-free bash scripts/crew-smoke.sh
+export FORSETI_CREW_MODEL="${FORSETI_CREW_MODEL:-opencode-go/beam-free}"
 echo "crew-smoke: running checked crew headless in sandbox session (a few minutes)…"
-echo "crew-smoke: model: ${FORSETI_CREW_MODEL:-halogen (pinned in crew file)}"
+echo "crew-smoke: model: $FORSETI_CREW_MODEL"
 rm -f "$PROBE"
 if ! "$BIN" run --headless -f "$CREWFILE" --session sandbox > "$EVENTS" 2>&1; then
   # P13 hardening: surface WHY, not just the raw tail — failure events first

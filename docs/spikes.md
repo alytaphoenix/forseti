@@ -1012,3 +1012,77 @@ Three more live-run findings, same session:
   the node names). Recovery: `herdr session stop <name> && herdr session
   delete <name>` (the runner re-bootstraps the session) plus `git worktree
   remove --force <path>` and `git branch -D <branch>`.
+
+## S33 — OpenCode Go's free tier as the test provider (2026-10-17) ✅ resolved (live)
+
+The LAN box is reserved for the user's clustering work and the paid OpenCode Go
+ids are unfunded, so the test path moved to the Go plan's **free** ids.
+
+- **Endpoint gates**: `https://opencode.ai/zen/go/v1` (OpenAI-completions)
+  **requires an `x-opencode-session` header** — without it every request 400s
+  `{"type":"MissingSessionID"}`. pi emits it natively (provider-attribution),
+  so only hand-rolled probes must add it. A raw `curl` needs
+  `-H "x-opencode-session: <uuid>"` *and* the bearer key, or the error is
+  indistinguishable from a bad model id.
+- **`GET /models` lists 37 ids**, but availability ≠ authorization: the paid
+  ids (`glm-5.3-flash`, `space-bunny`, …) all returned
+  **402 `Insufficient account funds`**, `big-pickle` returned 400
+  `Model is unavailable`, and the contributor ids 400'd as well.
+- **Two ids are genuinely free and live-verified**:
+  `beam-free` and `longcat-2.5-preview-free` (chat 200; tool-calling 200 with a
+  proper `tool_calls` payload; `max_tokens: 64000` accepted; `beam-free` took a
+  ~180k-token prompt). Both are **reasoning** models (`reasoning_content` in
+  the response, and `content: null` with `finish_reason: "length"` when
+  `max_tokens` is small — the S15 empty-content failure mode, on a *hosted*
+  model).
+- A probe also saw a transient `429 Endpoint is unavailable` on the longcat id
+  — free routes are rate-limited; the runner's one-shot empty-settle re-prompt
+  absorbs a single empty settle, and `FORSETI_CREW_MODEL` stays the escape
+  hatch.
+- **Consequences in the repo**: example crews and the smoke gate pin
+  `opencode-go/beam-free` (routed examples use `longcat-2.5-preview-free` as
+  the capable tier, so the routing demo still shows a per-tier choice);
+  `runner.emptySettleProne` now covers `halogen|valhalla|beam-free|longcat`
+  (reasoning models with the S15 quirk) instead of the LAN box alone; the live
+  switchyard gate dials `beam-free`. Live proof: `scripts/crew-smoke.sh` PASSes
+  with **no env override** (checked + phased crews, every `node_start`
+  `"model":"opencode-go/beam-free"`).
+
+## S33b — checks re-run per visit (2026-10-17) ✅ resolved (unit)
+
+P13 keyed a check's done-flag on the check index (`check:<i>`), so a declared
+`checks:` entry ran on its after-node's **first** settle only: an executor
+`max_fixes` round could never clear a failure, and a later PASS was invisible
+to the exit code (the documented P19 "known limitation").
+
+Fix: the flag is keyed on the after-node's **visit**
+(`check:<i>#<visits>`), and a passing re-run **deletes** the
+`"<name>_failed"` marker, so the exit code reflects the latest iteration. Same
+visit re-checks stay no-ops (idempotent), which keeps the old behavior for
+acyclic crews (`visits == 1`). `runner_test.go:
+TestChecksRerunWhenAfterNodeIsRevisited` covers missing-artifact → fail, same
+visit → no-op, fix round → pass + marker cleared.
+
+## S33c — a verdict gate needs acceptance criteria (2026-10-17) ✅ resolved (live)
+
+First live SOP run on the free model: the reviewer loop **never** passed.
+`design` (16k chars) → `rev-reviewer` `VERDICT: LBTM`; after the bounded
+revision (`design` 30k chars) → `LBTM` again → the `verdict:lgtm` edge to the
+security stage skipped → every downstream stage skipped. Nothing was wrong with
+the engine: the generated reviewer brief is "list defects worst-first, each with
+what is wrong, why it matters and the fix" — a reasoning model can always find
+*an* objection (scope, naming, tooling, "consider adding tests"), so a
+criteria-less verdict gate is a coin flip that biases to LBTM. This is a
+property of the SOP, not of the model: MetaGPT's own SOPs carry acceptance
+criteria (WriteReview judges against the requirement; the QA Engineer judges
+against the test run).
+
+Resolution: `params.criteria` on every verdict-gated pattern
+(`reviewer_loop`, `security_review`, `adversarial_panel`) renders as
+"Acceptance criteria — judge against these and nothing else; an objection that
+does not violate them is out of scope: …" in the reviewer / critic / judge
+prompts. The crew file owns the standard; the model only decides against it.
+`crew-sop.yaml` states the one-line criteria for the design review, the
+no-security-surface criterion for the security lens, and the
+objections-out-of-scope criterion for the panel —
+`pattern_test.go: TestPatternCriteriaLandsInEveryVerdictPrompt`.

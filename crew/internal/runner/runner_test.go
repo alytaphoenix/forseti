@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"forseti/crew/internal/schema"
@@ -406,4 +408,93 @@ edges:
 	if !r.nodeReady(es, "a") {
 		t.Fatal("a must be ready from its gate edge x→a")
 	}
+}
+
+func TestEmptySettleProneMatchesFreeReasoningIds(t *testing.T) {
+	// 6A-3 / P13 BUG-23: the guard must cover the LAN box (halogen→valhalla)
+	// and OpenCode Go's free reasoning ids, and must NOT fire on healthy
+	// providers (a false positive double-pays every short answer).
+	on := []string{
+		"halogen/halogen-qwen3.8-flash-next",
+		"valhalla/valhalla-flash-next",
+		"opencode-go/beam-free",
+		"opencode-go/longcat-2.5-preview-free",
+	}
+	off := []string{
+		"opencode-go/glm-5.3-flash",
+		"anthropic/claude-opus-4-7",
+		"switchyard/forseti-auto",
+		"",
+	}
+	for _, m := range on {
+		if !emptySettleProne(m) {
+			t.Errorf("emptySettleProne(%q) = false, want true", m)
+		}
+	}
+	for _, m := range off {
+		if emptySettleProne(m) {
+			t.Errorf("emptySettleProne(%q) = true, want false", m)
+		}
+	}
+}
+
+func TestChecksRerunWhenAfterNodeIsRevisited(t *testing.T) {
+	// P19 follow-up: declared checks used to run on the after-node's FIRST
+	// settle only, so an executor fix round could never clear a failure and a
+	// passing later iteration was invisible. Checks are keyed by visit now.
+	dir := t.TempDir()
+	crew, err := schema.Load([]byte(`
+name: check-revisit
+agents:
+  - {name: impl, prompt: write the artifact}
+checks:
+  - {name: artifact, after: impl, run: "test -f ARTIFACT.md"}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var evs []Event
+	r := New(crew, Options{Cwd: dir, OnEvent: func(e Event) { evs = append(evs, e) }})
+
+	// iteration 1: the implementer settled but the artifact is missing → fail.
+	r.mu.Lock()
+	r.Nodes["impl"].Status = "done"
+	r.Nodes["impl"].Visits = 1
+	r.mu.Unlock()
+	r.runDueChecks(nil)
+	if !r.checksDone["artifact_failed"] {
+		t.Fatal("visit 1: missing artifact must mark the check failed")
+	}
+	// a re-check at the SAME visit is a no-op (the flag is per visit)
+	r.runDueChecks(nil)
+	if n := len(r.eventsOfType(evs, "check_fail")); n != 1 {
+		t.Fatalf("same visit re-checked: %d check_fail events, want 1", n)
+	}
+
+	// the fix round creates the artifact; the node settles again (visit 2)
+	if err := os.WriteFile(filepath.Join(dir, "ARTIFACT.md"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	r.Nodes["impl"].Visits = 2
+	r.Nodes["impl"].Status = "done"
+	r.mu.Unlock()
+	r.runDueChecks(nil)
+	if r.checksDone["artifact_failed"] {
+		t.Fatal("visit 2 pass must clear the failure marker (exit code follows the latest iteration)")
+	}
+	if n := len(r.eventsOfType(evs, "check_pass")); n != 1 {
+		t.Fatalf("visit 2: %d check_pass events, want 1", n)
+	}
+}
+
+// eventsOfType is a tiny read-only helper for assertions on captured events.
+func (r *Run) eventsOfType(evs []Event, typ string) []Event {
+	var out []Event
+	for _, e := range evs {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
 }

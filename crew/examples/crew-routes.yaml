@@ -6,8 +6,9 @@
 # types or keys needs no forseti change — the router's own `--dry-run` is the
 # authority on semantics (see docs/spikes.md S30).
 #
-# Provider status (2026-10-05): valhalla is the free LAN model; the opencode-go
-# key is out of funds (402), so the capable tier is declared but not gated on.
+# Provider status (2026-10-17): both tiers are FREE OpenCode Go ids
+# (beam-free = efficient, longcat-2.5-preview-free = capable), so every route
+# below is materializable with no LAN box and no funded paid key.
 name: demo-route-surface
 
 routes:
@@ -15,22 +16,22 @@ routes:
   # unconfident turns. The classic auto-pool.
   - id: auto-pool
     type: stage_router
-    efficient: valhalla/valhalla-flash-next
-    capable: opencode-go/glm-5.3-flash
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
     picker: efficient_first
     confidence: 0.5
 
   # auto: switchyard's stage_router preset (efficient_first + 0.5), no knobs.
   - id: preset-pool
     type: auto
-    efficient: valhalla/valhalla-flash-next
-    capable: opencode-go/glm-5.3-flash
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
 
   # plan_execute: plans on capable, hands off to efficient after the first edit.
   - id: plan-then-edit
     type: plan_execute
-    capable: opencode-go/glm-5.3-flash
-    efficient: valhalla/valhalla-flash-next
+    capable: opencode-go/longcat-2.5-preview-free
+    efficient: opencode-go/beam-free
     options:
       handoff_prompt: "Continue implementing the plan; make the edit."
 
@@ -38,9 +39,9 @@ routes:
   # dedicated `<id>_judge` target and wires classifier_target to it.
   - id: judged-pool
     type: llm_classifier
-    efficient: valhalla/valhalla-flash-next
-    capable: opencode-go/glm-5.3-flash
-    judge: valhalla/valhalla-flash-next
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
+    judge: opencode-go/beam-free
     options:
       base_threshold: 0.5
       threshold_step: 0.1
@@ -50,8 +51,8 @@ routes:
   # targets it names are forseti's generated `<route>_eff` / `<route>_cap`.
   - id: advised-pool
     type: advisor
-    efficient: valhalla/valhalla-flash-next
-    capable: opencode-go/glm-5.3-flash
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
     options:
       executor_target: advised-pool_eff
       advisor_target: advised-pool_cap

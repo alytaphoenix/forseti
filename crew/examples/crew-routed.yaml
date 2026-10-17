@@ -1,8 +1,8 @@
 # forseti crew — routed pool demo (6D/18C): agents share switchyard routes.
 #
-# Provider status (2026-10-05): the LAN box rebranded halogen→valhalla and the
-# opencode-go key returns 402 Insufficient funds, so no gate can lean on the
-# capable tier. The crew file stays pinned; the free path is the efficient tier.
+# Provider status (2026-10-17): both tiers point at FREE OpenCode Go ids
+# (beam-free, longcat-2.5-preview-free) — the paid ids are unfunded and the LAN
+# box is reserved for clustering work, so this crew runs with no LAN dependency.
 #
 # Requires: a router (built `host/` → forseti-host, or cargo-installed
 # switchyard-server), and pi provider entries (materialized by the runner).
@@ -11,8 +11,8 @@ name: demo-routed-pool
 routes:
   - id: auto-pool
     type: stage_router
-    efficient: valhalla/valhalla-flash-next
-    capable: opencode-go/glm-5.3-flash
+    efficient: opencode-go/beam-free
+    capable: opencode-go/longcat-2.5-preview-free
     picker: efficient_first
     confidence: 0.5
 

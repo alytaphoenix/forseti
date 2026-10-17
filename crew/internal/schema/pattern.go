@@ -117,13 +117,25 @@ func (p *Pattern) list(key string, def []string) []string {
 	return out
 }
 
+// criteriaNote renders params.criteria as a prompt section, or "" when unset.
+// A verdict gate can always invent a defect unless the SOP states what "done"
+// means, so every pattern that gates on a verdict accepts `criteria:` and the
+// crew file — not the model's mood — owns the standard (S33c).
+func (p *Pattern) criteriaNote() string {
+	c := p.str("criteria", "")
+	if c == "" {
+		return ""
+	}
+	return "\n\nAcceptance criteria — judge against these and nothing else; an objection that does not violate them is out of scope: " + c
+}
+
 // validateParams rejects unknown keys and out-of-range dials, so a typo cannot
 // silently produce a pattern with default behaviour.
 func (p *Pattern) validateParams() error {
 	allowed := map[string]map[string]bool{
-		PatternReviewerLoop:     {"max_revisions": true, "then": true, "subject_label": true},
-		PatternSecurityReview:   {"max_revisions": true, "then": true, "lenses": true},
-		PatternAdversarialPanel: {"critics": true, "lenses": true, "max_rounds": true, "then": true},
+		PatternReviewerLoop:     {"max_revisions": true, "then": true, "subject_label": true, "criteria": true},
+		PatternSecurityReview:   {"max_revisions": true, "then": true, "lenses": true, "criteria": true},
+		PatternAdversarialPanel: {"critics": true, "lenses": true, "max_rounds": true, "then": true, "criteria": true},
 		PatternExecutor:         {"max_fixes": true, "then": true, "checks": true, "task": true},
 	}[p.Pattern]
 	for k := range p.Params {
@@ -302,11 +314,11 @@ func (c *Crew) instantiateReviewLoop(p *Pattern, part, good, bad string) ([]stri
 	if !ok {
 		reviewer = p.ID + "-" + part
 		role := "reviewer"
-		instruction := "List defects worst-first, each with what is wrong, why it matters and the fix. If nothing material is wrong, say so. End with"
+		instruction := "List defects worst-first, each with what is wrong, why it matters and the fix. If nothing material is wrong, say so."
 		subject := p.Subject
 		if p.Pattern == PatternSecurityReview {
 			role = "security_reviewer"
-			instruction = "Work the lens list in order (" + strings.Join(p.list("lenses", []string{"injection", "secrets", "authz", "data exposure", "unsafe defaults"}), ", ") + "). Each finding: trigger, impact, severity, fix. End with"
+			instruction = "Work the lens list in order (" + strings.Join(p.list("lenses", []string{"injection", "secrets", "authz", "data exposure", "unsafe defaults"}), ", ") + "). Each finding: trigger, impact, severity, fix. If a lens is not applicable to this work, say so."
 			subject = p.Subject
 		}
 		// subject_label names the artifact in prose ("the design"); the default
@@ -315,8 +327,8 @@ func (c *Crew) instantiateReviewLoop(p *Pattern, part, good, bad string) ([]stri
 		if l := strings.TrimSpace(p.str("subject_label", "")); l != "" {
 			what = l
 		}
-		prompt := fmt.Sprintf("The work under review is %s:\n\n{{ node %q }}\n\n%s `%s` or `%s`.",
-			what, subject, instruction, good, bad)
+		prompt := fmt.Sprintf("The work under review is %s:\n\n{{ node %q }}\n\n%s%s\n\nEnd with `%s` or `%s`.",
+			what, subject, instruction, p.criteriaNote(), good, bad)
 		if err := c.addAgent(Agent{
 			Name:   reviewer,
 			Role:   role,
@@ -354,8 +366,8 @@ func (c *Crew) instantiatePanel(p *Pattern) ([]string, error) {
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("%s-critic-%d", p.ID, i+1)
 		critics = append(critics, name)
-		prompt := fmt.Sprintf("Artifact under attack (output of node %q):\n\n{{ node %q }}\n\nYour lens: %s\n\nAttack it from this lens only: give the strongest concrete counter-case (a scenario where it fails) and how you would demonstrate the failure. End with `VERDICT: ACCEPT` or `VERDICT: REVISE`.",
-			p.Subject, p.Subject, lenses[i])
+		prompt := fmt.Sprintf("Artifact under attack (output of node %q):\n\n{{ node %q }}\n\nYour lens: %s%s\n\nAttack it from this lens only: give the strongest concrete counter-case (a scenario where it fails) and how you would demonstrate the failure. End with `VERDICT: ACCEPT` or `VERDICT: REVISE`.",
+			p.Subject, p.Subject, lenses[i], p.criteriaNote())
 		if err := c.addAgent(Agent{Name: name, Role: "adversarial_reviewer", Prompt: prompt}); err != nil {
 			return nil, err
 		}
@@ -366,8 +378,8 @@ func (c *Crew) instantiatePanel(p *Pattern) ([]string, error) {
 	judge := p.Members["judge"]
 	if judge == "" {
 		judge = p.ID + "-judge"
-		judgePrompt := fmt.Sprintf("Artifact under judgement (output of node %q):\n\n{{ node %q }}\n\nYou sit on a panel. Each position below is one critic's independent attack, from a different lens:\n\n%sDecide. For each position state whether it survives scrutiny and why. Name the findings you accept (they must be addressed before shipping) and the ones you reject (with the reason). End with exactly one line: `VERDICT: ACCEPT` (ship as-is) or `VERDICT: REVISE` (the accepted findings must be addressed).",
-			p.Subject, p.Subject, joinBindings(critics))
+		judgePrompt := fmt.Sprintf("Artifact under judgement (output of node %q):\n\n{{ node %q }}\n\nYou sit on a panel. Each position below is one critic's independent attack, from a different lens:\n\n%s%s\n\nDecide. For each position state whether it survives scrutiny and why. Name the findings you accept (they must be addressed before shipping) and the ones you reject (with the reason). End with exactly one line: `VERDICT: ACCEPT` (ship as-is) or `VERDICT: REVISE` (the accepted findings must be addressed).",
+			p.Subject, p.Subject, joinBindings(critics), p.criteriaNote())
 		if err := c.addAgent(Agent{Name: judge, Role: "judge", Prompt: judgePrompt}); err != nil {
 			return nil, err
 		}

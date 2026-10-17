@@ -405,3 +405,50 @@ func TestPatternSubjectLabel(t *testing.T) {
 		t.Fatalf("default phrasing leaked: %q", rev.Prompt)
 	}
 }
+
+func TestPatternCriteriaInVerdictPrompts(t *testing.T) {
+	// A verdict gate with no acceptance criteria is a reviewer that can always
+	// invent a defect — the bounded loop then exhausts its revisions and skips
+	// every downstream stage (observed live). params.criteria: puts the
+	// standard in the crew file, and it must reach every node that decides.
+	c := baseCrew()
+	c.Patterns = []Pattern{
+		{ID: "rev", Pattern: PatternReviewerLoop, Subject: "draft",
+			Params: map[string]any{"criteria": "CRIT-REVIEW", "then": "sec"}},
+		{ID: "sec", Pattern: PatternSecurityReview, Subject: "draft",
+			Params: map[string]any{"criteria": "CRIT-SEC"}},
+		{ID: "adv", Pattern: PatternAdversarialPanel, Subject: "draft",
+			Params: map[string]any{"critics": 2, "criteria": "CRIT-PANEL"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	names := crewNames(c)
+	for _, tc := range []struct{ node, want string }{
+		{"rev-reviewer", "CRIT-REV"},
+		{"sec-security_reviewer", "CRIT-SEC"},
+		{"adv-critic-1", "CRIT-PANEL"},
+		{"adv-critic-2", "CRIT-PANEL"},
+		{"adv-judge", "CRIT-PANEL"},
+	} {
+		a := names[tc.node]
+		if a == nil {
+			t.Fatalf("node %s missing", tc.node)
+		}
+		if !strings.Contains(a.Prompt, tc.want) {
+			t.Errorf("%s: prompt lacks %q:\n%s", tc.node, tc.want, a.Prompt)
+		}
+		if !strings.Contains(a.Prompt, "Acceptance criteria") {
+			t.Errorf("%s: prompt lacks the criteria heading", tc.node)
+		}
+	}
+	// the negative case: no criteria → no heading invented
+	c2 := baseCrew()
+	c2.Patterns = []Pattern{{ID: "rev", Pattern: PatternReviewerLoop, Subject: "draft"}}
+	if err := c2.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if p := crewNames(c2)["rev-reviewer"].Prompt; strings.Contains(p, "Acceptance criteria") {
+		t.Errorf("criteria heading invented without params.criteria:\n%s", p)
+	}
+}

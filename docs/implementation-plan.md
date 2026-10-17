@@ -14,7 +14,7 @@ least once, else it stays marked unverified.
 | Repo skeleton (`herdr-plugin/`, `ttt-plugin/`, `pi-extension/`, `scripts/`, README) | ✅ done |
 | S3: verify `agent start --kind pi -- <args>` passthrough — `scripts/spike-s3.sh` | ✅ done — args pass verbatim; non-interactive args time out on readiness wait (expected); see `docs/spikes.md` |
 | S4 (optional): hunt a CLI/event surface for status push instead of polling | ⬜ deferred → **partially answered 2026-09-30**: socket-level subscribe/read surface found (spikes.md S4); framing folded into Phase 5 spike S6 |
-| Test stack: pi wired to OpenCode Go `glm-5.3-flash` (default) + halogen; both live-verified | ✅ done |
+| Test stack: pi wired to OpenCode Go `glm-5.3-flash` (default) + halogen; both live-verified — **refreshed 2026-10-17: free Go ids `beam-free`/`longcat-2.5-preview-free`** | ✅ done |
 | `git init` + GitHub remote `alytaphoenix/forseti` (public since 2026-09-30) | ✅ done |
 
 Exit criteria: skeleton in place; S3 answered; AGENTS.md current.
@@ -220,6 +220,29 @@ surfaced, never auto-answered; one active run in v1; no LLM-routed edges in v1.
   and is a **flaky LAN dependency** — it went down mid-session (connection
   refused); pi then stalls prompts (herdr `agent_prompt_stalled` after its 5 s
   detection window). E2E failing on a down LAN server is by design.
+
+## Test infrastructure (updated 2026-10-17): free OpenCode Go ids
+
+- **Model discipline**: E2E/test crews and the smoke gate now pin
+  **`opencode-go/beam-free`** — a zero-cost OpenCode Go id. The LAN box
+  (halogen→valhalla) is reserved for the user's clustering work, and the paid
+  Go ids (`glm-5.3-flash`, `space-bunny`) return **402 Insufficient funds**.
+  `crew/examples/*.yaml` all pin the free id; `.pi/settings.json` follows.
+- The free tier is the whole test path now: `beam-free` (efficient) +
+  `longcat-2.5-preview-free` (capable) in the routed examples, so a routing
+  demo needs neither the LAN box nor a funded key. Both ids are verified live
+  (chat, tool-calling, a 64k `max_tokens` request, a ~180k-token input).
+- **Reasoning-model empty-content guard**: both free ids reason, so they share
+  the halogen/valhalla failure mode (a small `max_tokens` is spent on reasoning
+  and the answer comes back empty). The one-shot empty-settle retry is now
+  keyed by `runner.emptySettleProne` (halogen|valhalla|beam-free|longcat)
+  instead of the LAN box alone; healthy non-reasoning providers still skip it,
+  so a short answer is never paid for twice.
+  `runner_test.go: TestEmptySettleProneMatchesFreeReasoningIds`.
+- Free ids are rate-limited/occasionally unavailable (a 429 `Endpoint is
+  unavailable` was observed mid-probe); the one-shot re-prompt absorbs a
+  transient empty settle, and `FORSETI_CREW_MODEL` stays the per-run escape
+  hatch (`--model` for the CLI).
 - Go API key stored at `~/.config/forseti/opencode-go.key` (0600, outside the repo);
   referenced by pi via `!cat` in `~/.pi/agent/models.json` (the switchyard
   proxy resolves the same way when generating its TOML — keys pass through env
@@ -544,6 +567,12 @@ is byte-for-byte the old behavior.
   ENTRY nodes (every critic of a panel, the implementer of an executor), so the
   next stage's entries all wait on the verdict edge (fan-in AND); `members:`
   reuses declared nodes; a synthesized node joins its subject's phase.
+- `criteria:` (added 2026-10-17 after a live non-convergence, S33c): every
+  verdict-gated pattern accepts an acceptance standard that renders into the
+  reviewer/critic/judge prompt. Without it a generic "list defects" reviewer
+  always finds something, the bounded loop exhausts its revisions, and the
+  positive-verdict edge skips every downstream stage — observed live, twice.
+  `pattern_test.go: TestPatternCriteriaLandsInEveryVerdictPrompt`.
 - `validate -explain` renders the resolved graph; `crew/examples/crew-sop.yaml`
   exercises all four patterns end to end (validate-clean). The example names a
   concrete request on its entry node — a `plan` node with no prompt leaves the
@@ -553,11 +582,12 @@ is byte-for-byte the old behavior.
   repo root, or the worktree checkout with `--worktree`), which is where checks
   run; `go build ./...` could only FAIL there (this repo's Go module is
   `crew/`).
-- Known limitation (pre-existing P13 semantics, unchanged): a node's declared
-  `checks:` run on its FIRST settle only (`checksDone` is per-check, not per
-  visit), so an executor loop's shell checks do not re-run after a fix —
-  the verifier node is what re-establishes PASS/FAIL per iteration. Re-running
-  checks per visit is a future item.
+- **Checks re-run per visit** (2026-10-17, fixed the P13-era first-settle-only
+  behavior): the done-flag is keyed on the after-node's visit
+  (`check:<i>#<visits>`) and a passing re-run clears the `_failed` marker, so an
+  executor `max_fixes` round re-runs its shell checks and the exit code follows
+  the LATEST iteration. Same-visit re-checks stay no-ops.
+  `runner_test.go: TestChecksRerunWhenAfterNodeIsRevisited`.
 
 ### 19D — typed pub/sub ✅
 - `watch:`/`writes:` derive `producer → watcher` edges; `{{ artifact "type" }}`
@@ -615,13 +645,17 @@ is byte-for-byte the old behavior.
   patterns expand, one ENTRY node, verdict gates present.
 - `scripts/crew-smoke.sh` asserts the expansion (no herdr needed for the
   validate leg).
-- Live gate: `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next bash
-  scripts/crew-smoke.sh` — PASS (2026-10-16): checked crew in the sandbox
-  session (bus files, watch match, probe), phased crew barrier held. Run logs
+- Live gate (**2026-10-17, current model**): `bash scripts/crew-smoke.sh` — PASS
+  with NO override, on `opencode-go/beam-free` (the script defaults
+  `FORSETI_CREW_MODEL` to the free id). Checked crew in the sandbox session
+  (bus files, watch match, probe) + phased crew barrier held; run logs
+  `.forseti/runs/202610-111455…demo-planner-builder-checked.jsonl` and
+  `…111506…demo-phased-planner-builder.jsonl`, every `node_start`
+  `"model":"opencode-go/beam-free"`. Zero cost, no LAN dependency.
+- Live gate (2026-10-16, LAN era): `FORSETI_CREW_MODEL=valhalla/valhalla-flash-next
+  bash scripts/crew-smoke.sh` — PASS; run logs
   `.forseti/runs/202610-090415…demo-planner-builder-checked.jsonl` and
-  `…090554…demo-phased-planner-builder.jsonl`; every `node_start` carries
-  `"model":"valhalla/valhalla-flash-next"` (the crew files pin halogen; the
-  override is what ran).
+  `…090554…demo-phased-planner-builder.jsonl`.
 - SOP live run — **PARTIAL** (2026-10-16):
   `forseti-crew run -f crew/examples/crew-sop.yaml --session sandbox
   --worktree sop-demo`. Verified live: the graph expanded at run time (10

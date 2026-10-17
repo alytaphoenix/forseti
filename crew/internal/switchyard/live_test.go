@@ -18,15 +18,15 @@ import (
 // own Start() path must resolve a router, render the TOML, dry-run it, bind,
 // answer /health, serve a routed completion, and append a routing record.
 //
-// It dials the free LAN model, which is flaky by design of the box, so it is
-// opt-in: FORSETI_LIVE_ROUTER=1. Unit tests must stay offline.
+// It dials OpenCode Go's free tier, which is cheap but rate-limited by the
+// provider, so it is opt-in: FORSETI_LIVE_ROUTER=1. Unit tests must stay offline.
 func TestLiveRouterServesRoute(t *testing.T) {
 	if os.Getenv("FORSETI_LIVE_ROUTER") != "1" {
 		t.Skip("set FORSETI_LIVE_ROUTER=1 to run the live routed request")
 	}
-	// valhalla is the free LAN model; both tiers point at it so the gate needs
-	// no paid key (opencode-go returns 402 since 2026-10-05).
-	const model = "valhalla/valhalla-flash-next"
+	// beam-free is a FREE OpenCode Go id (zero cost, no funded paid key and no
+	// LAN box needed); both tiers point at it so the gate is provider-cheap.
+	const model = "opencode-go/beam-free"
 	dir := t.TempDir()
 	p, err := Start([]schema.Route{{
 		ID: "live-pool", Type: "stage_router", Efficient: model, Capable: model,

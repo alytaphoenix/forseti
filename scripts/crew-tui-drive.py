@@ -55,8 +55,8 @@ def main():
     WORK = tempfile.mkdtemp(prefix="p11-tui-")
     crew_yaml = f"""name: p11-tui-test
 agents:
-  - {{name: planner, model: halogen/halogen-qwen3.8-flash-next, prompt: plan}}
-  - {{name: coder, model: halogen/halogen-qwen3.8-flash-next, prompt: "do {{{{ .planner }}}}"}}
+  - {{name: planner, model: opencode-go/beam-free, prompt: plan}}
+  - {{name: coder, model: opencode-go/beam-free, prompt: "do {{{{ .planner }}}}"}}
 edges:
   - {{from: planner, to: coder}}
 """

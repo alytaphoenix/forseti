@@ -1,6 +1,6 @@
 {
   "defaultProvider": "opencode-go",
-  "defaultModel": "glm-5.3-flash",
+  "defaultModel": "beam-free",
   "defaultThinkingLevel": "low",
   "skills": ["../skills"]
 }
