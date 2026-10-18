@@ -1365,3 +1365,41 @@ a real `UnixListener` in the temp dir with scripted replies (§Gates 18D-3).
   `agent_prompt_wait` as ONE request (a separate wait races the pre-prompt idle),
   and the scheduler's `until` lists must carry **both** `done` and `idle`
   (unfocused agents settle `done`).
+
+## S38 — "put pi inside ttt": what the ttt source actually offers (2026-10-18) ✅ resolved (source: ttt v1.6.0)
+
+Direction (user): pi should run **inside ttt**, not beside it. Checked against
+ttt v1.6.0 source (`~/go/pkg/mod/github.com/eugenioenko/ttt@v1.6.0`, re-fetched
+with `go mod download github.com/eugenioenko/ttt@v1.6.0` — the module cache had
+been cleaned, so the AGENTS.md "only local source" claim needed restoring).
+
+- **The PTY/VT layer already exists and is complete for hosting pi.**
+  `internal/terminal/terminal.go` wraps `gitpod-io/xterm-go` (VT screen,
+  scrollback, OSC 133 prompt markers) around `aymanbagabas/go-pty`, and exposes
+  `WriteString`, `RawTail` (64 KB), `Resize`, `ScrollbackLen`, `Close`,
+  `OnUpdate`, `OnExit`. Nothing at the emulator level needs writing.
+- **The gap is argv + a handle, not rendering.** `terminal.New(shell, cols,…)`
+  execs `pt.Command(shell)` — ONE program name, no args. The single spawn site is
+  `internal/app/app.go:316` `App.SpawnTerminal()`, using
+  `Settings.Terminal.Shell` (a single string) and registering
+  `TerminalTab{ID: "terminal-<n>", Term, Widget}`; there is no per-tab command,
+  no label, and **no terminal surface in `internal/plugin`** (grep: zero hits).
+- So `shell: "pi"` already gives a pi tab (all tabs; PATH must resolve pi), while
+  `pi --model …` and "spawn a *named* pi tab from Lua, send it text, read its
+  tail, focus it" are the three increments in `docs/ttt-terminal-api.md`
+  (A argv → B per-tab spec/label → C `ttt.terminal.*` behind a permission).
+- **`OnOpenFile(path, line, col)`** on the terminal widget routes to
+  `EditorGroup.OpenFile` + `GoToLineCol` — a program printing `file:line` gets
+  click-to-open. That is the concrete win of pi-in-ttt over a herdr pane.
+- **The load-bearing gap is agent status.** herdr recognizes `kind: pi` natively
+  and streams `pane_agent_status_changed` (`idle|working|blocked|done`), which is
+  what `agent.prompt.wait` gates on. ttt has no agent concept — OSC 133 prompt
+  marks are a *shell* integration and pi is not a shell. A ttt-hosted pi needs a
+  status channel; the low-risk one is the forseti pi extension writing
+  `.forseti/agent-status/<name>.json` (inside the ttt plugin's fs sandbox, and
+  readable by herdr runs too).
+- **Does not change the fork decision**: fork neither wholesale; patch ttt
+  additively (A+B+C are upstreamable and A/B are tiny). `docs/ttt-terminal-api.md`
+  now carries the plan. For the Rust engine it means 18D-5 should put pane
+  operations behind a `PaneBackend` trait (herdr first, `TttBackend` later)
+  rather than hardcoding the herdr client as the Go runner does.

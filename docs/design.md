@@ -1191,3 +1191,29 @@ Downside, by design: the source is what is saved, so a hand-written edge that
 happens to duplicate a derived one is fine (the derivation skips existing
 edges), while a node that a pattern would have synthesized must come from the
 pattern — a declared node with the pattern's name is a load error.
+## Direction: pi inside ttt (2026-10-18, user decision)
+
+The shell question is settled: **ttt is the environment, pi is a program inside
+it.** `ttt-terminal-api.md` carries the plan; S38 records the source facts.
+
+- **Not a fork of pi.** pi's extension surface is a UI *overlay* on the
+  transcript (S36), not a buffer/keymap owner; re-authoring ttt's editor inside a
+  fast-moving 1.0.x extension is the expensive path.
+- **ttt already has the host primitives**: `internal/terminal` is a PTY +
+  xterm-go screen with `WriteString`/`RawTail`/`OnExit`/`OnUpdate`, and the
+  terminal widget's `OnOpenFile(path,line,col)` already routes to the editor —
+  so pi output's `file:line` becomes click-to-open. The missing pieces are argv
+  (one program name today), a per-tab spec/label, and a plugin handle
+  (`ttt.terminal.spawn/send/read/focus` behind a permission) — all additive.
+- **The gap that matters is status, not rendering.** Crew scheduling gates on
+  herdr's native `kind: pi` status stream (`idle|working|blocked|done`); ttt has
+  no agent concept and OSC 133 prompt marks are shell-only. A ttt-hosted pi
+  needs a status side channel — the forseti pi extension writing
+  `.forseti/agent-status/<name>.json` is the low-risk one.
+- **Complementary, not a replacement.** herdr stays the machine-side
+  multiplexer for headless crew fan-out (N panes/tabs/worktrees); ttt stays the
+  human's window (editor, keymap, crew switcher/badge, click-to-open).
+- **Engine consequence**: the Go runner hardcodes `*herdrd.Client`; the Rust
+  runner (18D-5) puts `spawn/prompt/prompt_wait/read/focus/status` behind a
+  `PaneBackend` trait (herdr impl first) so a `TttBackend` can follow without a
+  second runner.
