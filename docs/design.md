@@ -59,6 +59,7 @@ this doc records design decisions only.
 | `herdr-plugin/` | `herdr-plugin.toml` `[[actions]]` | sh | Bring-up: dedicated tab, ttt `--listen` in root pane, pi via `agent start --kind pi` |
 | `ttt-plugin/` | `plugin.ttt.json` + Lua (`ttt.register`) | Lua 5.1 | Editor side: ask, status sidebar, `Forseti: Jump` |
 | `pi-extension/` | default factory module (`ExtensionAPI`) | TypeScript | Agent side: `/ttt` commands, follow mode, `/herd` reads |
+| `hashtext-plugin/` | default factory module (`ExtensionAPI`) | TypeScript | Agent side: fingerprinted cold context cache — `/hash` commands, `hashtext_*` tools, per-turn reconstruction |
 
 Dev/install (all verified): herdr `herdr plugin link <abs path>` (later `herdr plugin
 install`); ttt copy/symlink into `~/.config/ttt/plugins/forseti/` + approval dialog +
@@ -1217,3 +1218,57 @@ it.** `ttt-terminal-api.md` carries the plan; S38 records the source facts.
   runner (18D-5) puts `spawn/prompt/prompt_wait/read/focus/status` behind a
   `PaneBackend` trait (herdr impl first) so a `TttBackend` can follow without a
   second runner.
+
+## hashtext — fingerprinted context cache (2026-10-18)
+
+The agent's context window is split into two tiers:
+
+- **hot** — the normal conversation: system prompt, recent turns, and whatever
+  is currently expanded;
+- **cold** — blocks stored compressed in a content-addressed store and
+  addressed by the sha256 fingerprint of their plaintext.
+
+The model sees a cheap index (one line per block: `ref | name | description |
+bytes→stored`) in the system prompt, and declares what it needs. No embeddings,
+no silent retrieval, no lossy summarizer in the loop. Identity is the content
+hash, so dedup is automatic and invalidation is free: changed text is a new
+block.
+
+### Mechanics — where the swap happens
+
+Expanding a block does **not** paste its contents into the transcript. The
+`hashtext_expand` tool returns a compact marker
+(`[hashtext <ref> resident]`); the extension's `context` handler — pi fires it
+before every LLM call — replaces resident markers with decompressed text and
+returns a fresh message array. pi clones the transcript per call, so the
+markers survive on disk and are re-substituted every turn. Evicting drops the
+ref from residency: the marker stays as a one-line stub and the content stops
+being re-materialized. The bulk is therefore *reconstructed per turn* instead
+of being retained in history.
+
+Expansions are injected in residency order while they fit under 90% of the
+context window (`ctx.getContextUsage()`); blocks that do not fit are withheld
+with a visible marker note instead of overflowing the request. Residency is
+persisted per session under `<store>/resident/<session>.json`, so `/reload` and
+resume keep the hot set.
+
+### The store (sibling repo)
+
+`hashtext` (Python, `~/repos/hashtext`) owns the cache format: content-addressed
+blobs under `blocks/<sha[:2]>/<sha>.zst` + human-readable `.json` metadata,
+atomic writes, fingerprint-verified reads (corruption fails loudly), prefix refs
+with collision escalation, and a JSON CLI (`put`/`list`/`show`/`rm`/`stats`).
+The plugin shells out to it and keeps an in-memory decompression cache — safe
+because a block's identity is its content hash. A missing CLI degrades to "no
+cold tier": tools return the install hint once, turns keep working.
+
+### Boundary
+
+- The Python package is agent-agnostic (its README documents the library API);
+  the pi plugin is the reference consumer.
+- Not in v1: automatic archiving of old tool results into cold blocks (the
+  bigger shrinking win, and the riskier rewrite), lossy codecs, semantic
+  retrieval triggers.
+- Gate: `bun run scripts/hashtext-smoke.ts` — real store + real CLI, stubbed pi
+  API, covering index → expand → reconstruct → evict → budget withhold →
+  dedup → `/hash evict`, plus the missing-CLI phase.

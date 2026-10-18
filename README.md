@@ -36,6 +36,7 @@ herdr plugin action invoke forseti.open
 | [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi`; `forseti.git` opens/focuses a lazygit pane on the current checkout |
 | [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
 | [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
+| [`hashtext-plugin/`](hashtext-plugin/README.md) | pi TS extension | `/hash list·put·expand·evict·stats·clear`, model tools (`hashtext_put`, `hashtext_list`, `hashtext_expand`, `hashtext_evict`): fingerprinted cold context cache — blocks stored compressed by fingerprint, reconstructed into context per turn |
 | [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing |
 
 Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-plan.md) ·
@@ -197,6 +198,10 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
 # or: pi install git:github.com/alytaphoenix/forseti@v0.1.0
 
+# hashtext pi extension (fingerprinted context cache)
+#   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .
+cp hashtext-plugin/index.ts ~/.pi/agent/extensions/hashtext.ts
+
 # ttt plugin (Lua, once permissions are approved)
 cp -R ttt-plugin ~/.config/ttt/plugins/forseti
 ```
@@ -211,8 +216,10 @@ review, tools, context injection, the evergreen vault, the crew
 multi-agent runner, the Phase 6 observability/sandbox/routing layer
 (check nodes, sandbox sessions, disposable worktrees, live status stream,
 ttt bridge, switchyard routing), and the lazygit git surface (pane app +
-back-dispatch loop). See the [plan](docs/implementation-plan.md) for the test
-matrix. Gates: `scripts/smoke.sh` (IDE loop) +
+back-dispatch loop). The hashtext fingerprinted context cache (Phase 20) ships
+as a second agent-side component: cold blocks reconstructed per turn, gate
+`bun run scripts/hashtext-smoke.ts`. See the [plan](docs/implementation-plan.md)
+for the test matrix. Gates: `scripts/smoke.sh` (IDE loop) +
 `scripts/crew-smoke.sh` (checked crew in a sandbox session on a free OpenCode Go
 model), both green.
 
