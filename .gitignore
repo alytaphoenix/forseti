@@ -10,6 +10,9 @@
 .pi/sessions/
 crew/bin/
 
+# crew-run probe artifact (created and removed by every crew/smoke run)
+HELLO_CREW.md
+
 # rust host
 host/target/
 .forseti/
