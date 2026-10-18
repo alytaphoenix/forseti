@@ -62,22 +62,19 @@ pub trait PaneBackend {
     fn status(&mut self, target: &str) -> Result<String, String>;
 }
 
-/// The herdr implementation (18D-3).
-pub struct HerdrBackend {
-    client: herdr::Client,
+/// The herdr implementation (18D-3), borrowed: the orchestrator owns the client
+/// (one-shot calls dial per request, so sharing costs nothing).
+pub struct HerdrBackend<'a> {
+    client: &'a herdr::Client,
 }
 
-impl HerdrBackend {
-    pub fn new(client: herdr::Client) -> Self {
+impl<'a> HerdrBackend<'a> {
+    pub fn new(client: &'a herdr::Client) -> Self {
         HerdrBackend { client }
     }
-
-    pub fn client(&self) -> &herdr::Client {
-        &self.client
-    }
 }
 
-impl PaneBackend for HerdrBackend {
+impl PaneBackend for HerdrBackend<'_> {
     fn read(&mut self, target: &str, source: &str, lines: i64) -> Result<String, String> {
         self.client
             .agent_read(target, source, lines)
@@ -144,6 +141,33 @@ pub trait MemoryLink {
         source: &str,
         tags: &[String],
     ) -> Result<i64, String>;
+}
+
+/// A memory link that recalls nothing and writes nothing — the default until the
+/// HTTP client lands (18D-5c). Keeps the node path unconditional.
+pub struct NoMemory;
+
+impl MemoryLink for NoMemory {
+    fn recall(
+        &mut self,
+        _query: &str,
+        _node: &str,
+        _k: i64,
+        _namespace: &str,
+    ) -> Result<Vec<MemoryRow>, String> {
+        Ok(Vec::new())
+    }
+
+    fn write(
+        &mut self,
+        _text: &str,
+        _namespace: &str,
+        _run_id: &str,
+        _source: &str,
+        _tags: &[String],
+    ) -> Result<i64, String> {
+        Ok(0)
+    }
 }
 
 // MARK: pure helpers (Go runner_test.go ports)
@@ -221,15 +245,15 @@ fn format_memory_rows(rows: &[MemoryRow]) -> String {
 
 /// Runs one node on a backend, mutating the scheduler's node state and queueing
 /// events. Structurally the Go `runNode`; the split is the backend trait.
-pub struct NodeExecutor<'a, B: PaneBackend> {
+pub struct NodeExecutor<'a, 'b, B: PaneBackend> {
     pub sched: &'a mut Scheduler,
-    pub roles: &'a RolePack,
-    pub backend: &'a mut B,
-    pub memory: Option<&'a mut dyn MemoryLink>,
+    pub roles: &'b RolePack,
+    pub backend: &'b mut B,
+    pub memory: &'b mut dyn MemoryLink,
     pub timeout: Duration,
 }
 
-impl<'a, B: PaneBackend> NodeExecutor<'a, B> {
+impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
     /// Executes `node` once. Status/retries/events are the result; a failure is
     /// recorded on the node and emitted, exactly as in Go (no Err to thread).
     pub fn run(&mut self, node: &str) {
@@ -467,10 +491,7 @@ impl<'a, B: PaneBackend> NodeExecutor<'a, B> {
     /// service yields ""; the prompt is never changed by a failure.
     fn recall(&mut self, node: &str, query: &str) -> String {
         let ns = self.sched.crew().memory_ns();
-        let Some(link) = self.memory.as_mut() else {
-            return String::new();
-        };
-        let rec = link.recall(query, node, 3, &ns);
+        let rec = self.memory.recall(query, node, 3, &ns);
         match rec {
             Err(e) => {
                 self.sched.emit(
@@ -517,10 +538,7 @@ impl<'a, B: PaneBackend> NodeExecutor<'a, B> {
             agent.memory_query.clone()
         };
         let ns = self.sched.crew().memory_ns();
-        let Some(link) = self.memory.as_mut() else {
-            return prompt;
-        };
-        let rec = link.recall(&q, &agent.name, k, &ns);
+        let rec = self.memory.recall(&q, &agent.name, k, &ns);
         match rec {
             Err(e) => {
                 self.sched.emit(
@@ -582,10 +600,7 @@ impl<'a, B: PaneBackend> NodeExecutor<'a, B> {
         let run_id = self.sched.run_id().to_string();
         let source = format!("node:{}", agent.name);
         let tags = vec!["crew".to_string(), self.sched.crew().name.clone()];
-        let Some(link) = self.memory.as_mut() else {
-            return;
-        };
-        let written = link.write(&text, &ns, &run_id, &source, &tags);
+        let written = self.memory.write(&text, &ns, &run_id, &source, &tags);
         match written {
             Ok(id) => self.sched.emit(
                 Event::on_node("memory_write", &agent.name)
@@ -817,7 +832,7 @@ edges:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: Some(&mut mem),
+            memory: &mut mem,
             timeout: Duration::from_secs(5),
         };
         ex.run("impl");
@@ -866,7 +881,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("a");
@@ -898,7 +913,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("a");
@@ -926,7 +941,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("a");
@@ -950,7 +965,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("rev-reviewer");
@@ -985,7 +1000,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("a");
@@ -1022,7 +1037,7 @@ phases:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: None,
+            memory: &mut NoMemory,
             timeout: Duration::from_secs(5),
         };
         ex.run("p");
@@ -1092,7 +1107,7 @@ agents:
             sched: &mut sched,
             roles: &roles,
             backend: &mut backend,
-            memory: Some(&mut mem),
+            memory: &mut mem,
             timeout: Duration::from_secs(5),
         };
         ex.run("a");

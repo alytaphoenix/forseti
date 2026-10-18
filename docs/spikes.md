@@ -1439,3 +1439,76 @@ question was what pins the Rust renderer.
 - **Not covered**: `{{ if }}`/`{{ range }}`/pipelines/`printf` — no crew uses
   them, and a crew that did would fail loudly at dispatch (a clear
   `unsupported template action` error) rather than render wrongly.
+
+## S40 — the Rust engine's first live crew runs (Phase 18D-5b, 2026-10-18) ✅ resolved (live)
+
+18D-5b staged the herdr orchestration, so the Rust engine finally ran crews
+itself. Four live runs against the `sandbox` session on the free
+`opencode-go/beam-free`, plus the unit gate.
+
+- **Base crew (`crew.yaml`, planner→builder, `when: re:PLAN_READY`)** — exit 0,
+  `done=2 cost=$0.0000`, twice. Startup (tab + 2 agents + readiness) ~8 s;
+  planner ~2.5 s, builder ~4 s. The builder actually created `HELLO_CREW.md`
+  ("crew pipeline works"), so the templated plan + the regex gate carried real
+  work end to end.
+- **Checked crew (`crew-checks.yaml`)** — both shell checks ran after their
+  after-nodes and passed (`check_pass` ×2), exit 0. Checks write to the crew cwd
+  and the exit code follows them.
+- **Failing-check crew** — `check_fail` (`exit status 1 |`) and
+  `checks_failed=1` in the summary, **exit 1**. The CI contract holds on the
+  Rust path.
+- **Teardown is clean**: after each run `herdr agent list` in the session was
+  empty and `tab list` showed only the pre-existing tab, and
+  `.forseti/crew-status.json` was gone. The bridge is live-only (the Go engine
+  removes it in teardown too), so its contract is pinned by a unit test rather
+  than a post-run file.
+- **Bug found by the first live run**: the CLI's success path fell through the
+  `crew run` match arm into the router path, printing `--config is required` and
+  exiting 2 *after* a successful run. Fixed with an explicit exit; the second
+  run returned 0. A reminder that the orchestration has no oracle — live runs
+  are the only way to see this class of bug.
+- **Sequential waves are shipping behavior for now.** The Go engine dispatches a
+  wave's nodes in goroutines; `drive()` runs them one at a time. The edge pass
+  still happens only after the whole wave, so no node can observe a same-wave
+  sibling: results, checks and the event set are the same, and only wall-clock
+  and interleaving differ (3 critics would be ~3× slower). Parallelism needs the
+  scheduler shared-borrow refactor and a thread-safe backend; it is deferred to
+  the TUI stage where shared state exists anyway.
+- **`agent.read` includes pi's TUI chrome** (the startup box/status line) in the
+  captured output, exactly as the Go engine's `bus/*.md` files do — not a port
+  bug, and the reason the verdict parser reads the LAST `VERDICT:` line.
+- **Deferred and loud**: `routes:` and `--worktree` return an error naming
+  18D-5c instead of running without them; memory is a `NoMemory` link; the live
+  status stream (`pane_agent_status_changed`) and `watch:` waiters are UI-only
+  and land with the TUI.
+
+## S41 — pi context hot-swap: `context` + `before_agent_start` sections (2026-10-18) ✅ resolved (source + gate)
+
+hashtext needs the opposite of usual context injection: bulk must be *present
+at request time* but *absent from the transcript*. Two pi surfaces make that
+possible; both were read in source and pinned by `scripts/hashtext-smoke.ts`.
+
+- **`pi.on("context", h)` runs before every LLM call** (`runner.js` →
+  `emitContext`). The handler receives `messages` **without system messages**
+  and may return `{messages}`. Emit wraps each call in `structuredClone`, so a
+  handler's output is per-request only — the on-disk transcript is untouched.
+  That is the property the whole design rests on: a marker restored on every
+  call, never consumed. Returning `undefined` means "unchanged"; returning the
+  same array reference also counts as unchanged (`sameMessages` compares refs).
+  pi restores system messages itself (`restoreSystemMessages`) — a handler
+  cannot drop the prompt by returning visible messages only.
+- **`pi.on("before_agent_start", h)` is the sanctioned prompt-section hook.**
+  The bundled MCP extension mutates `event.systemPromptOptions.sections[tag]`
+  in place and returns nothing; pi re-renders `buildSystemPrompt` from the
+  mutated options (each handler's `systemPrompt` getter renders current
+  options). So the cold index is one XML-wrapped section, deleted when empty.
+- **`ctx.getContextUsage()`** returns `{tokens, contextWindow, percent}`
+  (`tokens` null right after compaction/before a response), which the plugin
+  uses for the 90% injection ceiling.
+- **Tool results are the right place for markers.** The expand tool returns the
+  marker itself; the next `context` call substitutes it. Nothing else is needed
+  — no `context_edit` entries, no transcript rewrite.
+- **Not verifiable from types alone**: whether a later handler's full
+  `systemPrompt` override would drop an earlier section mutation (it would —
+  `forceSystemPrompt` wins). The plugin only mutates sections, so ordering with
+  the MCP extension is safe.

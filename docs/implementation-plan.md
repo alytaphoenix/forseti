@@ -668,9 +668,35 @@ them exactly (stdout, stderr, exit code).
      **inside ttt** (S38) — the trait exists so `TttBackend` slots in behind the
      same runner, which is the one place the Rust port improves on the Go
      engine's hardcoded `*herdrd.Client`.
-   - **18D-5b (next)** — the herdr orchestration: `Run` loop, crew tab/pane
-     layout, agent start + readiness, the events subscription, run log JSONL,
-     crew-status bridge, teardown.
+   - **18D-5b ✅ done (2026-10-18)** — the herdr orchestration,
+     `host/src/crew/run.rs`: `Run::new` → `Run::run` (connect → crew tab → agent
+     start + readiness → wave loop → teardown) plus `forseti-host crew run`.
+     - Staged 1:1: the right-leaning BSP spine of N panes (`layout.apply`, S8),
+       one agent per pane started up front with `--model` from the route/model
+       (+ the outage override, route pools untouched), readiness on
+       `agent.wait [idle,done,blocked]` with the `agent_pane_busy` retry,
+       the Agents-sidebar projection (`agent.view.set`), the JSONL run log at
+       `.forseti/runs/<YYYYMM-HHMMSS.micro>-<crew>.jsonl`, the
+       `.forseti/crew-status.json` bridge (crew/total/done/running/blocked/
+       failed/checks_failed/phase/tab/nodes — the P15 ttt contract), the
+       session-scoped connect (`socket_path_for(session)`), teardown (view
+       clear → tab close unless kept → bridge removal), the Go summary line
+       (`done=N blocked=N … checks_failed=N cost=$…`), and the exit-code rule
+       (any failed/blocked node or a failing check ⇒ 1).
+     - `drive()` is backend-parameterized: the wave loop (phase starts → per-node
+       `NodeExecutor` → due checks → edge settle → phase progress) runs over any
+       `PaneBackend`, so whole crews are tested without herdr.
+     - Deliberate 18D-5b boundaries, each failing loudly or documented: a crew
+       with `routes:` or `--worktree` errors (`18D-5c`); memory auto-recall/write
+       uses a `NoMemory` link; the live status stream and `watch:` waiters are
+       UI-only and land with the TUI (18D-6); waves run **sequentially** (the
+       edge pass still waits for the whole wave, so results and the event set
+       match the Go engine — only wall-clock and interleaving differ).
+     - **Live (2026-10-18, sandbox session, `opencode-go/beam-free`)**: the base
+       crew ran to `done=2 cost=$0.0000` exit 0 (twice), `crew-checks.yaml` ran
+       with both shell checks passing (exit 0), and a deliberately failing check
+       produced `check_fail` + `checks_failed=1` + exit 1. Teardown left no
+       agents and no extra tabs in the session.
    - **18D-5c** — memory HTTP client + laya + switchyard proxy + worktree +
      review pane.
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
@@ -730,6 +756,22 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-5b)
+- `cargo test` in `host/` — **90 unit tests + 1 oracle** (+1 ignored): 7 new
+  `run` tests drive whole crews over a fake backend (linear crew to done, the
+  verdict loop re-arming to LGTM, a phase barrier delaying the next wave, a
+  blocked run keeping the tab, the Go-shaped summary, the run-log name shape,
+  `routes:` failing loudly) and pin the two file contracts (JSONL flush +
+  drain; `crew-status.json` fields `crew/total/done/running/blocked/failed/
+  checks_failed/phase/tab/nodes` with an RFC3339 `ts`).
+- **Live** (2026-10-18, `sandbox` session, `opencode-go/beam-free`, free):
+  `crew.yaml` → `done=2 cost=$0.0000`, exit 0 (twice);
+  `crew-checks.yaml` → both checks `check_pass`, exit 0; a failing-check crew →
+  `check_fail` + `checks_failed=1`, exit 1. After every run the session had no
+  agents and no extra tabs, and the status bridge was removed.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; oracle `--check`
+  still 85 records (the runner is not a validate surface).
 
 ### Gates (18D-5a)
 - `cargo test` in `host/` — **81 unit tests + 1 oracle** (+1 ignored): 22 new
@@ -960,3 +1002,30 @@ is byte-for-byte the old behavior.
   before any model call on the S32 template bug and on a 4-minute node timeout
   (`agent.prompt+wait: timed out waiting for agent status`), which is how the
   example's missing request and its unrunnable `checks:` were found.
+
+## Phase 20 — hashtext: fingerprinted context cache — ✅ **complete** (2026-10-18)
+
+Sibling repo `alytaphoenix/hashtext` (Python store + CLI) + the pi component in
+this repo. The window splits into a hot conversation and cold blocks addressed
+by the sha256 of their plaintext; the model sees a one-line-per-block index and
+declares expansions, which are reconstructed per turn by the pi `context` hook.
+
+| Task | Status |
+|---|---|
+| `hashtext` core: `BlockStore` (content addressing, dedup, atomic writes, fingerprint-verified reads, prefix refs), `ZstdCodec`, `BlockCodec`/`TokenCounter` protocols, index rendering | ✅ done — 52 pytest tests |
+| `hashtext` CLI: `put`/`list`/`show`/`rm`/`stats`, all `--json` (object payloads), raw single-ref `show` | ✅ done — contract tests |
+| `hashtext-plugin/index.ts`: cold index in the system prompt (`before_agent_start` sections), `hashtext_put/list/expand/evict`, `/hash list·put·expand·evict·stats·clear` | ✅ done |
+| Per-turn reconstruction: resident markers → decompressed text via the `context` event; transcript untouched (markers persist) | ✅ done — smoke asserts the transcript is never mutated |
+| Residency: ordered set, persisted per session (`<store>/resident/<session>.json`), reload/resume safe, never overwritten when the CLI is unreachable | ✅ done |
+| Budget guard: inject in residency order under 90% of the window; withheld blocks get a visible note | ✅ done — smoke |
+| Missing-CLI degradation: no turn ever fails; install hint once; index section omitted | ✅ done — smoke phase 2 |
+| Gate `scripts/hashtext-smoke.ts` (bun, real CLI + scratch store, stubbed pi API) | ✅ PASS — 15 real-store assertions + 4 missing-CLI |
+| Docs: README component + install, design section, AGENTS surfaces (S41) | ✅ done |
+
+Deferred to v2: automatic archiving of large old tool results into cold blocks
+at `turn_end` via `context_edit` (the bigger shrinking win and the riskier
+rewrite), lossy `BlockCodec`s, semantic-retrieval fallback triggers.
+
+Exit criteria met: a block can be stored, indexed, expanded, reconstructed,
+evicted and re-expanded across calls with the transcript carrying only a
+one-line marker; identical content dedups; a missing CLI is inert.

@@ -72,6 +72,45 @@ enum CrewCmd {
         #[arg(long)]
         explain: bool,
     },
+
+    /// Run a crew on herdr (Phase 18D-5b: herdr backend only).
+    Run {
+        /// Crew file.
+        #[arg(short = 'f', default_value = "crew.yaml")]
+        file: String,
+
+        /// Named herdr session ("" = the default session).
+        #[arg(long, default_value = "")]
+        session: String,
+
+        /// Crew tab label.
+        #[arg(long, default_value = "forseti-crew")]
+        tab: String,
+
+        /// Per-node settle timeout, minutes.
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+
+        /// Leave the crew tab open after the run.
+        #[arg(long)]
+        keep_tab: bool,
+
+        /// herdr workspace to stage the tab in ("" = the focused one).
+        #[arg(long, default_value = "")]
+        workspace: String,
+
+        /// Substitute the model of every direct-model node (outage override).
+        #[arg(long, default_value = "")]
+        model: String,
+
+        /// Pane cwd (default: the current directory).
+        #[arg(long, default_value = "")]
+        cwd: String,
+
+        /// Stream every run event as a JSON line on stdout.
+        #[arg(long)]
+        headless: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -87,6 +126,75 @@ fn main() -> anyhow::Result<()> {
                 let _ = std::io::stdout().flush();
                 let _ = std::io::stderr().flush();
                 std::process::exit(out.exit);
+            }
+            CrewCmd::Run {
+                file,
+                session,
+                tab,
+                timeout,
+                keep_tab,
+                workspace,
+                model,
+                cwd,
+                headless,
+            } => {
+                if *timeout < 1 {
+                    eprintln!("run: --timeout must be >= 1 (minutes)");
+                    std::process::exit(2);
+                }
+                let text = match std::fs::read_to_string(file) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let detail = match e.kind() {
+                            std::io::ErrorKind::NotFound => "no such file or directory".to_string(),
+                            _ => e.to_string(),
+                        };
+                        eprintln!("cannot read: open {file}: {detail}");
+                        std::process::exit(1);
+                    }
+                };
+                let crew = match forseti_host::crew::load(&text) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("INVALID: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                let cwd = if cwd.is_empty() {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                } else {
+                    cwd.clone()
+                };
+                let opts = forseti_host::crew::Options {
+                    cwd,
+                    tab_label: tab.clone(),
+                    node_timeout: std::time::Duration::from_secs(timeout * 60),
+                    keep_tab: *keep_tab,
+                    session: session.clone(),
+                    workspace_id: workspace.clone(),
+                    model_override: model.clone(),
+                    headless: *headless,
+                    ..Default::default()
+                };
+                let mut run = forseti_host::crew::Run::new(crew, opts);
+                match run.run() {
+                    Ok(out) => {
+                        if !*headless {
+                            println!("{}", out.summary);
+                        }
+                        eprintln!("run log: {}", out.log_path.display());
+                        if out.failed || out.blocked || out.checks_failed {
+                            std::process::exit(1);
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("run error: {e}");
+                        std::process::exit(1);
+                    }
+                }
             }
         }
     }

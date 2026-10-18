@@ -272,6 +272,14 @@ pub struct Options {
     /// Substitutes the model of every direct-model node during an outage; route
     /// nodes keep their switchyard pools (`--model` / `FORSETI_CREW_MODEL`).
     pub model_override: String,
+    /// herdr workspace to stage the crew tab in ("" = the focused workspace).
+    pub workspace_id: String,
+    /// Named herdr session ("" = the default session).
+    pub session: String,
+    /// Run inside a disposable worktree ("" = the main checkout). 18D-5c.
+    pub worktree_branch: String,
+    /// Stream every event as a JSON line on stdout (`--headless`).
+    pub headless: bool,
 }
 
 impl Default for Options {
@@ -284,6 +292,10 @@ impl Default for Options {
             keep_worktree: false,
             review: false,
             model_override: String::new(),
+            workspace_id: String::new(),
+            session: String::new(),
+            worktree_branch: String::new(),
+            headless: false,
         }
     }
 }
@@ -303,6 +315,8 @@ pub struct Scheduler {
     /// Stable per-run id for memory provenance (Go `.UTC()` format).
     run_id: String,
     effective_cwd: String,
+    /// The crew tab id (set by the orchestrator; "" before staging).
+    tab_id: String,
 }
 
 impl Scheduler {
@@ -352,6 +366,7 @@ impl Scheduler {
             events: Vec::new(),
             run_id: run_id_now(),
             effective_cwd,
+            tab_id: String::new(),
         }
     }
 
@@ -376,6 +391,15 @@ impl Scheduler {
 
     pub fn run_id(&self) -> &str {
         &self.run_id
+    }
+
+    /// The crew's herdr tab id ("" until the orchestrator stages the run).
+    pub fn tab_id(&self) -> &str {
+        &self.tab_id
+    }
+
+    pub fn set_tab_id(&mut self, id: impl Into<String>) {
+        self.tab_id = id.into();
     }
 
     pub fn node(&self, name: &str) -> Option<&NodeState> {
@@ -816,6 +840,11 @@ fn run_check_with_timeout(shell: &str, dir: &str, timeout: Duration) -> (bool, S
 
 // MARK: timestamps
 
+/// RFC3339 UTC with millisecond precision (the status bridge's `ts`).
+pub fn rfc3339_now() -> String {
+    now_rfc3339()
+}
+
 /// RFC3339 UTC with millisecond precision — the JSON shape of Go's
 /// `time.Time` (which the run log and status file carry).
 fn now_rfc3339() -> String {
@@ -850,7 +879,7 @@ fn utc_parts() -> (i64, u32, u32, u32, u32, u32, u32) {
 }
 
 /// Howard Hinnant's civil-from-days (days since 1970-01-01 → y/m/d).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64; // [0, 146096]

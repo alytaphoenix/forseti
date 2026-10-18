@@ -20,8 +20,12 @@
 //! * **18D-5a** — `template` (the Go `text/template` subset crews use, with the
 //!   S32 parse errors verbatim) and `runner` (the `PaneBackend` trait + herdr
 //!   impl, and the Go `runNode` path: render → prompt+settle → retry guard →
-//!   bus/artifact → events). The orchestration (tab/pane layout, subscription,
-//!   run log, teardown) is 18D-5b.
+//!   bus/artifact → events).
+//! * **18D-5b** — `run`, the orchestration: the crew tab/pane spine, agent
+//!   start + readiness, the wave loop over a `PaneBackend`, the JSONL run log,
+//!   the crew-status bridge, teardown, and `forseti-host crew run`. The live
+//!   status stream and `watch:` waiters are UI-only and land with the TUI
+//!   (18D-6).
 //!
 //! Deliberate divergences (documented, not oracle-covered): regex-engine error
 //! text (Go RE2 vs the Rust `regex` crate) and YAML parse-error text.
@@ -34,6 +38,7 @@ pub mod model;
 pub mod pattern;
 pub mod role;
 pub mod routes;
+pub mod run;
 pub mod runner;
 pub mod scheduler;
 pub mod template;
@@ -42,6 +47,8 @@ pub mod validate;
 pub use command::{Outcome, validate};
 pub use explain::explain;
 pub use model::*;
+pub use run::{Run, RunOutcome};
+pub use scheduler::Options;
 
 use regex::Regex;
 use std::sync::LazyLock;
