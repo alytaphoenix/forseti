@@ -40,6 +40,21 @@ cleaned, so AGENTS.md's "only local source" claim needed restoring).
   tab, no send, no read. The permissions machinery (`system.exec`,
   `events.editor`, …) is the model to extend.
 
+## Status: A, B and C are implemented in the fork
+
+The fork lives at **`~/repos/ttt`**, branch **`forseti/terminal-argv`**, based on
+the **v1.6.0** tag (the version the installed `~/go/bin/ttt` binary reports;
+upstream has since moved to v1.8.0, so a future rebase is expected).
+
+- **A ✅ `5fcaffc`** — `terminal.New(..., args ...string)` + `TerminalSettings.Args`.
+- **B ✅ `5fcaffc`** — `App.SpawnTerminalSpec({Shell, Args, Cwd, Label})` +
+  `TerminalTab.Label` + strip badges.
+- **C ✅ `414d130`** — the `ttt.terminal` Lua module
+  (`spawn`/`send`/`read`/`focus`/`list`) behind `terminal.control` and
+  `terminal.read`.
+
+Still to do after the fork: the pi status channel and the forseti `TttBackend`.
+
 ## The delta (three increments, smallest first)
 
 **A. argv for the terminal program.** `Terminal.Shell` → `Shell` + `ShellArgs`

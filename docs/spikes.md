@@ -1799,3 +1799,39 @@ The proxy port itself came up clean (config render → router `--dry-run` → sp
   interactive builder (crew authoring), which remains Go-only.
 - **Residual divergences (documented, not hidden)**: sequential waves (perf
   only; S40), the TUI (above), and the interactive builder.
+
+## S50 — C: the `ttt.terminal` Lua API (2026-10-18) ✅ resolved (unit; fork built)
+
+The third ttt increment (`docs/ttt-terminal-api.md`'s plan: A argv, B
+per-tab spec, C plugin API) landed in the fork at `~/repos/ttt`, branch `forseti/terminal-argv`, based on **v1.6.0**
+— the tag the installed binary reports (`go version -m ~/go/bin/ttt`), not
+upstream's v1.8.0 HEAD.
+
+- **Sandbox allowlist gotcha**: `L.PreloadModule("ttt.terminal", …)` is not
+  enough. `NewSandbox` replaces `require` with a gate over an `allowedModules`
+  map in `internal/plugin/sandbox.go`; a new module is invisible until listed
+  there, and the failure is `module "ttt.terminal" is not available` at the
+  plugin's first `require`. Every new module needs both the preload and the
+  allowlist entry.
+- **Permission split**: `terminal.control` gates spawn/send/focus,
+  `terminal.read` gates read/list. A missing grant OMITS the function (the
+  `ttt.system` idiom), so `if term.spawn then … end` is the capability check;
+  errors follow `(nil, message)`.
+- **`read` is the raw PTY tail** (agreed with the user): exact and cheap; the
+  caller strips ANSI/echo, and a decoded-screen accessor can follow later.
+  `maxBytes <= 0` returns the whole 64 KB tail.
+- **Terminal ids must be monotonic**: v1.6.0 numbers tabs by
+  `len(a.Terminals)`, so closing tab 1 of 3 and opening a new one could reuse
+  `terminal-2` while a plugin still held it. The fork numbers from an
+  `App.TerminalSeq` counter instead (existing first ids unchanged).
+- **Labels are 2 characters in the strip**: the vertical strip is 6 cells
+  (4 content), so `[pi]` fits and longer labels are truncated there; the full
+  label lives on `TerminalTab.Label` and in the `debug` dump.
+- **Upstream diff is small and separable**: A+B is one commit (`5fcaffc`,
+  8 files, +171/−11), C is another (`414d130`). Both are additive (a variadic
+  parameter, new optional fields, a new module + permission) and are plausible
+  upstream PRs.
+- **Test environment**: the fork's `internal/app` suite has pre-existing
+  failures on this box (macOS `/private/var` vs `/var`, fake-git availability,
+  plugin fs roots) — verified identical on the pristine tag by stashing the
+  diff. The touched packages (`terminal`, `config`, `ui`, `plugin`) pass.
