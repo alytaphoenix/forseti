@@ -7,7 +7,7 @@ name: demo-planner-builder-checked
 agents:
   - name: planner
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the planner in a two-agent crew. Do NOT edit any files.
       Produce a numbered plan (max 5 steps, one line each) to add a file
@@ -16,7 +16,7 @@ agents:
 
   - name: builder
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the coder in a two-agent crew. Execute this plan exactly,
       touching only what it names:

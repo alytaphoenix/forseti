@@ -16,7 +16,7 @@ facts from source-level investigation.
 
 ## pi model providers (wired & verified 2026-09-30; test path rewritten 2026-10-17)
 
-- `~/.pi/agent/models.json` defines four providers; all verified with live calls:
+- `~/.pi/agent/models.json` defines five providers; all verified with live calls:
   - `opencode-go` → `https://opencode.ai/zen/go/v1` (OpenAI-completions API;
     requires an `x-opencode-session` header or it 400s `MissingSessionID`; pi
     emits it natively). **The test provider since 2026-10-17.** The paid ids
@@ -27,6 +27,17 @@ facts from source-level investigation.
     Both reason, so both hit the empty-content quirk; the free tier is
     rate-limited (a 429 `Endpoint is unavailable` was seen). Interactive
     bring-up default: `.pi/settings.json` → `opencode-go/beam-free`, thinking `low`.
+  - `openrouter` → `https://openrouter.ai/api/v1` (OpenAI-completions), key
+    `!cat ~/.config/forseti/openrouter.key` (0600; extracted once from OpenCode's
+    credential store 2026-10-18 — never echo/commit it). The example crews pin
+    **`openrouter/free`** (a meta-router that picks an available free upstream
+    per request). **Routed crews must use OpenRouter**: OpenCode Go 400s through
+    the router because pi only emits `x-opencode-session` for opencode providers
+    (S48), and an OpenRouter route target must be written
+    `openrouter/openrouter/<id>` (a target splits at the FIRST slash).
+    The smoke gate overrides to `opencode-go/beam-free` via
+    `FORSETI_CREW_MODEL` for determinism: the free pool varies per request and
+    fixed free ids hit upstream 429s (S48).
   - `valhalla` → `http://192.168.0.142:8731/v1` (keyless OpenAI-compatible), model
     `valhalla-flash-next`. The LAN box — **reserved for the user's clustering
     work; no test gate leans on it any more.** (Older note: it emits

@@ -7,7 +7,7 @@ name: demo-worktree-review
 agents:
   - name: author
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       Create a file named WORKTREE_REVIEW.md in the repo root containing a
       short markdown checklist titled "Agent review checklist" with two items.

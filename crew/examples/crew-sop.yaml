@@ -31,13 +31,13 @@
 #
 # The live/test provider is now OpenCode Go's free tier (beam-free) — the LAN
 # box is reserved for clustering work and the paid Go ids are unfunded.
-# Override every direct model node with: FORSETI_CREW_MODEL=opencode-go/beam-free
+# Override every direct model node with: FORSETI_CREW_MODEL=openrouter/free
 name: crew-sop
 
 # tiers: role archetypes name a class, never a model id (model ids churn).
 models:
-  efficient: opencode-go/beam-free
-  capable: opencode-go/beam-free
+  efficient: openrouter/free
+  capable: openrouter/free
 
 # archetypes: built-ins (planner, researcher, engineer, reviewer,
 # security_reviewer, adversarial_reviewer, judge, verifier) are always

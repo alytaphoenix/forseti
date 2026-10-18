@@ -9,7 +9,7 @@ name: demo-phased-planner-builder
 agents:
   - name: planner
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       Produce a numbered plan (max 5 steps, one line each) to add a file
       named HELLO_CREW.md to the repo root containing the line
@@ -17,7 +17,7 @@ agents:
 
   - name: builder
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       Execute this plan exactly, touching only what it names:
 

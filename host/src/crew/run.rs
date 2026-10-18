@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 use super::herdr;
 use super::model::Crew;
 use super::model::Edge;
+use super::proxy::{self, Proxy, RoutingTailer};
 use super::role::RolePack;
 use super::runner::{HerdrBackend, MemoryLink, NoMemory, NodeExecutor, PaneBackend, truncate_utf8};
 use super::scheduler::run_check;
@@ -70,6 +71,12 @@ pub struct Run {
     worktree_ws: String,
     /// Where panes/checks/bus live (the worktree when one is created).
     effective_cwd: String,
+    /// The per-run router (crews with `routes:` only).
+    proxy: Option<Proxy>,
+    /// Removes the `switchyard` provider from pi's models.json.
+    restore_provider: Option<proxy::Restore>,
+    /// Tails the router's NDJSON into `route_decision` events.
+    tailer: Option<RoutingTailer>,
 }
 
 impl Run {
@@ -96,6 +103,9 @@ impl Run {
             opts,
             worktree_ws: String::new(),
             effective_cwd,
+            proxy: None,
+            restore_provider: None,
+            tailer: None,
         }
     }
 
@@ -109,10 +119,6 @@ impl Run {
         let client = connect(&self.opts.session)?;
         let cwd = self.opts.cwd.clone();
 
-        // 0. deferred integrations must fail loudly, never silently
-        if !self.crew.routes.is_empty() {
-            return Err("routes need the switchyard proxy (18D-5c-2b)".to_string());
-        }
         if std::env::var("FORSETI_CREW_MODEL")
             .ok()
             .as_deref()
@@ -156,6 +162,38 @@ impl Run {
             ),
         ));
         sink.flush(&mut self.sched);
+
+        // 1a. switchyard proxy (6D-1): one router per run, before any agent
+        if !self.crew.routes.is_empty() {
+            let routes = self.crew.routes.clone();
+            let routing_name = format!(
+                "{}.routing.jsonl",
+                log_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("run")
+            );
+            let p = Proxy::start(&routes, &runs, &routing_name)
+                .map_err(|e| format!("switchyard proxy: {e}"))?;
+            let ids: Vec<String> = routes.iter().map(|r| r.id.clone()).collect();
+            let restore = p
+                .materialize_provider(&ids)
+                .map_err(|e| format!("pi provider materialization: {e}"))?;
+            self.emit(Event::info(
+                "route_decision",
+                format!(
+                    "proxy on :{} (routing log {})",
+                    p.port,
+                    p.routing_log.display()
+                ),
+            ));
+            self.restore_provider = Some(restore);
+            let tailer = RoutingTailer::spawn(p.routing_log.clone());
+            sink.tail = Some(tailer.events());
+            self.tailer = Some(tailer);
+            self.proxy = Some(p);
+            sink.flush(&mut self.sched);
+        }
 
         // 1b. worktree (6A-4): a disposable checkout; panes + checks run there
         if !self.opts.worktree_branch.is_empty() {
@@ -241,7 +279,29 @@ impl Run {
         // 6. summary + teardown (blocked keeps the tab, P13 BUG-09)
         let _ = self.sched.settle_unreachable();
         self.sched.update_phase_progress();
+        // fold the router's tailed records in BEFORE the summary, so
+        // route_decision events precede run_end deterministically
+        if let Some(mut t) = self.tailer.take() {
+            t.stop();
+        }
+        sink.flush(&mut self.sched);
         let mut info = summary(&self.sched);
+        // run-level route tallies (per-node attribution is impossible in
+        // switchyard 0.2.0 — pi's session header does not attach, S15)
+        if let Some(p) = &self.proxy
+            && let Ok(st) = p.stats()
+        {
+            if let Some(tiers) = st.get("tiers").and_then(Value::as_object)
+                && !tiers.is_empty()
+            {
+                info += &format!(" | routed tiers: {}", proxy::fmt_tallies(tiers));
+            }
+            if let Some(models) = st.get("models").and_then(Value::as_object)
+                && !models.is_empty()
+            {
+                info += &format!(" | models: {}", proxy::fmt_tallies(models));
+            }
+        }
         // P7-3: end the run on a lazygit review pane of the worktree
         if self.opts.review && !self.worktree_ws.is_empty() && self.effective_cwd != self.opts.cwd {
             match open_review_pane(&client, &tab_id, &self.effective_cwd) {
@@ -313,6 +373,16 @@ impl Run {
         let keep_worktree = self.sched.opts().keep_worktree;
         let keep_tab = self.sched.opts().keep_tab;
         let _ = client.agent_view_clear(source);
+        // the router goes after the view: tailer, provider key, process
+        if let Some(mut t) = self.tailer.take() {
+            t.stop();
+        }
+        if let Some(restore) = self.restore_provider.take() {
+            restore();
+        }
+        if let Some(mut p) = self.proxy.take() {
+            p.stop();
+        }
         if !self.worktree_ws.is_empty() && !keep_worktree {
             if let Err(e) = client.worktree_remove(&self.worktree_ws, true) {
                 // teardown's own failures are `teardown` events — a
@@ -759,6 +829,8 @@ struct Sink<'a> {
     headless: bool,
     /// Every event written so far (the outcome's stream).
     events: Vec<Event>,
+    /// Router events from the tailer thread (drained on every flush).
+    tail: Option<std::sync::Arc<std::sync::Mutex<Vec<Event>>>>,
 }
 
 impl<'a> Sink<'a> {
@@ -769,11 +841,18 @@ impl<'a> Sink<'a> {
             log,
             headless,
             events: Vec::new(),
+            tail: None,
         }
     }
 
     fn flush(&mut self, sched: &mut Scheduler) {
-        for ev in sched.drain_events() {
+        let mut batch = sched.drain_events();
+        if let Some(t) = &self.tail
+            && let Ok(mut queued) = t.lock()
+        {
+            batch.append(&mut queued);
+        }
+        for ev in batch {
             if let Ok(line) = serde_json::to_string(&ev) {
                 if self.headless {
                     println!("{line}");
@@ -1073,6 +1152,42 @@ agents:
     }
 
     #[test]
+    fn a_flush_drains_the_router_tailer_into_the_run_log() {
+        let (mut sched, _roles, dir) = setup(
+            r#"
+name: tail-sink
+agents:
+  - {name: a, prompt: x}
+"#,
+        );
+        let path = dir.join("routing.jsonl");
+        let tailer = RoutingTailer::spawn(path.clone());
+        let log_path = dir.join("run.jsonl");
+        let mut log = File::create(&log_path).unwrap();
+        {
+            let mut sink = Sink::new(&dir.to_string_lossy(), "tail-sink", &mut log, false);
+            sink.tail = Some(tailer.events());
+            std::fs::write(
+                &path,
+                b"{\"ts\":\"T\",\"route_id\":\"auto\",\"algorithm\":\"stage_router\",\"model\":\"m\",\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}\n",
+            )
+            .unwrap();
+            std::thread::sleep(Duration::from_millis(1100));
+            sink.flush(&mut sched);
+            assert_eq!(
+                sink.events
+                    .iter()
+                    .filter(|e| e.kind == "route_decision")
+                    .count(),
+                1,
+                "the tailed record must reach the sink"
+            );
+        }
+        let mut tailer = tailer;
+        tailer.stop();
+    }
+
+    #[test]
     fn flush_writes_jsonl_lines_and_drains_the_scheduler() {
         let (mut sched, _roles, dir) = setup(
             r#"
@@ -1359,22 +1474,5 @@ edges:
             s.chars()
                 .all(|c| c.is_ascii_digit() || c == '-' || c == '.')
         );
-    }
-
-    #[test]
-    fn a_run_with_routes_fails_loudly() {
-        let crew = load(
-            r#"
-name: routed
-routes:
-  - {id: auto, type: passthrough, capable: opencode-go/beam-free}
-agents:
-  - {name: a, prompt: x, route: auto}
-"#,
-        )
-        .expect("routes validate");
-        let mut run = Run::new(crew, Options::default());
-        let err = run.run().unwrap_err();
-        assert!(err.contains("18D-5c"), "{err}");
     }
 }

@@ -7,7 +7,7 @@
 #     and sibling nodes recall what earlier nodes learned.
 # Memory is advisory: a down memory service costs zero context, never a run.
 # Start the service first: scripts/memory-serve.sh start
-# Run: forseti-crew run -f crew-memory.yaml   (model pinned: opencode-go/beam-free)
+# Run: forseti-crew run -f crew-memory.yaml   (model pinned: openrouter/free)
 name: crew-memdemo
 
 memory: {}
@@ -16,7 +16,7 @@ memory: {}
 agents:
   - name: planner
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     memory_query: deployment freeze gotchas for the demo repo
     prompt: |
       You are the planner. Do NOT edit files. Produce a numbered plan
@@ -25,7 +25,7 @@ agents:
 
   - name: builder
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       Execute this plan exactly:
 

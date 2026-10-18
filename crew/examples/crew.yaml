@@ -1,5 +1,5 @@
 # forseti crew v1 — deterministic planner → builder pipeline.
-# Model: opencode-go/beam-free — the free OpenCode Go test model (the LAN box is
+# Model: openrouter/free — the free OpenCode Go test model (the LAN box is
 # reserved for clustering work, and opencode-go's paid ids are unfunded). Any
 # direct-model node can be swapped for one run with FORSETI_CREW_MODEL.
 # Run: forseti-crew run -f crew.yaml [--headless]
@@ -8,7 +8,7 @@ name: demo-planner-builder
 agents:
   - name: planner
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the planner in a two-agent crew. Do NOT edit any files.
       Produce a numbered plan (max 5 steps, one line each) to add a file
@@ -17,7 +17,7 @@ agents:
 
   - name: builder
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the coder in a two-agent crew. Execute this plan exactly,
       touching only what it names:

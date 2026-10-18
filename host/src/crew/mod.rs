@@ -36,6 +36,7 @@ pub mod explain;
 pub mod herdr;
 pub mod model;
 pub mod pattern;
+pub mod proxy;
 pub mod role;
 pub mod routes;
 pub mod run;

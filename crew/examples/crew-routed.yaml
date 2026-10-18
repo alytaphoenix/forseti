@@ -1,8 +1,13 @@
 # forseti crew — routed pool demo (6D/18C): agents share switchyard routes.
 #
-# Provider status (2026-10-17): both tiers point at FREE OpenCode Go ids
-# (beam-free, longcat-2.5-preview-free) — the paid ids are unfunded and the LAN
-# box is reserved for clustering work, so this crew runs with no LAN dependency.
+# Provider status (2026-10-18): both tiers point at OpenRouter's free
+# meta-model (it picks an available free upstream per request: fixed free ids
+# hit upstream 429s). NOTE the doubled provider: a switchyard target is split at the
+# FIRST slash into llm_client/model, so an OpenRouter model id (which itself
+# contains a slash) must be written `openrouter/openrouter/free`. OpenCode Go's
+# free ids are NOT usable through the router at all: pi only emits the
+# x-opencode-session header for opencode providers, so routed calls 400 with
+# MissingSessionID (S46).
 #
 # Requires: a router (built `host/` → forseti-host, or cargo-installed
 # switchyard-server), and pi provider entries (materialized by the runner).
@@ -11,8 +16,8 @@ name: demo-routed-pool
 routes:
   - id: auto-pool
     type: stage_router
-    efficient: opencode-go/beam-free
-    capable: opencode-go/longcat-2.5-preview-free
+    efficient: openrouter/openrouter/free
+    capable: openrouter/openrouter/free
     picker: efficient_first
     confidence: 0.5
 

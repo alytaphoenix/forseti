@@ -1713,3 +1713,47 @@ recorded outcomes into labelled rows without hand-authoring every query.
   of correctness — an agent can expand the wrong block and not notice.
   `--review` emits `expected<TAB>query` for a human/LLM judge; judged rows are
   the input to any real fine-tune. Keep `--min 30` for calibration writes.
+
+## S48 — the routed runner on OpenRouter: a header trap, slash-splitting, and two tailer bugs (Phase 18D-5c-2b, 2026-10-18) ✅ resolved (live)
+
+The proxy port itself came up clean (config render → router `--dry-run` → spawn on a free port → `/health` → pi provider materialized → routing NDJSON tailed → provider restored at teardown, models.json verified unchanged). The live runs found four things worth recording.
+
+- **OpenCode Go's free ids cannot be routed at all.** Through the router they 400
+  with `MissingSessionID`: pi emits `x-opencode-session` only when
+  `model.provider` is `opencode`/`opencode-go` **or** the baseUrl host is
+  `opencode.ai` (pi 1.0.3 `provider-attribution.js`). A switchyard provider is
+  neither, so the header never reaches the upstream. The router *can* add static
+  headers (`switchyard-llm-client` 0.3.0 `extra_headers`, or `forward_auth`),
+  but forwarding cannot conjure a header pi never sent — the fix would be a pi
+  extension adding it for the switchyard provider, or a provider that does not
+  require it.
+- **OpenRouter model ids contain a slash, and a switchyard target splits at the
+  FIRST one.** `efficient: openrouter/free` renders `llm_client = "openrouter"`
+  + `id = "free"`, and OpenRouter rejects `free` ("not a valid model ID"). The
+  crew file must write the DOUBLED provider form:
+  `openrouter/openrouter/free` → llm_client `openrouter`, model
+  `openrouter/free`. Verified live (2 routed calls, `models:
+  openrouter/free=2`). The Go engine's `modelTarget` splits identically, so this
+  is a shared crew-authoring rule, not a port difference.
+- **The routing record carries `"origin": null`, and serde rejects null for a
+  `String`.** Every record was silently dropped by the tailer until every field
+  became `Option<...>`. (Go's `encoding/json` leaves the zero value.) A unit
+  test now pins a record with an explicit null.
+- **The tailer could emit a record twice** when the router appended between the
+  metadata stat and the read: the offset advanced to the *stale* size, so the
+  next poll re-read the tail. It now advances by the bytes actually read.
+  Tailed events also needed their own `ts` (they bypass `Scheduler::emit`).
+- **Model policy (live evidence).** `openrouter/free` is a meta-router that
+  picks an available free upstream per request: a 6/6 probe succeeded, but in
+  the checked crew the *builder* skipped tool use in 1 of 2 runs (a weak
+  upstream), and fixed free ids are worse (`google/gemma-4-31b-it:free` returned
+  upstream **429** shared-pool rate limits; `nvidia/nemotron-3.5-lightning:free`
+  took ~3 min per node and also skipped the tool call). So: the **example crews
+  pin `openrouter/free`**, while **`scripts/crew-smoke.sh` overrides to
+  `opencode-go/beam-free`** via `FORSETI_CREW_MODEL` for a deterministic gate
+  (the override exists exactly for this). Routed crews must use OpenRouter,
+  since OpenCode Go cannot traverse the router.
+- **Secrets**: `openrouter` reads its key from `~/.config/forseti/openrouter.key`
+  (0600, extracted once from OpenCode's local credential store; never printed or
+  committed). `~/.pi/agent/models.json` was backed up to `models.json.bak`
+  before the provider entry was added.

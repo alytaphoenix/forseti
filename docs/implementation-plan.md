@@ -743,10 +743,33 @@ them exactly (stdout, stderr, exit code).
          worktree + branch (no leftovers). With `--review` the worktree, branch
          and a 2-pane tab were kept as designed; cleaned up by hand
          (`herdr worktree remove --workspace …`, `git branch -D`, `tab close`).
-     - **18D-5c-2b (next)** — the switchyard proxy lifecycle (spawn this binary
-       with a generated TOML, materialize the pi provider, tail the routing
-       log into `route_decision` events, restore at teardown); `routes:` crews
-       fail loudly naming it.
+     - **18D-5c-2b ✅ done (2026-10-18)** — the switchyard proxy,
+       `host/src/crew/proxy.rs` + the router/summary wiring in `run.rs`.
+       - Router resolution (`FORSETI_CREW_ROUTER_BIN` → `host/target/{release,
+         debug}` → `$PATH` → legacy `switchyard-server`; `FORSETI_CREW_ROUTER`
+         forces a kind), per-kind argv (`--addr` host vs `--host/--port`
+         server), and the router's own `--dry-run` before binding the port.
+       - Config render from `Route::route_keys` (typed keys + `options:` verbatim;
+         quoted provider tables so a dot stays one table; floats keep a `.0`;
+         nested maps become inline tables) and the API keys ride
+         `SWITCHYARD_KEY_<PROVIDER>` env vars — never the TOML.
+       - Free loopback port, spawn with stdout/stderr → `router.log`, `/health`
+         within 15 s ("exited early" reports the log path), `Drop` stops it.
+       - pi provider materialization: one model id per route, `compat`
+         session-affinity headers, a **key-removal** restore (never a byte
+         restore — a mid-run models.json edit survives), and a stale-entry sweep
+         that probes the previous baseUrl and refuses to stomp a LIVE owner.
+       - Routing NDJSON tailed into `route_decision` events (route id,
+         algorithm, tier, session, origin, token split), folded in before
+         `run_end`; `GET /v1/stats` tallies appended to the summary
+         (`routed tiers: … | models: …`).
+       - `routes:` crews no longer fail; teardown order is view → tailer →
+         provider key → router process → worktree → tab.
+       - **Crew-authoring rule (S48)**: an OpenRouter target must be written
+         `openrouter/openrouter/<id>` — a target splits at the FIRST slash.
+         **Model policy**: examples pin `openrouter/free`; the smoke gate
+         overrides to `opencode-go/beam-free` for determinism (free-pool
+         variance/429s, S48).
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
    compared side by side; the Go engine retires only once the Rust engine passes
    the smoke gate unsupervised.
@@ -804,6 +827,26 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-5c-2b)
+- `cargo test` in `host/` — **118 unit tests + 1 oracle** (+1 ignored): 16
+  proxy tests (route-provider ordering, quoted dotted tables, key env vs TOML,
+  options → TOML values with floats/integers/inline tables, missing provider,
+  `!cmd` key resolution, key-env sanitizing, router argv both kinds, the pi
+  provider contract, materialize + key-removal restore that keeps a mid-run
+  edit, a dead previous entry swept, a LIVE one refused, routing-record →
+  `route_decision` including an explicit null, tallies) plus a Sink↔tailer
+  integration test and a live-tailer test.
+- **Live** (2026-10-18, sandbox): `crew-routed.yaml` with
+  `openrouter/openrouter/free` → proxy on a free port, 2 routed calls
+  (`route auto-pool, via stage_router, session …`, ~13k/16k tokens), summary
+  `models: openrouter/free=2`, exit 0, `~/.pi/agent/models.json` restored (no
+  `switchyard` key). The checked crew on the same free model passed once and
+  missed tool use once (S48), which is why the gate overrides the model.
+- `scripts/crew-smoke.sh` → **PASS** (checked crew + phased barrier) with the
+  `opencode-go/beam-free` override; oracle `--check` 85 records; the example
+  crew models changed, so the goldens were regenerated in the same commit.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean.
 
 ### Gates (18D-5c-2a)
 - `cargo test` in `host/` — **102 unit tests + 1 oracle** (+1 ignored): the new

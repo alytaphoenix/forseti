@@ -8,7 +8,7 @@ name: demo-laya-triage
 agents:
   - name: planner
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       Write a SHORT incident note (3 lines) into a file named LAYA_TRIAGE.md
       describing a live login outage: the auth service returns 5xx for most
@@ -18,7 +18,7 @@ agents:
 
   - name: opsfix
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the ON-CALL OPS responder. Append one line to LAYA_TRIAGE.md
       starting with "OPS:" stating the rollback/status-page action you would
@@ -26,7 +26,7 @@ agents:
 
   - name: codefix
     kind: pi
-    model: opencode-go/beam-free
+    model: openrouter/free
     prompt: |
       You are the CODE FIXER. Append one line to LAYA_TRIAGE.md starting with
       "CODE:" naming the suspected code path. Reply with CODE_NOTED.
