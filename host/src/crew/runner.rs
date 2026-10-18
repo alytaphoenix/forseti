@@ -124,7 +124,7 @@ pub struct MemoryRow {
 
 /// The memory service surface the runner uses (implemented by the HTTP client in
 /// the next stage; a null link keeps every call advisory).
-pub trait MemoryLink {
+pub trait MemoryLink: Send + Sync {
     fn recall(
         &mut self,
         query: &str,
@@ -141,6 +141,9 @@ pub trait MemoryLink {
         source: &str,
         tags: &[String],
     ) -> Result<i64, String>;
+
+    /// A detached copy for the fire-and-forget auto-write (Go's goroutine).
+    fn box_clone(&self) -> Box<dyn MemoryLink>;
 }
 
 /// A memory link that recalls nothing and writes nothing — the default until the
@@ -167,6 +170,10 @@ impl MemoryLink for NoMemory {
         _tags: &[String],
     ) -> Result<i64, String> {
         Ok(0)
+    }
+
+    fn box_clone(&self) -> Box<dyn MemoryLink> {
+        Box::new(NoMemory)
     }
 }
 
@@ -404,7 +411,7 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
             .join(".forseti")
             .join("bus")
             .join(format!("{}.md", agent.name));
-        if let Err(e) = std::fs::write(&bus, &text) {
+        if let Err(e) = super::fsx::write_private(&bus, text.as_bytes()) {
             self.sched
                 .emit(Event::on_node("node_failed", node).with_info(format!("bus write: {e}")));
             self.sched.node_mut(node).expect("node exists").status = Status::Failed;
@@ -421,7 +428,7 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
                 .join("typed");
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join(format!("{writes}.md"));
-            if std::fs::write(&path, &text).is_ok() {
+            if super::fsx::write_private(&path, text.as_bytes()).is_ok() {
                 artifact_path = path.to_string_lossy().into_owned();
             }
         }
@@ -513,7 +520,7 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
     /// its switchyard pool, so the outage override never touches it.
     fn resolved_model(&self, agent: &Agent) -> String {
         if !agent.route.is_empty() {
-            return format!("switchyard/{}", agent.route);
+            return format!("{}/{}", self.sched.route_provider(), agent.route);
         }
         let opts = self.sched.opts();
         if !opts.model_override.is_empty() && !agent.model.is_empty() {
@@ -597,19 +604,20 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
             return;
         }
         let ns = self.sched.crew().memory_ns();
+        let target = format!("crew-{ns}");
         let run_id = self.sched.run_id().to_string();
-        let source = format!("node:{}", agent.name);
+        let node = agent.name.clone();
+        let source = format!("node:{node}");
         let tags = vec!["crew".to_string(), self.sched.crew().name.clone()];
-        let written = self.memory.write(&text, &ns, &run_id, &source, &tags);
-        match written {
-            Ok(id) => self.sched.emit(
-                Event::on_node("memory_write", &agent.name)
-                    .with_info(format!("#{id} -> crew-{ns}")),
-            ),
-            Err(e) => self.sched.emit(
-                Event::on_node("memory_write", &agent.name).with_info(format!("unavailable: {e}")),
-            ),
-        }
+        // Fire-and-forget, like Go's goroutine: a down/slow memory service must
+        // never add latency to a node. The event is emitted now; the service is
+        // authoritative for the row id.
+        let mut link = self.memory.box_clone();
+        std::thread::spawn(move || {
+            let _ = link.write(&text, &ns, &run_id, &source, &tags);
+        });
+        self.sched
+            .emit(Event::on_node("memory_write", &node).with_info(format!("queued -> {target}")));
     }
 
     fn fail(&mut self, node: &str, msg: &str) {
@@ -769,6 +777,9 @@ mod tests {
             _tags: &[String],
         ) -> Result<i64, String> {
             Ok(1)
+        }
+        fn box_clone(&self) -> Box<dyn MemoryLink> {
+            Box::new(NullMemory)
         }
     }
 
@@ -1071,7 +1082,7 @@ agents:
 "#,
         );
         struct Mem {
-            writes: usize,
+            writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         }
         impl MemoryLink for Mem {
             fn recall(
@@ -1094,11 +1105,20 @@ agents:
                 _s: &str,
                 _tags: &[String],
             ) -> Result<i64, String> {
-                self.writes += 1;
+                self.writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(7)
             }
+            fn box_clone(&self) -> Box<dyn MemoryLink> {
+                Box::new(Mem {
+                    writes: std::sync::Arc::clone(&self.writes),
+                })
+            }
         }
-        let mut mem = Mem { writes: 0 };
+        let writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut mem = Mem {
+            writes: std::sync::Arc::clone(&writes),
+        };
         let mut backend = FakeBackend::new(
             vec![Ok(String::new()), Ok("answer ".repeat(40))],
             vec![Ok("idle".into())],
@@ -1119,12 +1139,23 @@ agents:
         );
         assert!(prompt.contains("- [2026-10-01] remember this"), "{prompt}");
         assert!(prompt.contains("\n\n---\n\nx"), "{prompt}");
-        assert_eq!(mem.writes, 1, "auto-write posts the node output");
+        // fire-and-forget: the write lands on a detached thread
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while writes.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            writes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "auto-write posts the node output"
+        );
         let ev = sched
             .events()
             .iter()
             .find(|e| e.kind == "memory_write")
             .unwrap();
-        assert_eq!(ev.info, "#7 -> crew-memtest");
+        assert_eq!(ev.info, "queued -> crew-memtest");
     }
 }

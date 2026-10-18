@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.4.0** (see
+License: [MIT](LICENSE) · Current release: **v0.4.1** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -29,7 +29,7 @@ herdr plugin action invoke forseti.open
 # 5 · Forseti: Review — one tab lists every change it made, at exact lines
 ```
 
-## Components (one per host — no daemon anywhere)
+## Components (one per host — no always-on daemon of ours)
 
 | Component | Surface | Implements |
 |---|---|---|
@@ -58,6 +58,16 @@ labels, and a `ttt.terminal` Lua API (`spawn/send/read/focus/list`, behind
   the replacement for herdr's native agent status stream.
 - **Crews**: `forseti-host crew run --host ttt -f crew.yaml` spawns one pi tab
   per node and drives the same graph/scheduler used on herdr.
+- **Isolation (v0.4.1)**: each run gets its own route provider
+  (`switchyard-<port>`, guarded by a `models.json` lock) and its own
+  `.forseti/agent-status/<run>/` directory; the bridge namespaces its
+  request/response files per client and deletes both after use. Readiness
+  requires the status record, a grace period, AND a drawn pane: pi's status
+  hook fires before its input reader exists, and a prompt sent into that window
+  is dropped. Run logs, bus files and status projections are owner-only (0600).
+- **Still missing on ttt**: closing tabs from the bridge, live
+  `node_status`/`watch:` events, `--worktree`/`--review`, and an observable
+  `blocked` state.
 
 The fork is the only ttt change; upstream v1.6.0 still has no terminal API.
 Details and the increment plan: [`docs/ttt-terminal-api.md`](docs/ttt-terminal-api.md).
@@ -216,7 +226,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.4.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.4.1
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

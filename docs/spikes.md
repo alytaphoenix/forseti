@@ -1946,3 +1946,52 @@ status channel). Live findings:
   the override — fixed by hoisting the read.
 - **Not built here**: closing a tab from the bridge (C has no close), a live
   status stream for the run log (the file is the signal), and `blocked` (S51).
+
+## S53 — v0.4.1 bug review: nine verified defects and their fixes (2026-10-18) ✅ resolved
+
+A fresh-eyes review of the Phase 18D/21 surface (the code written in this arc)
+found real defects, all fixed in v0.4.1:
+
+1. **Stale `crew-status.json` after `--host ttt`** — verified on disk an hour
+   after a run (`crew: demo-planner-builder, done: 2`). The herdr teardown and
+   the Go engine remove it; `run_ttt` did not. Fix: remove at all three exits.
+2. **Status-write race** — `writeAgentStatus` was fire-and-forget with one tmp
+   name (`.name.pid.tmp`); overlapping hooks can interleave and an older `idle`
+   can land after a newer `working`. Fix: a module-level promise chain + a
+   per-write `.name.pid.<seq>.tmp`.
+3. **ttt readiness race** — `await_ready` accepted the first `idle`, written on
+   `session_start`, before pi's TUI input reader exists (the S33e type-ahead
+   drop). Fix: status `idle|working` + 750 ms grace + a non-empty pane tail,
+   then a status re-check.
+4. **Teardown stall** — `Live::stop` joins watcher threads, and
+   `pane.wait_for_output` blocked for 30 s; the Go engine abandons those
+   goroutines. Fix: a 2 s wait (past scrollback still matches instantly).
+5. **Inline memory auto-write** — Rust called the memory HTTP write inline
+   (10 s client timeout) while Go fires a goroutine. Fix:
+   `MemoryLink::box_clone` + a detached thread; the event is
+   `memory_write "queued -> crew-<ns>"`.
+6. **Bridge leftovers + one global file pair** — after a live run the plugin
+   dir held `agent-res.json` with **79 KB of raw pane tail** (prompt + answer)
+   at 0644, and two crews shared one req/res pair. Fix: per-instance
+   `agent-req-<tag>.json` (0600), request deleted after the inline `/exec`,
+   response deleted after reading; the Lua bridge scans pending requests and
+   treats an existing response as the processed marker (no replay).
+7. **World-readable artifacts** — run logs (prompts + model output), bus/typed
+   files, the memory hand-off, `crew-status.json`, the router config/log and
+   the bridge files were 0644. Fix: 0600 (Rust `fsx` helpers; the Go writes
+   too).
+8. **Concurrency collisions** — one global `switchyard` provider made a second
+   routed run refuse, and two crews in different checkouts collided in the
+   bridge. Fix: per-run `switchyard-<port>` provider + a `models.json.lock`
+   around the read-modify-write (Rust + Go), a per-run status dir, and
+   per-instance bridge files. Same-checkout runs still share
+   `.forseti/{bus,runs}` — documented.
+9. **Small fixes** — `--timeout` was an unchecked `u64 * 60` (debug panic; now
+   capped at 1440 min); the Go CLI had no `--host`; `strip_ansi` leaked
+   DCS/APC/PM/SOS payloads; the ttt tail-growth baseline was taken after the
+   prompt (now before).
+
+Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
+`--check` 85 records, a live 2-node ttt crew, a live routed ttt crew
+(`switchyard-<port>` served and restored), and the Rust herdr smoke gate
+(checked + phased crews) — plan Phase 21A.

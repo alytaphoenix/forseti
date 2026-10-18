@@ -1289,8 +1289,9 @@ crew can run on it exactly as it runs on herdr. Delivered in four pieces:
    on `session_start`/`agent_start`/`tool_call`/`agent_end` (atomic, pid-stamped).
    That is what replaces herdr's native `pane_agent_status_changed`.
 3. **The plugin bridge** (`ttt-plugin/init.lua`): `Forseti: Agent Bridge` reads
-   `agent-req.json` from the plugin dir, acts through `ttt.terminal.*`, and
-   writes `agent-res.json` (`{seq, ok, id|tail|error}`). On upstream ttt the
+   `agent-req-<tag>.json` from the plugin dir, acts through `ttt.terminal.*`,
+   and writes `agent-res-<tag>.json` (`{seq, ok, id|tail|error}`; v0.4.1
+   namespaces per client and deletes both after use). On upstream ttt the
    command answers "ttt.terminal unavailable" instead of failing the caller;
    the manifest requests `terminal.control`/`terminal.read` (ignored upstream).
 4. **The Rust host** (`host/src/crew/ttt.rs` + `--host ttt` /
@@ -1327,3 +1328,50 @@ signal); `--worktree` and `--review` are herdr-only and error on ttt; the
   `scripts/crew-smoke.sh`'s herdr legs unchanged and still PASS.
 - `cargo fmt --check` / `cargo clippy --all-targets` clean; `gofmt`/`go vet`/
   `go test` green; oracle `--check` 85 records.
+
+### Phase 21A — v0.4.1 hardening (2026-10-18, bug-review follow-up)
+
+A fresh-eyes review of the 18D/21 surface found nine verified defects; all are
+fixed here (details + evidence: S53).
+
+1. **Stale `crew-status.json` after a ttt run** — `run_ttt` now removes the
+   projection at every exit (the herdr teardown and the Go engine already did).
+2. **Status-channel write race** — the pi extension serializes writes through a
+   promise chain and gives each write its own tmp suffix; an older `idle` can no
+   longer land after a newer `working`.
+3. **ttt readiness race** — `await_ready` requires status `idle|working`, a
+   750 ms grace, AND a non-empty pane tail (the TUI has drawn → its input reader
+   exists); the status hook alone fires too early (S33e).
+4. **Teardown stall** — `Live::stop` joins watchers; the wait is now 2 s (was
+   30 s), so a `watch:` that never matches cannot delay a run's exit by 30 s.
+5. **Inline memory auto-write** — now a detached thread via
+   `MemoryLink::box_clone` (Go's goroutine); a down memory service adds no node
+   latency. The event is `memory_write "queued -> crew-<ns>"`.
+6. **Bridge leftovers + global files** — each `TttBridge` namespaces its
+   request/response (`agent-req-<tag>.json`), writes 0600, deletes the request
+   after the inline `/exec`, and deletes the response after reading it; the Lua
+   bridge scans all pending requests and treats the response as the processed
+   marker (no replay).
+7. **World-readable artifacts** — run logs, bus files, typed artifacts, the
+   memory hand-off, `crew-status.json`, the router config/log and the bridge
+   files are all 0600 now (Rust + Go).
+8. **Concurrency collisions** — per-run route provider `switchyard-<port>` +
+   a `models.json.lock` around the read-modify-write (Rust + Go); per-run status
+   dir `.forseti/agent-status/<run>/`; bridge files per instance. Two routed
+   runs can coexist; a run still owns its checkout's bus/run dirs (documented).
+9. **Small fixes** — `--timeout` capped at 1440 min (was an unchecked `u64 * 60`);
+   the Go CLI accepts `--host herdr|ttt` (ttt requires the rust engine);
+   `strip_ansi` handles DCS/APC/PM/SOS; the ttt `wait_settled` baseline is taken
+   before the prompt.
+
+### Gates (Phase 21A)
+- `cargo test` — **133 unit + 1 oracle** (+1 ignored), including a private-mode
+  test, the serialized status write, the drawn-pane readiness gate, the
+  per-instance bridge files (consumed, no leftovers) and the async auto-write.
+- `cargo fmt --check`, `cargo clippy --all-targets` clean; `gofmt`, `go vet`,
+  `go test ./...` green; oracle `--check` 85 records.
+- **Live**: the 2-node ttt crew re-run on the fixed code (`done=2`, exit 0,
+  `HELLO_CREW.md`, no stale bridge, 0600 artifacts, per-run status dir); the
+  routed ttt crew (`switchyard-54672/auto-pool`, provider restored at teardown);
+  and `FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` PASSES (checked +
+  phased herdr crews).

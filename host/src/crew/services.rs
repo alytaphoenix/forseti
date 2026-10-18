@@ -60,6 +60,7 @@ fn post(
 
 /// The shared-memory consumer (P10-2/P14): recall for prompts, write for node
 /// outputs. Namespace semantics are the service's (`crew-<ns>` rows).
+#[derive(Clone)]
 pub struct MemoryClient {
     base: String,
     http: reqwest::blocking::Client,
@@ -142,6 +143,10 @@ impl MemoryLink for MemoryClient {
         });
         let body = post(&self.http, &self.base, "/write", &payload, "memory")?;
         Ok(body.get("id").and_then(Value::as_i64).unwrap_or(0))
+    }
+
+    fn box_clone(&self) -> Box<dyn MemoryLink> {
+        Box::new(self.clone())
     }
 }
 

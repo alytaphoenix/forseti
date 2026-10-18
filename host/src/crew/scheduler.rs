@@ -320,6 +320,9 @@ pub struct Scheduler {
     effective_cwd: String,
     /// The crew tab id (set by the orchestrator; "" before staging).
     tab_id: String,
+    /// The pi models.json provider this run's switchyard proxy materialized
+    /// (`switchyard-<port>`; `switchyard` for crews without routes).
+    route_provider: String,
 }
 
 impl Scheduler {
@@ -370,6 +373,7 @@ impl Scheduler {
             run_id: run_id_now(),
             effective_cwd,
             tab_id: String::new(),
+            route_provider: "switchyard".to_string(),
         }
     }
 
@@ -409,6 +413,15 @@ impl Scheduler {
 
     pub fn set_tab_id(&mut self, id: impl Into<String>) {
         self.tab_id = id.into();
+    }
+
+    /// The pi provider a route node resolves through (set by the proxy stage).
+    pub fn route_provider(&self) -> &str {
+        &self.route_provider
+    }
+
+    pub fn set_route_provider(&mut self, provider: impl Into<String>) {
+        self.route_provider = provider.into();
     }
 
     pub fn node(&self, name: &str) -> Option<&NodeState> {

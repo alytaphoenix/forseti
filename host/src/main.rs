@@ -158,8 +158,8 @@ fn main() -> anyhow::Result<()> {
                 host,
                 headless,
             } => {
-                if *timeout < 1 {
-                    eprintln!("run: --timeout must be >= 1 (minutes)");
+                if *timeout < 1 || *timeout > 24 * 60 {
+                    eprintln!("run: --timeout must be between 1 and 1440 (minutes)");
                     std::process::exit(2);
                 }
                 let text = match std::fs::read_to_string(file) {

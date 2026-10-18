@@ -438,7 +438,7 @@ runner, only when routes exist:
 3. Materializes the `switchyard` provider entry in pi's `models.json`
    (one model entry per route id, `openai-completions`, compat block per
    upstream pi doc), restoring the previous bytes at teardown.
-4. Route-attached nodes start as `pi --model switchyard/<route-id>`; settle
+4. Route-attached nodes start as `pi --model switchyard-<port>/<route-id>`; settle
    logic unchanged.
 5. Tails the routing JSONL → `route_decision` events; `/v1/stats` counters are
    available for run-level per-model tallies, and `run_end` carries the
@@ -1200,6 +1200,13 @@ and `ttt.terminal`; the pi extension publishes the status channel; and the Rust
 host's `--host ttt` runs crews with one pi tab per node through the plugin's
 `Forseti: Agent Bridge`. `ttt-terminal-api.md` carries the increment plan; S38
 and S52 record the source facts and the live findings.
+
+v0.4.1 hardening (S53): the bridge namespaces its files per client
+(`agent-req-<tag>.json`) and deletes both after use; readiness gates on a drawn
+pane (the status hook beats pi's input reader); each run has its own status
+directory and its own route provider (`switchyard-<port>`, with a models.json
+lock), so concurrent runs no longer collide; artifacts are 0600; a finished run
+removes its `crew-status.json` projection.
 
 - **Not a fork of pi.** pi's extension surface is a UI *overlay* on the
   transcript (S36), not a buffer/keymap owner; re-authoring ttt's editor inside a

@@ -56,12 +56,17 @@ upstream has since moved to v1.8.0, so a future rebase is expected).
 - **pi status channel ✅ (S51)** — `pi-extension/index.ts` writes
   `.forseti/agent-status/<name>.json` on the pi lifecycle when
   `FORSETI_AGENT_NAME` is set; the name arrives through the fork's
-  `ttt.terminal.spawn{env=…}` (`82d88d3`).
+  `ttt.terminal.spawn{env=…}` (`82d88d3`). `FORSETI_STATUS_DIR` names the
+  directory; the crew host gives each run `.forseti/agent-status/<run>/`, and
+  writes are serialized (a later state can never lose to an earlier one).
 
-- **`TttBackend` ✅ (S52, live)** — `host/src/crew/ttt.rs` implements
-  `PaneBackend` over the plugin's `Forseti: Agent Bridge` command
-  (`agent-req.json` → `POST /exec` → `agent-res.json`) plus this status channel;
-  `--host ttt` stages one pi tab per node. A 2-node crew ran end to end.
+- **`TttBackend` ✅ (S52, live; hardened v0.4.1)** — `host/src/crew/ttt.rs`
+  implements `PaneBackend` over the plugin's `Forseti: Agent Bridge` command
+  (`agent-req-<tag>.json` → `POST /exec` → `agent-res-<tag>.json`, both deleted
+  after use) plus this status channel; `--host ttt` stages one pi tab per node.
+  Readiness requires the status record, a 750 ms grace, AND a drawn pane (the
+  TUI input reader does not exist at `session_start`). A 2-node crew ran end to
+  end.
 
 ## The delta (three increments, smallest first)
 

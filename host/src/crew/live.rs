@@ -159,7 +159,10 @@ impl Live {
                         &pane,
                         "regex",
                         &pattern,
-                        Duration::from_secs(30),
+                        // short enough that teardown's join never stalls long;
+                        // a longer wait buys nothing (past scrollback matches
+                        // instantly, S12)
+                        Duration::from_secs(2),
                     ) {
                         Ok(line) => {
                             if seen.insert(line.clone())

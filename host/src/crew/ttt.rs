@@ -21,6 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,10 @@ pub const DEFAULT_EXEC_URL: &str = "http://127.0.0.1:4242/exec";
 pub const BRIDGE_COMMAND: &str = "Forseti: Agent Bridge";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+/// A status record is written during session init; the TUI draws after it.
+const READY_GRACE: Duration = Duration::from_millis(750);
+
+static BRIDGE_TAG: AtomicU64 = AtomicU64::new(0);
 
 /// One status-channel record (S51).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -53,6 +58,9 @@ pub struct TttBridge {
     exec_url: String,
     plugin_dir: PathBuf,
     status_dir: PathBuf,
+    /// Per-instance request/response namespace, so concurrent crews (or a
+    /// manual bridge call) never share a file.
+    tag: String,
     seq: u64,
     http: reqwest::blocking::Client,
 }
@@ -63,12 +71,23 @@ impl TttBridge {
             exec_url: exec_url.to_string(),
             plugin_dir,
             status_dir,
+            tag: format!(
+                "{}-{}",
+                std::process::id(),
+                BRIDGE_TAG.fetch_add(1, Ordering::SeqCst)
+            ),
             seq: 0,
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .build()
                 .expect("ttt bridge HTTP client"),
         }
+    }
+
+    /// Overrides the status directory (per-run under `.forseti/agent-status`).
+    pub fn with_status_dir(mut self, dir: PathBuf) -> Self {
+        self.status_dir = dir;
+        self
     }
 
     /// `FORSETI_TTT_EXEC_URL`, `FORSETI_TTT_PLUGIN_DIR`,
@@ -96,13 +115,15 @@ impl TttBridge {
         self.seq += 1;
         let seq = self.seq;
         req["seq"] = json!(seq);
-        let req_path = self.plugin_dir.join("agent-req.json");
-        let res_path = self.plugin_dir.join("agent-res.json");
+        let req_path = self.plugin_dir.join(format!("agent-req-{}.json", self.tag));
+        let res_path = self.plugin_dir.join(format!("agent-res-{}.json", self.tag));
         std::fs::create_dir_all(&self.plugin_dir)
             .map_err(|e| format!("ttt plugin dir {}: {e}", self.plugin_dir.display()))?;
         // atomic request: the plugin never reads a half-written file
-        let tmp = self.plugin_dir.join(format!(".agent-req.{seq}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec(&req).map_err(|e| e.to_string())?)
+        let tmp = self
+            .plugin_dir
+            .join(format!(".agent-req-{}-{seq}.tmp", self.tag));
+        super::fsx::write_private(&tmp, &serde_json::to_vec(&req).map_err(|e| e.to_string())?)
             .map_err(|e| format!("write {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, &req_path)
             .map_err(|e| format!("write {}: {e}", req_path.display()))?;
@@ -115,32 +136,38 @@ impl TttBridge {
             .body(format!("exec {BRIDGE_COMMAND:?}"))
             .send()
             .map_err(|e| format!("ttt exec unreachable ({}): {e}", self.exec_url))?;
+        // the plugin reads the request during the POST (ttt runs it inline)
+        let _ = std::fs::remove_file(&req_path);
         if !resp.status().is_success() {
+            let _ = std::fs::remove_file(&res_path);
             return Err(format!("ttt exec: HTTP {}", resp.status().as_u16()));
         }
 
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
-        loop {
+        let outcome = loop {
             if let Ok(text) = std::fs::read_to_string(&res_path)
                 && let Ok(v) = serde_json::from_str::<Value>(&text)
                 && v.get("seq").and_then(Value::as_u64) == Some(seq)
             {
                 if v.get("ok").and_then(Value::as_bool) != Some(true) {
-                    return Err(v
+                    break Err(v
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("ttt bridge error")
                         .to_string());
                 }
-                return Ok(v);
+                break Ok(v);
             }
             if Instant::now() >= deadline {
-                return Err(format!(
+                break Err(format!(
                     "ttt bridge: no response to seq {seq} — is the forseti plugin loaded (Plugins: Reload All)?"
                 ));
             }
             std::thread::sleep(Duration::from_millis(20));
-        }
+        };
+        // never leave pane text (prompts + answers) behind
+        let _ = std::fs::remove_file(&res_path);
+        outcome
     }
 
     /// Opens a pi tab for one node; `FORSETI_AGENT_NAME` turns on the status
@@ -150,7 +177,10 @@ impl TttBridge {
             "op": "spawn",
             "shell": "pi",
             "args": args,
-            "env": {"FORSETI_AGENT_NAME": name},
+            "env": {
+                "FORSETI_AGENT_NAME": name,
+                "FORSETI_STATUS_DIR": self.status_dir.to_string_lossy(),
+            },
             "cwd": cwd,
             "label": name,
         }))?;
@@ -186,19 +216,38 @@ impl TttBridge {
         serde_json::from_str(&text).ok()
     }
 
-    /// Waits until the agent has started (status `idle` or `working`).
-    pub fn await_ready(&self, name: &str, timeout: Duration) -> Result<(), String> {
+    /// Waits until the agent has started AND its TUI has drawn (status `idle`
+    /// or `working`, then `READY_GRACE`, then a non-empty pane tail). The status
+    /// hook fires during session init, before pi's input reader exists; sending
+    /// a prompt into that window drops it (S33e), so the tail is the real gate.
+    pub fn await_ready(&mut self, name: &str, id: &str, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
+        let mut seen: Option<Instant> = None;
         loop {
             if let Some(rec) = self.status(name)
                 && matches!(rec.state.as_str(), "idle" | "working")
             {
-                return Ok(());
+                let first = *seen.get_or_insert_with(Instant::now);
+                if first.elapsed() >= READY_GRACE {
+                    let tail = self.read(id, 0).unwrap_or_default();
+                    if !tail.trim().is_empty()
+                        && self
+                            .status(name)
+                            .is_some_and(|r| matches!(r.state.as_str(), "idle" | "working"))
+                    {
+                        return Ok(());
+                    }
+                }
+            } else {
+                seen = None;
             }
             if Instant::now() >= deadline {
+                let tail = self.read(id, 0).unwrap_or_default();
                 return Err(format!(
-                    "ttt agent {name:?} did not report a status within {}s (is pi running in the tab?)",
-                    timeout.as_secs()
+                    "ttt agent {name:?} not ready within {}s (status {:?}, pane {} bytes) — is pi still running in the tab?",
+                    timeout.as_secs(),
+                    self.status(name).map(|r| r.state).unwrap_or_default(),
+                    tail.len()
                 ));
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -240,9 +289,13 @@ impl TttBackend {
 
     /// Sends the prompt, then waits for the status channel to leave `idle`.
     /// Falls back to "the tail grew" for a turn that finishes between polls.
-    fn wait_settled(&mut self, name: &str, timeout: Duration) -> Result<String, String> {
+    fn wait_settled(
+        &mut self,
+        name: &str,
+        baseline: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let id = self.id(name)?;
-        let baseline = self.bridge.read(&id, 0).unwrap_or_default();
         let started = Instant::now();
         let mut saw_working = false;
         while started.elapsed() < START_TIMEOUT {
@@ -310,9 +363,12 @@ impl PaneBackend for TttBackend {
         timeout: Duration,
     ) -> Result<String, String> {
         let id = self.id(target)?;
+        // snapshot BEFORE the prompt: a turn that finishes between polls must
+        // still show a grown tail (the prompt echo alone does not count)
+        let baseline = self.bridge.read(&id, 0).unwrap_or_default();
         // pi's TUI submits on CR; a LF is not Enter (verified live)
         self.bridge.send(&id, &format!("{text}\r"))?;
-        self.wait_settled(target, timeout)
+        self.wait_settled(target, &baseline, timeout)
     }
 
     fn focus(&mut self, target: &str) -> Result<(), String> {
@@ -347,8 +403,8 @@ pub fn strip_ansi(s: &str) -> String {
                         }
                     }
                 }
-                Some(']') => {
-                    // OSC: terminated by BEL or ESC \
+                Some(']') | Some('P') | Some('_') | Some('^') | Some('X') => {
+                    // OSC / DCS / APC / PM / SOS: terminated by BEL or ST (ESC \)
                     let mut prev = '\0';
                     for n in chars.by_ref() {
                         if n == '\u{07}' || (prev == '\u{1b}' && n == '\\') {
@@ -418,20 +474,30 @@ mod tests {
                         let _ = stream.read(&mut chunk);
                         // the request is already in agent-req.json (written
                         // before the POST), so simulate the plugin from it
-                        let req: Value = std::fs::read_to_string(dir.join("agent-req.json"))
-                            .ok()
-                            .and_then(|t| serde_json::from_str(&t).ok())
-                            .unwrap_or(Value::Null);
+                        // the bridge namespaces its files per instance; find
+                        // this POST's request and answer into its response
+                        let mut req = Value::Null;
+                        let mut res_path = dir.join("agent-res.json");
+                        if let Ok(rd) = std::fs::read_dir(&dir) {
+                            for entry in rd.flatten() {
+                                let name = entry.file_name().to_string_lossy().into_owned();
+                                if name.starts_with("agent-req")
+                                    && name.ends_with(".json")
+                                    && let Ok(t) = std::fs::read_to_string(entry.path())
+                                    && let Ok(v) = serde_json::from_str::<Value>(&t)
+                                {
+                                    req = v;
+                                    res_path = dir.join(name.replacen("agent-req", "agent-res", 1));
+                                }
+                            }
+                        }
                         if let Ok(mut v) = requests.lock() {
                             v.push(req.clone());
                         }
                         let op = req.get("op").and_then(Value::as_str).unwrap_or("");
                         let mut res = responses.get(op).cloned().unwrap_or_else(|| json!({"ok": false, "error": format!("no canned response for {op}")}));
                         res["seq"] = req.get("seq").cloned().unwrap_or(json!(0));
-                        let _ = std::fs::write(
-                            dir.join("agent-res.json"),
-                            serde_json::to_vec(&res).unwrap(),
-                        );
+                        let _ = std::fs::write(res_path, serde_json::to_vec(&res).unwrap());
                         let _ = stream.write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
                         );
@@ -499,6 +565,10 @@ mod tests {
         assert_eq!(req["shell"], "pi");
         assert_eq!(req["args"], json!(["--model", "m"]));
         assert_eq!(req["env"]["FORSETI_AGENT_NAME"], "planner");
+        assert_eq!(
+            req["env"]["FORSETI_STATUS_DIR"],
+            dir.join("status").to_string_lossy().as_ref()
+        );
         assert_eq!(req["cwd"], "/w");
         assert_eq!(req["label"], "planner");
         assert_eq!(req["seq"], 1);
@@ -546,10 +616,12 @@ mod tests {
     }
 
     #[test]
-    fn await_ready_waits_for_the_status_file() {
+    fn await_ready_waits_for_the_status_file_and_a_drawn_tui() {
         let dir = temp_dir();
-        let fake = FakeTtt::new(dir.clone(), BTreeMap::new());
-        let b = TttBridge::new(&fake.url, dir.clone(), dir.join("status"));
+        let mut responses = BTreeMap::new();
+        responses.insert("read", json!({"ok": true, "tail": "pi ready"}));
+        let fake = FakeTtt::new(dir.clone(), responses);
+        let mut b = TttBridge::new(&fake.url, dir.clone(), dir.join("status"));
         std::fs::create_dir_all(dir.join("status")).unwrap();
         let writer = {
             let path = dir.join("status/a.json");
@@ -558,9 +630,35 @@ mod tests {
                 std::fs::write(path, r#"{"name":"a","state":"idle"}"#).unwrap();
             })
         };
-        b.await_ready("a", Duration::from_secs(5)).expect("ready");
+        let t0 = Instant::now();
+        b.await_ready("a", "terminal-1", Duration::from_secs(5))
+            .expect("ready");
+        // the status hook beats the TUI; readiness waits the grace AND a tail
+        assert!(t0.elapsed() >= READY_GRACE, "grace not applied");
         writer.join().unwrap();
         assert_eq!(b.status("a").map(|r| r.state), Some("idle".to_string()));
+    }
+
+    #[test]
+    fn two_bridges_never_share_a_request_file() {
+        let dir = temp_dir();
+        let mut responses = BTreeMap::new();
+        responses.insert("focus", json!({"ok": true}));
+        let fake = FakeTtt::new(dir.clone(), responses);
+        let mut a = TttBridge::new(&fake.url, dir.clone(), dir.join("status"));
+        let mut b = TttBridge::new(&fake.url, dir.clone(), dir.join("status"));
+        a.focus("terminal-1").expect("a");
+        b.focus("terminal-2").expect("b");
+        let files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("agent-"))
+            .collect();
+        assert!(
+            files.is_empty(),
+            "request/response files are consumed: {files:?}"
+        );
     }
 
     #[test]

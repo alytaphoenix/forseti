@@ -1,6 +1,6 @@
 id = "forseti"
 name = "Forseti"
-version = "0.4.0"
+version = "0.4.1"
 min_herdr_version = "0.7.0"
 description = "Forseti — ties ttt editor and the pi coding agent into one herdr workflow"
 platforms = ["linux", "macos"]

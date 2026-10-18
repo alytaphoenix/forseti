@@ -219,9 +219,12 @@ func apiKeyValue(v string) (string, error) {
 
 // Proxy is one supervised router process for a run.
 type Proxy struct {
-	Bin        string
-	Kind       RouterKind
-	Port       int
+	Bin  string
+	Kind RouterKind
+	Port int
+	// Provider is this run's pi models.json key ("switchyard-<port>"), so
+	// concurrent routed runs never share a provider entry.
+	Provider   string
 	ConfigPath string
 	RoutingLog string
 	ServerLog  string
@@ -501,6 +504,7 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 		Bin:        router.Bin,
 		Kind:       router.Kind,
 		Port:       port,
+		Provider:   fmt.Sprintf("switchyard-%d", port),
 		ConfigPath: filepath.Join(runDir, "switchyard.toml"),
 		RoutingLog: filepath.Join(runDir, routingLog),
 		ServerLog:  filepath.Join(runDir, "router.log"),
@@ -518,7 +522,7 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 
 	cmd := exec.Command(router.Bin, router.Args(p.ConfigPath, p.RoutingLog, port)...)
 	cmd.Env = append(os.Environ(), mapToEnv(env)...)
-	logf, err := os.Create(p.ServerLog)
+	logf, err := os.OpenFile(p.ServerLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -600,44 +604,62 @@ func (p *Proxy) MaterializeProvider(routeIDs []string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	unlock, err := lockModels(path)
+	if err != nil {
+		return nil, err
+	}
 	orig, err := os.ReadFile(path)
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	var reg map[string]any
 	if err := json.Unmarshal(orig, &reg); err != nil {
+		unlock()
 		return nil, fmt.Errorf("parse pi models.json: %w", err)
 	}
 	prov, ok := reg["providers"].(map[string]any)
 	if !ok {
+		unlock()
 		return nil, fmt.Errorf("pi models.json has no providers map")
 	}
-	if prev, exists := prov["switchyard"]; exists {
+	if prev, exists := prov[p.Provider]; exists {
 		if dead := prevStale(prev); dead {
 			// sweep: a leftover from a crashed run (dead port) — overwrite
-			delete(prov, "switchyard")
+			delete(prov, p.Provider)
 		} else {
-			return nil, fmt.Errorf("pi models.json already has a LIVE switchyard provider — another crew run may be active; refusing to stomp it")
+			unlock()
+			return nil, fmt.Errorf("pi models.json already has a LIVE %s provider — another crew run may be active; refusing to stomp it", p.Provider)
 		}
 	}
-	prov["switchyard"] = p.ProviderEntry(routeIDs)
+	prov[p.Provider] = p.ProviderEntry(routeIDs)
 	out, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
+		unlock()
 		return nil, err
 	}
 	if err := os.WriteFile(path, out, 0o644); err != nil {
+		unlock()
 		return nil, err
 	}
+	unlock()
+	provider := p.Provider
+	port := p.Port
 	restore := func() {
+		unlock, err := lockModels(path)
+		if err != nil {
+			return
+		}
+		defer unlock()
 		// key-removal restore: unmarshal fresh (the user may have edited the
-		// file during the run), delete our key, write back.
+		// file during the run), delete only OUR key, write back.
 		if fresh, err := os.ReadFile(path); err == nil {
 			var reg2 map[string]any
 			if json.Unmarshal(fresh, &reg2) == nil {
 				if prov2, ok := reg2["providers"].(map[string]any); ok {
-					if ours, _ := prov2["switchyard"].(map[string]any); ours != nil {
-						if baseUrl, _ := ours["baseUrl"].(string); baseUrl == fmt.Sprintf("http://127.0.0.1:%d/v1", p.Port) {
-							delete(prov2, "switchyard")
+					if ours, _ := prov2[provider].(map[string]any); ours != nil {
+						if baseUrl, _ := ours["baseUrl"].(string); baseUrl == fmt.Sprintf("http://127.0.0.1:%d/v1", port) {
+							delete(prov2, provider)
 							if b, err := json.MarshalIndent(reg2, "", "  "); err == nil {
 								_ = os.WriteFile(path, b, 0o644)
 								return
@@ -650,6 +672,27 @@ func (p *Proxy) MaterializeProvider(routeIDs []string) (func(), error) {
 		_ = os.WriteFile(path, orig, 0o644) // fallback: original bytes
 	}
 	return restore, nil
+}
+
+// lockModels serializes the models.json read-modify-write between concurrent
+// runs (a lock file beside the registry). Returns the release function.
+func lockModels(path string) (func(), error) {
+	lock := path + ".lock"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("lock pi models.json: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("pi models.json is locked by another crew run (%s); retry shortly", lock)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // prevStale probes a pre-existing switchyard entry: healthy → false (live

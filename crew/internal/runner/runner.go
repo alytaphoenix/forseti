@@ -196,7 +196,7 @@ func (r *Run) writeStatusBridge() {
 	})
 	path := filepath.Join(r.Opts.Cwd, ".forseti", "crew-status.json")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	_ = os.WriteFile(path, out, 0o644)
+	_ = writePrivate(path, out)
 }
 
 func (r *Run) checksFailedCount() int {
@@ -271,7 +271,7 @@ func (r *Run) Run(ctx context.Context) error {
 		r.memory = NewMemoryClient()
 		ns := r.MemoryNS()
 		path := filepath.Join(r.effectiveCwd, ".forseti", "memory-crew")
-		if err := os.WriteFile(path, []byte(ns+"\n"), 0o644); err != nil {
+		if err := writePrivate(path, []byte(ns+"\n")); err != nil {
 			r.emit(Event{Type: "run_start", Info: "memory-crew hand-off write failed: " + err.Error()})
 		}
 	}
@@ -279,7 +279,9 @@ func (r *Run) Run(ctx context.Context) error {
 		return err
 	}
 	name := fmt.Sprintf("%s-%s.jsonl", time.Now().Format("200601-150405.000000"), r.Crew.Name)
-	r.logf, err = os.Create(filepath.Join(runDir, name))
+	logPath := filepath.Join(runDir, name)
+	r.logf, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	_ = os.Chmod(logPath, 0o600) // an existing name keeps its old mode otherwise
 	if err != nil {
 		return err
 	}
@@ -375,7 +377,7 @@ func (r *Run) Run(ctx context.Context) error {
 			args := []string{}
 			switch {
 			case a.Route != "":
-				args = append(args, "--model", "switchyard/"+a.Route)
+				args = append(args, "--model", r.routeProvider()+"/"+a.Route)
 			case a.Model != "":
 				args = append(args, "--model", r.effectiveModel(a))
 			}
@@ -565,6 +567,15 @@ func (r *Run) getProxy() *switchyard.Proxy {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.proxy
+}
+
+// routeProvider is the pi models.json key a route node resolves through: the
+// per-run proxy's key, or the legacy "switchyard" when no proxy is up yet.
+func (r *Run) routeProvider() string {
+	if p := r.getProxy(); p != nil && p.Provider != "" {
+		return p.Provider
+	}
+	return "switchyard"
 }
 
 // edgeState is the P13 scheduler's shared edge bookkeeping (one instance per
@@ -1246,7 +1257,7 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	a := r.Crew.Agent(st.Name)
 	resolved := r.effectiveModel(*a)
 	if a.Route != "" {
-		resolved = "switchyard/" + a.Route
+		resolved = r.routeProvider() + "/" + a.Route
 	}
 	r.mu.Lock()
 	st.Status = "running"
@@ -1377,7 +1388,7 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 	}
 	cost, ctxPct := parsePiStatus(text)
 	bus := filepath.Join(r.effectiveCwd, ".forseti", "bus", a.Name+".md")
-	if err := os.WriteFile(bus, []byte(text), 0o644); err != nil {
+	if err := writePrivate(bus, []byte(text)); err != nil {
 		r.emit(Event{Type: "node_failed", Node: a.Name, Info: "bus write: " + err.Error()})
 		r.mu.Lock()
 		st.Status = "failed"
@@ -1392,7 +1403,7 @@ func (r *Run) runNode(ctx context.Context, c *herdrd.Client, st *NodeState) {
 		dir := filepath.Join(r.effectiveCwd, ".forseti", "bus", "typed")
 		_ = os.MkdirAll(dir, 0o755)
 		artifactPath = filepath.Join(dir, t+".md")
-		if err := os.WriteFile(artifactPath, []byte(text), 0o644); err != nil {
+		if err := writePrivate(artifactPath, []byte(text)); err != nil {
 			artifactPath = ""
 		}
 	}
@@ -1651,6 +1662,16 @@ func (r *Run) autoWrite(node, text string) {
 		}
 		r.emit(Event{Type: "memory_write", Node: node, Info: fmt.Sprintf("#%d -> crew-%s", id, r.MemoryNS())})
 	}()
+}
+
+// writePrivate writes an artifact owner-only (0600). Existing files keep their
+// mode with a plain WriteFile, so chmod explicitly after truncating.
+func writePrivate(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return err
+	}
+	_ = os.Chmod(path, 0o600)
+	return nil
 }
 
 // truncateUTF8 cuts s to at most n bytes, never mid-rune.

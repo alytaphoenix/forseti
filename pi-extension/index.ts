@@ -41,25 +41,36 @@ const VAULT = process.env.FORSETI_VAULT ?? path.join(homedir(), "forseti");
 const AGENT_NAME = (process.env.FORSETI_AGENT_NAME || "").trim();
 const AGENT_STATUS_DIR = (process.env.FORSETI_STATUS_DIR || "").trim();
 
-async function writeAgentStatus(state: "idle" | "working", tool?: string): Promise<void> {
+// The hooks are fire-and-forget, so two writes can overlap. Serialize them in
+// order (a fast agent_end -> agent_start must not let the older idle land last)
+// and give each write its own tmp name (a shared tmp can be renamed mid-write).
+let statusChain: Promise<void> = Promise.resolve();
+let statusSeq = 0;
+
+function writeAgentStatus(state: "idle" | "working", tool?: string): void {
 	if (!AGENT_NAME) return;
 	const dir = AGENT_STATUS_DIR || path.join(process.cwd(), ".forseti", "agent-status");
-	try {
-		await mkdir(dir, { recursive: true });
-		const body = JSON.stringify({
-			name: AGENT_NAME,
-			state,
-			pid: process.pid,
-			ts: new Date().toISOString(),
-			...(tool ? { tool } : {}),
-		});
-		// atomic: a reader never sees a half-written record
-		const tmp = path.join(dir, `.${AGENT_NAME}.${process.pid}.tmp`);
-		await writeFile(tmp, body, "utf8");
-		await rename(tmp, path.join(dir, `${AGENT_NAME}.json`));
-	} catch {
-		// advisory only
-	}
+	const body = JSON.stringify({
+		name: AGENT_NAME,
+		state,
+		pid: process.pid,
+		ts: new Date().toISOString(),
+		...(tool ? { tool } : {}),
+	});
+	const seq = ++statusSeq;
+	statusChain = statusChain
+		.then(async () => {
+			try {
+				await mkdir(dir, { recursive: true });
+				// atomic: a reader never sees a half-written record
+				const tmp = path.join(dir, `.${AGENT_NAME}.${process.pid}.${seq}.tmp`);
+				await writeFile(tmp, body, { encoding: "utf8", mode: 0o600 });
+				await rename(tmp, path.join(dir, `${AGENT_NAME}.json`));
+			} catch {
+				// advisory only
+			}
+		})
+		.catch(() => {});
 }
 
 // P14 crew memory namespace for pi panes inside a crew run. The herdr socket

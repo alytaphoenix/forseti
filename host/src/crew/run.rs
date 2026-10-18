@@ -156,7 +156,7 @@ impl Run {
 
         // 1. run log (the Go name shape)
         let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
-        let mut log = File::create(&log_path).map_err(|e| format!("run log: {e}"))?;
+        let mut log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
         let mut sink = Sink::new(&cwd, &self.crew.name, &mut log, self.opts.headless);
         self.emit(Event::info(
             "run_start",
@@ -324,7 +324,7 @@ impl Run {
         }
         let ns = self.crew.memory_ns();
         let path = Path::new(cwd).join(".forseti/memory-crew");
-        if let Err(e) = std::fs::write(&path, format!("{ns}\n")) {
+        if let Err(e) = super::fsx::write_private(&path, format!("{ns}\n").as_bytes()) {
             self.emit(Event::info(
                 "run_start",
                 format!("memory-crew hand-off write failed: {e}"),
@@ -357,6 +357,7 @@ impl Run {
         let restore = p
             .materialize_provider(&ids)
             .map_err(|e| format!("pi provider materialization: {e}"))?;
+        self.sched.set_route_provider(p.provider.clone());
         self.emit(Event::info(
             "route_decision",
             format!(
@@ -380,7 +381,8 @@ impl Run {
         let mut args: Vec<String> = Vec::new();
         if !agent.route.is_empty() {
             args.push("--model".to_string());
-            args.push(format!("switchyard/{}", agent.route));
+            // per-run provider key, so concurrent routed runs never collide
+            args.push(format!("{}/{}", self.sched.route_provider(), agent.route));
         } else if !agent.model.is_empty() {
             let model = if !self.opts.model_override.is_empty() {
                 self.opts.model_override.clone()
@@ -413,7 +415,18 @@ impl Run {
         self.write_memory_handoff(&cwd);
 
         let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
-        let mut log = File::create(&log_path).map_err(|e| format!("run log: {e}"))?;
+        let run_stem = log_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("run")
+            .to_string();
+        // per-run status dir: two crews in one checkout must not share records
+        let status_dir = Path::new(&cwd)
+            .join(".forseti")
+            .join("agent-status")
+            .join(&run_stem);
+        std::fs::create_dir_all(&status_dir).map_err(|e| format!("status dir: {e}"))?;
+        let mut log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
         let mut sink = Sink::new(&cwd, &self.crew.name, &mut log, self.opts.headless);
         self.emit(Event::info(
             "run_start",
@@ -427,9 +440,10 @@ impl Run {
         sink.flush(&mut self.sched);
         self.start_proxy(&mut sink, &runs, &log_path)?;
 
-        // one pi tab per node; the bridge passes FORSETI_AGENT_NAME so the
-        // status channel (S51) is on
-        let mut bridge = super::ttt::TttBridge::from_env(&self.effective_cwd);
+        // one pi tab per node; the bridge passes FORSETI_AGENT_NAME +
+        // FORSETI_STATUS_DIR so the status channel (S51) is on and per-run
+        let mut bridge =
+            super::ttt::TttBridge::from_env(&self.effective_cwd).with_status_dir(status_dir);
         let mut ids: Vec<(String, String)> = Vec::new();
         for a in self.crew.agents.clone() {
             let args = self.pane_args(&a);
@@ -440,14 +454,15 @@ impl Run {
                     self.emit(Event::info("run_end", "aborted: a ttt tab could not spawn"));
                     sink.flush(&mut self.sched);
                     self.stop_host_side();
+                    self.remove_bridge(&cwd);
                     let events = std::mem::take(&mut sink.events);
                     return Ok(self.outcome(&log_path, events));
                 }
             }
         }
         let mut ready_failed = false;
-        for (name, _) in &ids {
-            if let Err(e) = bridge.await_ready(name, Duration::from_secs(90)) {
+        for (name, id) in &ids {
+            if let Err(e) = bridge.await_ready(name, id, Duration::from_secs(90)) {
                 self.fail(name, &e);
                 ready_failed = true;
             }
@@ -456,6 +471,7 @@ impl Run {
             self.emit(Event::info("run_end", "aborted: an agent was not ready"));
             sink.flush(&mut self.sched);
             self.stop_host_side();
+            self.remove_bridge(&cwd);
             let events = std::mem::take(&mut sink.events);
             return Ok(self.outcome(&log_path, events));
         }
@@ -493,8 +509,16 @@ impl Run {
         sink.flush(&mut self.sched);
         self.stop_host_side();
         sink.flush(&mut self.sched);
+        // the bridge is a projection: a finished ttt run must not leave the
+        // sidebar showing stale state (the herdr teardown removes it too)
+        self.remove_bridge(&cwd);
         let events = std::mem::take(&mut sink.events);
         Ok(self.outcome(&log_path, events))
+    }
+
+    /// Drops the crew-status projection after a ttt run.
+    fn remove_bridge(&self, cwd: &str) {
+        let _ = std::fs::remove_file(Path::new(cwd).join(".forseti").join("crew-status.json"));
     }
 
     /// Stops the host-independent run pieces (router, provider key, tailer).
@@ -1097,7 +1121,7 @@ impl<'a> Sink<'a> {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, body.to_string());
+        let _ = super::fsx::write_private(&path, body.to_string().as_bytes());
     }
 }
 

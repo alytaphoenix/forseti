@@ -464,6 +464,9 @@ fn toml_float(f: f64) -> String {
 pub struct Proxy {
     pub kind: RouterKind,
     pub port: u16,
+    /// The pi models.json key this run materializes (`switchyard-<port>`), so
+    /// concurrent routed runs never share a provider entry.
+    pub provider: String,
     pub config_path: PathBuf,
     pub routing_log: PathBuf,
     pub server_log: PathBuf,
@@ -486,18 +489,19 @@ impl Proxy {
         let proxy = Proxy {
             kind: router.kind,
             port,
+            provider: format!("switchyard-{port}"),
             config_path: run_dir.join("switchyard.toml"),
             routing_log: run_dir.join(routing_log_name),
             server_log: run_dir.join("router.log"),
             env,
             child: None,
         };
-        std::fs::write(&proxy.config_path, &toml)
+        super::fsx::write_private(&proxy.config_path, toml.as_bytes())
             .map_err(|e| format!("write switchyard.toml: {e}"))?;
         router.validate(&proxy.config_path, &proxy.env)?;
 
-        let log =
-            std::fs::File::create(&proxy.server_log).map_err(|e| format!("router.log: {e}"))?;
+        let log = super::fsx::create_private(&proxy.server_log)
+            .map_err(|e| format!("router.log: {e}"))?;
         let log_err = log.try_clone().map_err(|e| format!("router.log: {e}"))?;
         let child = Command::new(&router.bin)
             .args(router.args(&proxy.config_path, &proxy.routing_log, port))
@@ -581,11 +585,16 @@ impl Proxy {
         })
     }
 
-    /// Writes the `switchyard` provider into pi's models.json and returns the
+    /// Writes this run's provider key into pi's models.json and returns the
     /// restore closure (key removal, never a byte restore — P13-B9).
     pub fn materialize_provider(&self, route_ids: &[String]) -> Result<Restore, String> {
         let path = pi_models_path()?;
-        materialize_at(&path, &self.provider_entry(route_ids), &self.base_url())
+        materialize_at(
+            &path,
+            &self.provider,
+            &self.provider_entry(route_ids),
+            &self.base_url(),
+        )
     }
 
     /// `GET /v1/stats`.
@@ -614,30 +623,75 @@ impl Drop for Proxy {
 /// The restore closure a run MUST call at teardown.
 pub type Restore = Box<dyn FnOnce() + Send>;
 
-fn materialize_at(path: &Path, entry: &Value, base_url: &str) -> Result<Restore, String> {
+/// A `models.json.lock` guard: concurrent runs serialize the read-modify-write
+/// so neither loses the other's provider entry. Removed on drop.
+struct ModelsLock(PathBuf);
+
+impl Drop for ModelsLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn lock_models(path: &Path) -> Result<ModelsLock, String> {
+    let lock = path.with_extension("json.lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(_) => return Ok(ModelsLock(lock)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!(
+                        "pi models.json is locked by another crew run ({}); retry shortly",
+                        lock.display()
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("lock pi models.json: {e}")),
+        }
+    }
+}
+
+fn materialize_at(
+    path: &Path,
+    provider: &str,
+    entry: &Value,
+    base_url: &str,
+) -> Result<Restore, String> {
+    let guard = lock_models(path)?;
     let orig = std::fs::read(path).map_err(|e| format!("read pi models.json: {e}"))?;
     let mut reg: Value =
         serde_json::from_slice(&orig).map_err(|e| format!("parse pi models.json: {e}"))?;
     let Some(providers) = reg.get_mut("providers").and_then(Value::as_object_mut) else {
         return Err("pi models.json has no providers map".to_string());
     };
-    if let Some(prev) = providers.get("switchyard") {
-        if prev_stale(prev) {
-            // a leftover from a crashed run (dead port) — sweep it
-            providers.remove("switchyard");
-        } else {
-            return Err("pi models.json already has a LIVE switchyard provider — another crew run may be active; refusing to stomp it".to_string());
-        }
+    if let Some(prev) = providers.get(provider)
+        && !prev_stale(prev)
+    {
+        return Err(format!(
+            "pi models.json already has a LIVE {provider} provider — another crew run may be active; refusing to stomp it"
+        ));
     }
-    providers.insert("switchyard".to_string(), entry.clone());
+    // a leftover from a crashed run (dead port) is swept by the insert below
+    providers.insert(provider.to_string(), entry.clone());
     let out = serde_json::to_vec_pretty(&reg).map_err(|e| e.to_string())?;
     std::fs::write(path, out).map_err(|e| format!("write pi models.json: {e}"))?;
+    drop(guard);
 
     let path = path.to_path_buf();
     let base = base_url.to_string();
+    let provider = provider.to_string();
     Ok(Box::new(move || {
         // key-removal restore: re-read (the user may have edited the file during
         // the run), delete only OUR entry (same baseUrl), write back.
+        let Ok(_guard) = lock_models(&path) else {
+            return;
+        };
         let Ok(fresh) = std::fs::read(&path) else {
             return;
         };
@@ -646,14 +700,14 @@ fn materialize_at(path: &Path, entry: &Value, base_url: &str) -> Result<Restore,
         };
         let ours = reg2
             .get("providers")
-            .and_then(|p| p.get("switchyard"))
+            .and_then(|p| p.get(&provider))
             .and_then(|p| p.get("baseUrl"))
             .and_then(Value::as_str)
             .map(|u| u == format!("{base}/v1"))
             .unwrap_or(false);
         if ours {
             if let Some(prov) = reg2.get_mut("providers").and_then(Value::as_object_mut) {
-                prov.remove("switchyard");
+                prov.remove(&provider);
             }
             if let Ok(b) = serde_json::to_vec_pretty(&reg2) {
                 let _ = std::fs::write(&path, b);
@@ -1052,6 +1106,7 @@ mod tests {
         let p = Proxy {
             kind: RouterKind::Host,
             port: 9123,
+            provider: "switchyard".to_string(),
             config_path: PathBuf::new(),
             routing_log: PathBuf::new(),
             server_log: PathBuf::new(),
@@ -1083,7 +1138,7 @@ mod tests {
     fn materialize_adds_the_provider_and_restore_removes_only_it() {
         let path = temp_models(r#"{"providers":{"keep":{"baseUrl":"http://x/v1","apiKey":"k"}}}"#);
         let entry = json!({"baseUrl": "http://127.0.0.1:9999/v1", "models": []});
-        let restore = materialize_at(&path, &entry, "http://127.0.0.1:9999").unwrap();
+        let restore = materialize_at(&path, "switchyard", &entry, "http://127.0.0.1:9999").unwrap();
         let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             after["providers"]["switchyard"]["baseUrl"],
@@ -1114,8 +1169,8 @@ mod tests {
         let path =
             temp_models(r#"{"providers":{"switchyard":{"baseUrl":"http://127.0.0.1:1/v1"}}}"#);
         let entry = json!({"baseUrl": "http://127.0.0.1:9999/v1"});
-        let _restore =
-            materialize_at(&path, &entry, "http://127.0.0.1:9999").expect("stale entry swept");
+        let _restore = materialize_at(&path, "switchyard", &entry, "http://127.0.0.1:9999")
+            .expect("stale entry swept");
         let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             after["providers"]["switchyard"]["baseUrl"],
@@ -1140,7 +1195,7 @@ mod tests {
             r#"{{"providers":{{"switchyard":{{"baseUrl":"http://{addr}/v1"}}}}}}"#
         ));
         let entry = json!({"baseUrl": "http://127.0.0.1:9999/v1"});
-        let err = materialize_at(&path, &entry, "http://127.0.0.1:9999")
+        let err = materialize_at(&path, "switchyard", &entry, "http://127.0.0.1:9999")
             .err()
             .expect("a live entry must be refused");
         assert!(err.contains("LIVE switchyard provider"), "{err}");

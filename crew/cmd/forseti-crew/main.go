@@ -48,7 +48,7 @@ usage:
   forseti-crew run [-f crew.yaml] [--headless] [--keep-tab] [--timeout MIN]
                    [--cwd DIR] [--tab LABEL]
                    [--session NAME] [--worktree BRANCH] [--keep-worktree]
-                   [--review] [--model P/M]
+                   [--review] [--model P/M] [--host herdr|ttt]
   forseti-crew validate [-f crew.yaml]
   forseti-crew prompts [-f crew.yaml]
   forseti-crew watch [-f run.jsonl] [--follow=false]`)
@@ -67,6 +67,7 @@ type runFlags struct {
 	review       bool
 	model        string
 	engine       string
+	host         string
 }
 
 func parseRun(fs *flag.FlagSet, args []string) *runFlags {
@@ -83,6 +84,7 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	fs.BoolVar(&f.review, "review", false, "end on a lazygit review of the worktree (implies --keep-worktree + --keep-tab)")
 	fs.StringVar(&f.model, "model", "", "override model for direct-model nodes (FORSETI_CREW_MODEL env also works)")
 	fs.StringVar(&f.engine, "engine", "", "engine: go (default) or rust — rust delegates to forseti-host (FORSETI_CREW_ENGINE env also works)")
+	fs.StringVar(&f.host, "host", "", "where agents run: herdr (default) or ttt (rust engine; FORSETI_CREW_HOST env also works)")
 	_ = fs.Parse(args)
 	if f.engine == "" {
 		f.engine = os.Getenv("FORSETI_CREW_ENGINE")
@@ -96,6 +98,9 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	}
 	if f.model == "" {
 		f.model = os.Getenv("FORSETI_CREW_MODEL")
+	}
+	if f.host == "" {
+		f.host = os.Getenv("FORSETI_CREW_HOST")
 	}
 	return f
 }
@@ -138,6 +143,9 @@ func execRustRun(f *runFlags) {
 	}
 	if f.review {
 		args = append(args, "--review")
+	}
+	if f.host != "" {
+		args = append(args, "--host", f.host)
 	}
 	execRust(args)
 }
@@ -242,6 +250,10 @@ func cmdRun(args []string) {
 	if f.engine == "rust" {
 		execRustRun(f)
 		return
+	}
+	if f.host == "ttt" {
+		fmt.Fprintln(os.Stderr, "run: the ttt host needs --engine rust")
+		os.Exit(2)
 	}
 	crew, err := loadCrew(f.file)
 	if err != nil {

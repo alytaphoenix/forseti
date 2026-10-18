@@ -33,6 +33,7 @@
 pub mod bus;
 pub mod command;
 pub mod explain;
+pub mod fsx;
 pub mod herdr;
 pub mod live;
 pub mod model;
