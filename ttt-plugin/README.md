@@ -24,12 +24,17 @@ dialog (persisted in `~/.config/ttt/plugins.ttt.json`).
 | Focus switcher | sidebar agent list: up/down + **enter** focuses that agent's herdr pane (`herdr agent focus`); crew-run members carry a `crew` badge |
 | Crew jump | click the right status-bar crew badge → jumps to the crew tab (`herdr tab focus`), falling back to the first blocked/running node |
 | Jump | palette "Forseti: Jump" opens the file/line from `jump.json` in this plugin dir — written by the pi side (follow mode / `/ttt jump`) |
+| Agent Bridge | palette "Forseti: Agent Bridge" — the crew host's control channel: reads `agent-req.json` (`{seq, op: spawn|send|read|focus, …}`), acts through `ttt.terminal.*`, writes `agent-res.json` (`{seq, ok, id|tail|error}`). Needs the **forseti ttt fork** (`ttt.terminal`) and `terminal.control`/`terminal.read`; upstream ttt answers "ttt.terminal unavailable" |
 
 ## Requirements
 
 - [herdr](https://herdr.dev) with a live pi agent (bring-up: `herdr plugin
   action invoke forseti.open`, from the repo's herdr-plugin/)
 - [ttt](https://tttedit.dev) ≥ 1.6.0 running with `--listen` (bring-up does this)
+- for the Agent Bridge only: the forseti ttt fork (`~/repos/ttt`, branch
+  `forseti/terminal-argv`) — upstream has no `ttt.terminal` module; see
+  `docs/ttt-terminal-api.md`. The manifest requests `terminal.control` /
+  `terminal.read`, which upstream ignores.
 
 ## Notes
 
@@ -37,4 +42,4 @@ dialog (persisted in `~/.config/ttt/plugins.ttt.json`).
   else a single live pi agent is used; ambiguous → error in the panel.
 - `system.exec` is scoped to `herdr` only. No network permissions requested.
 - fs reads (jump.json) are sandboxed to workspace + this plugin dir — the pi
-  side writes exactly there. REVIEW-TEST-LINE-1
+  side writes exactly there.

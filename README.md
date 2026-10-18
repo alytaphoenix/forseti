@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.1.0** (see
+License: [MIT](LICENSE) · Current release: **v0.2.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -37,10 +37,30 @@ herdr plugin action invoke forseti.open
 | [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
 | [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
 | [`hashtext-plugin/`](hashtext-plugin/README.md) | pi TS extension | `/hash list·find·put·expand·evict·read·grep·stats·gc·archive·auto`, model tools (`hashtext_put`, `hashtext_list`, `hashtext_find`, `hashtext_expand`, `hashtext_evict`, `hashtext_read`, `hashtext_grep`): fingerprinted cold context cache — tiered index, native zstd reads, progressive disclosure (outline/focus/range), request-time archival of large tool output, optional Laya block pick |
-| [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing |
+| [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing; `--engine rust` delegates to `host/` |
+| [`host/`](host/) | Rust crate (`forseti-host`) | in-process switchyard router; the staged crew engine (`crew validate/run`, oracle-pinned against the Go engine) and the **ttt host** (`--host ttt`): one pi tab per node inside ttt, driven through the ttt plugin's `Forseti: Agent Bridge` + the pi status channel |
 
 Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-plan.md) ·
 [`spike log (verified facts)`](docs/spikes.md) · [`AGENTS.md`](AGENTS.md)
+
+## pi inside ttt
+
+ttt is the shell; pi runs **inside** it. The ttt side is a small, additive fork
+(`~/repos/ttt`, branch `forseti/terminal-argv`, based on v1.6.0 — the version the
+installed binary reports) that adds argv for the terminal program, per-tab
+labels, and a `ttt.terminal` Lua API (`spawn/send/read/focus/list`, behind
+`terminal.control` / `terminal.read`). With that in place:
+
+- **Manual**: set `terminal.shell` / `terminal.args` in ttt's settings and every
+  terminal tab runs pi; `file:line` in pi's output stays click-to-open.
+- **Status**: with `FORSETI_AGENT_NAME` set, the pi extension publishes
+  `.forseti/agent-status/<name>.json` (`idle|working`, atomic, pid-stamped) —
+  the replacement for herdr's native agent status stream.
+- **Crews**: `forseti-host crew run --host ttt -f crew.yaml` spawns one pi tab
+  per node and drives the same graph/scheduler used on herdr.
+
+The fork is the only ttt change; upstream v1.6.0 still has no terminal API.
+Details and the increment plan: [`docs/ttt-terminal-api.md`](docs/ttt-terminal-api.md).
 
 ## Git — lazygit in the loop
 
@@ -196,7 +216,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.1.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.2.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

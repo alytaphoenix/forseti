@@ -1195,7 +1195,11 @@ pattern — a declared node with the pattern's name is a load error.
 ## Direction: pi inside ttt (2026-10-18, user decision)
 
 The shell question is settled: **ttt is the environment, pi is a program inside
-it.** `ttt-terminal-api.md` carries the plan; S38 records the source facts.
+it.** Implemented 2026-10-18 (Phase 21): the ttt fork adds argv, per-tab labels
+and `ttt.terminal`; the pi extension publishes the status channel; and the Rust
+host's `--host ttt` runs crews with one pi tab per node through the plugin's
+`Forseti: Agent Bridge`. `ttt-terminal-api.md` carries the increment plan; S38
+and S52 record the source facts and the live findings.
 
 - **Not a fork of pi.** pi's extension surface is a UI *overlay* on the
   transcript (S36), not a buffer/keymap owner; re-authoring ttt's editor inside a

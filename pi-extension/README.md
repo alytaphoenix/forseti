@@ -37,6 +37,24 @@ but switchyard reads that only as a *fallback*; the explicit override above plus
 the tagged-request count, and the model that actually served the last response
 (`x-model-router-selected-model`).
 
+## Crew status channel — `index.ts`
+
+When `FORSETI_AGENT_NAME` is set (the ttt host spawns each crew node that way),
+the extension publishes the agent's lifecycle state to
+`.forseti/agent-status/<name>.json`:
+
+```json
+{"name": "builder", "state": "working", "pid": 1234, "ts": "…", "tool": "write"}
+```
+
+- `session_start` → `idle`, `agent_start` → `working`, `tool_call` → `working` +
+  the tool name, `agent_end` → `idle`.
+- `FORSETI_STATUS_DIR` overrides the directory (default `<cwd>/.forseti/agent-status`).
+- The write is atomic (tmp + rename); `pid` lets a reader tell a crashed agent
+  from a live idle one. Outside a crew nothing is written.
+- `blocked` is not observable: pi's approval/question UI is not an event, so a
+  stuck `working` is the signal.
+
 ## Install
 
 **User-level (recommended)** — every pi session gets it:
@@ -50,7 +68,7 @@ cp pi-extension/switchyard.ts ~/.pi/agent/extensions/forseti-switchyard.ts
 
 ```sh
 pi install /path/to/forseti/pi-extension   # local source package
-pi install git:github.com/alytaphoenix/forseti@v0.1.0   # pinned git ref
+pi install git:github.com/alytaphoenix/forseti@v0.2.0   # pinned git ref
 ```
 
 The directory qualifies as a pi package (`package.json` with `pi.extensions`;
