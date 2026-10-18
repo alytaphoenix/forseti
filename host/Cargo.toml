@@ -26,8 +26,8 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_norway = "0.9"
 regex = "1"
-
-[dev-dependencies]
+# Phase 18D-3: the herdr JSON socket API speaks serde_json values (the Go
+# client passes `any` to encoding/json); 18D-5's run log is JSONL too.
 serde_json = "1"
 
 [[bin]]

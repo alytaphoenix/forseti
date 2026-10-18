@@ -1314,3 +1314,54 @@ not 0.99.1 as AGENTS.md said; every forseti-relevant hook re-verified present:
   `doom-overlay` / `custom-footer` examples in the package are the starting
   points).
 
+
+## S37 — 18D-3: porting the herdr client, and the framing bug the Go one has (Phase 18D-3, 2026-10-18) ✅ resolved (source + unit + live)
+
+The Rust engine needs the herdr socket client before it can schedule anything, so
+18D-3 ports `crew/internal/herdrd/client.go` (523 lines, no Go tests) to
+`host/src/crew/herdr.rs`. There is **no oracle for this layer**: `herdrd` speaks
+to a live server, so there is no deterministic stdout to pin. The gate is instead
+a real `UnixListener` in the temp dir with scripted replies (§Gates 18D-3).
+
+- **Ported 1:1 (signatures and messages):** `socket_path`/`socket_path_for`
+  (`HERDR_SOCKET_PATH` → `HERDR_SESSION` → `$HERDR_CONFIG_DIR|~/.config/herdr`;
+  a named session is `<base>/sessions/<name>/herdr.sock`), `Client::at`'s stat
+  (`herdr socket <p> not present (server running?): <err>`), the `crew-<prefix>-<n>`
+  id shape off a mutex-guarded `seq`, `call`'s empty-id rule + the
+  `bad response frame %q` / `reply id %q does not match request %q` checks, the
+  `{"code":…,"message":…}` error rendering `<code>: <message>`, and every helper
+  (`ping`, `agent_list`, `agent_read` → `result.read.text`, `agent_start`,
+  `agent_prompt`, `agent_prompt_wait`, `agent_focus`, `agent_wait`,
+  `focused_workspace`, `notification_show`, `agent_view_set`/`clear`,
+  `pane_wait_for_output`, `worktree_create` → `(workspace_id, checkout_path)`,
+  `worktree_remove`).
+- **`agent_prompt_wait` has three settle shapes and the order matters**: the
+  `wait_matched` frame carrying `event.data.agent_status`, herdr 0.9.3's live
+  `{"type":"agent_prompted","agent":{…,"agent_status":…}}`, and a bare
+  `wait_matched` → `idle`; anything else is an **error**, never a silent settle
+  (P13-B21). `agent_blocked` arrives as an API *error code* and maps to the
+  string `"blocked"`.
+- **Found: the Go client can drop the first pushed event.** `readFrame` builds a
+  fresh `bufio.Reader` and closes over it, so on `events.subscribe` the ack read
+  may buffer bytes belonging to the first `{"event":…}` frame and discard them
+  when the reader is dropped. This has not bitten a live run — herdr writes the
+  ack and the pushes in separate writes — but it is a latent race in the Go
+  client, not a wire property. The Rust `subscribe` reads the ack **byte-wise**
+  (no look-ahead) and then hands the socket to the pump, so the hazard is gone by
+  construction. Worth fixing in Go too if that client is touched again.
+- **Second Go weakness: a partial frame is lost on the 60 s idle deadline.** Go
+  sets a read deadline and treats a timeout as keep-alive, but `ReadBytes`
+  returns the partial bytes it already consumed with the error and the caller
+  drops them. Rust keeps an `acc: Vec<u8>` across timeouts and only drains
+  `\n`-terminated lines, so a frame that straddles the deadline still lands.
+- **Divergence accepted:** `UnixStream::connect` (UDS connect does not block;
+  Go's `DialTimeout` only bounds an operation that cannot block anyway), and
+  `Subscription` is closable (`shutdown` + join) instead of leaking a goroutine.
+- **Live check:** an `#[ignore]`d `live_round_trips_against_a_real_socket` runs
+  `Client::new()` + `ping` + `agent.list` against the running 0.9.3 server — green
+  on this box, so the port is proven on the wire and not just against the fake.
+- **Carried into 18D-4/18D-5:** the runner needs `pane_wait_for_output` for TUI
+  readiness (S33e: drive readiness off TUI-only output, not focus) and
+  `agent_prompt_wait` as ONE request (a separate wait races the pre-prompt idle),
+  and the scheduler's `until` lists must carry **both** `done` and `idle`
+  (unfocused agents settle `done`).

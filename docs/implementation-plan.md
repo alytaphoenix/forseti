@@ -520,7 +520,7 @@ coupling, loses crash isolation; S28).
   `forseti-crew validate` now runs it (`crew/examples/crew-routes.yaml`
   exercises stage_router/auto/plan_execute/llm_classifier+judge/advisor).
 
-### 18D — runner/TUI on the host (staged Rust port) ✅ **18D-1 + 18D-2 implemented + oracle-gated** (2026-10-18)
+### 18D — runner/TUI on the host (staged Rust port) ✅ **18D-1 + 18D-2 + 18D-3 implemented** (2026-10-18)
 
 Direction (agreed): `forseti-host` grows from "embedded router" into the crew
 **engine** (herdr client, scheduler, runner, TUI) while the Go `forseti-crew`
@@ -580,8 +580,32 @@ them exactly (stdout, stderr, exit code).
      and `crew_oracle.rs` loads the crew through the Rust library and diffs
      name+prompt node-by-node — a one-word pattern/role text drift fails the gate
      (verified by mutation).
-3. **18D-3** — herdr socket client: NDJSON framing, dial-per-call one-shots,
-   `events.subscribe`, `layout.apply`, `agent.*`, `pane.*`, `worktree.*`.
+3. **18D-3 ✅ done (2026-10-18)** — the herdr socket client,
+   `host/src/crew/herdr.rs`, the Rust port of `crew/internal/herdrd`. Scope:
+   socket-path resolution (`HERDR_SOCKET_PATH` → `HERDR_SESSION` →
+   `$HERDR_CONFIG_DIR|~/.config/herdr`, plus `socket_path_for(name)` for named
+   sessions), `Client` with the mutex-guarded `seq` and the
+   `crew-<prefix>-<n>` id shape, dial-per-call `call` on NDJSON with the
+   empty-id rule and the Go `bad response frame` / `does not match request`
+   checks, `subscribe` + a pump thread (60 s idle keep-alive, a pushed
+   `events_lost` frame terminal) behind a closable `Subscription`, and every
+   typed helper the runner needs: `ping`, `agent_list`, `agent_read`
+   (`result.read.text`), `agent_start`, `agent_prompt`, `agent_prompt_wait`
+   (prompt + settle in ONE request, the `agent_blocked` → `"blocked"` mapping,
+   and **both** settle frames — the event shape and herdr 0.9.3's
+   `{"type":"agent_prompted","agent":{…}}`), `agent_focus`, `agent_wait`,
+   `focused_workspace`, `notification_show`, `agent_view_set`/`clear`,
+   `pane_wait_for_output`, `worktree_create`/`remove`.
+   - `serde_json` moved from a dev-dep to a normal dep (the wire is
+     `serde_json::Value`; 18D-5's run log is JSONL too).
+   - Three deliberate divergences from the Go client, documented in the module
+     header: dialing is a plain `connect` (a UDS connect does not block), the
+     subscribe ack is read byte-wise (no look-ahead can swallow the first
+     pushed event), and `Subscription` owns its reader so a partial frame
+     survives the 60 s idle deadline (Go's `bufio` discards it).
+   - Not an oracle surface (`herdrd` talks to a live server, no goldens):
+     coverage is unit tests over a **real** `UnixListener` in a temp dir plus an
+     `#[ignore]`d live round-trip (`ping` + `agent.list`).
 4. **18D-4** — the scheduler: fan-in AND, DFS-classified back edges +
    `max_visits`, phases, verdict gates, per-visit checks — ported against the Go
    scheduler's unit tests.
@@ -628,6 +652,23 @@ them exactly (stdout, stderr, exit code).
 - Mutation check: a one-word change to a synthesized prompt in `pattern.rs`
   fails two goldens (`examples/crew-sop`, `valid/sop-patterns`) — the prompt
   leg is not vacuous.
+
+### Gates (18D-3)
+- `cargo test` in `host/` — **40 unit tests + 1 oracle** (+1 ignored): the 13
+  new `herdr` tests run the client against a real `UnixListener` in the temp
+  dir and assert NDJSON framing, the per-call id shape
+  (`crew-agent.list-1`, `…-2`), a mismatched reply id rejected,
+  `{"error":…}` → `ApiError` (`"agent_blocked: waiting"`), `agent.prompt.wait`
+  → `"blocked"` / the event-status frame / the `{"type":"agent_prompted"}`
+  frame / bare `wait_matched` → `idle` / an unrecognised shape is an error,
+  `agent.read`'s `read.text` nesting, `agent.list` field decoding, the
+  `not present (server running?)` stat message, `socket_path_for` naming the
+  session dir, a subscription (ack → two events → close), a rejected ack, and
+  `events_lost` terminating the subscription.
+- **Live**: `cargo test --lib -- --ignored` runs the ignored round-trip against
+  the running herdr server on this box — `ping` + `agent.list` green (the wire
+  is right, not just the fake).
+- `cargo fmt --check` and `cargo clippy --all-targets` clean.
 
 ## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified end to end LIVE** (2026-10-17)
 

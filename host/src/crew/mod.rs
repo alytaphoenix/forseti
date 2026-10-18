@@ -11,6 +11,9 @@
 //!   and `RolePack.Validate`), `pattern` (SOP patterns compiled into the
 //!   graph), `bus` (verdict parsing). `Crew::validate` runs both at the top,
 //!   exactly as the Go engine does.
+//! * **18D-3** — `herdr`, the herdr JSON socket client (NDJSON over a Unix
+//!   socket: dial-per-call one-shots, the one persistent `events.subscribe`
+//!   stream, and every typed helper the runner needs).
 //!
 //! Deliberate divergences (documented, not oracle-covered): regex-engine error
 //! text (Go RE2 vs the Rust `regex` crate) and YAML parse-error text.
@@ -18,6 +21,7 @@
 pub mod bus;
 pub mod command;
 pub mod explain;
+pub mod herdr;
 pub mod model;
 pub mod pattern;
 pub mod role;
