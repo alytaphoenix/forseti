@@ -68,7 +68,7 @@ cp pi-extension/switchyard.ts ~/.pi/agent/extensions/forseti-switchyard.ts
 
 ```sh
 pi install /path/to/forseti/pi-extension   # local source package
-pi install git:github.com/alytaphoenix/forseti@v0.2.0   # pinned git ref
+pi install git:github.com/alytaphoenix/forseti@v0.4.0   # pinned git ref
 ```
 
 The directory qualifies as a pi package (`package.json` with `pi.extensions`;

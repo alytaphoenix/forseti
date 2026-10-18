@@ -1,6 +1,6 @@
 {
   "name": "@alytaphoenix/forseti-pi-extension",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Forseti: drive the ttt editor pane from a pi session (/ttt jump|follow|diff, /herd). Verify surfaces: docs/spikes.md",
   "author": "alytaphoenix",
   "license": "MIT",
