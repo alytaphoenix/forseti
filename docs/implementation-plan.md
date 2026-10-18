@@ -1164,3 +1164,14 @@ LLM-authored query set (`--queries`), and an A/B of auto thresholds.
 
 Next: refit on real telemetry (`--from-decisions` rows need labels), then decide
 whether L2 head-only fine-tuning has a case.
+
+### Phase 20e — telemetry labelling (2026-10-18, S47)
+
+| Task | Status |
+|---|---|
+| `scripts/hashtext-label.ts`: links `find` → `outcome` by query + turn window; matched expand (`high`), divergent expand (`medium`), quick-eviction downgrade (`low`, excluded by default); no-expand stays unlabelled | ✅ gate |
+| `--review FILE` emits `expected<TAB>query` rows for a human/LLM judge | ✅ |
+| Gate closes the loop: label → concatenate with authored rows → calibration refit (`--min 3`) | ✅ PASS |
+
+Caveat: matched-expand is a usage signal, not correctness. Judged review rows
+are the input to any real calibration fit (`--min 30`) or fine-tune.

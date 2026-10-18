@@ -12,6 +12,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -356,6 +357,42 @@ assert(Array.isArray(calReport.points) && calReport.points.length >= 2, "calibra
 assert(typeof calReport.written === "string" && calReport.written.includes("calibration.json"), "calibration artifact written");
 assert(calReport.ece_calibrated <= calReport.ece_raw + 0.001, "calibration does not worsen ECE on the eval rows");
 console.log("\nCALIBRATION PASS");
+
+// ---- phase 3c: telemetry labeller ------------------------------------------
+const labelRun = spawnSync(
+	process.execPath,
+	["run", path.join(HERE, "hashtext-label.ts"), "--json"],
+	{ env: { ...process.env, HASHTEXT_DIR: STORE }, encoding: "utf8" },
+);
+if (labelRun.status !== 0) {
+	process.stderr.write(labelRun.stderr ?? "");
+	console.error("FAIL: telemetry labeller");
+	process.exit(1);
+}
+const labelReport = JSON.parse((labelRun.stdout ?? "").slice((labelRun.stdout ?? "").indexOf("{")));
+assert(labelReport.labeled >= 1, "telemetry labeller emits a labelled row");
+assert((labelReport.by_source?.matched_expand ?? 0) >= 1, "matched expands become high-confidence labels");
+
+// The loop closes here: telemetry labels + authored eval rows -> calibration.
+const combinedData = path.join(STORE, "gate-combined.jsonl");
+await writeFile(
+	combinedData,
+	`${await readFile(datasetOut, "utf8")}${await readFile(String(labelReport.out), "utf8")}`,
+	"utf8",
+);
+const refit = await runAsync(
+	process.execPath,
+	["run", path.join(HERE, "hashtext-calibrate.ts"), "--data", combinedData, "--min", "3", "--json"],
+	{ ...process.env, HASHTEXT_DIR: STORE },
+);
+if (refit.status !== 0) {
+	process.stderr.write(refit.stderr ?? "");
+	console.error("FAIL: calibration on telemetry labels");
+	process.exit(1);
+}
+const refitReport = JSON.parse((refit.stdout ?? "").slice((refit.stdout ?? "").indexOf("{")));
+assert(refitReport.rows_in >= 1, "telemetry labels feed the calibration refit");
+console.log("\nTELEMETRY LABEL PASS");
 
 // ---- phase 3: missing CLI (same store; native reads must survive) ----------
 mkdirSync(path.join(STORE, "home"), { recursive: true });

@@ -126,6 +126,9 @@ bun run scripts/hashtext-dataset.ts --queries queries.tsv --out ~/.hashtext/eval
 # dump telemetry for later judging
 bun run scripts/hashtext-dataset.ts --from-decisions --out ~/.hashtext/train.jsonl
 
+# turn recorded outcomes into labelled rows + a review TSV
+bun run scripts/hashtext-label.ts --review ~/.hashtext/review.tsv
+
 # scorecard: recall@k, lexical baseline, pick accuracy, abstention P/R, ECE, latency
 bun run scripts/hashtext-eval.ts --offline          # retrieval + baseline
 bun run scripts/hashtext-eval.ts                    # + Laya against the live endpoint
@@ -163,6 +166,21 @@ Fit on **decision** rows only, from authored queries or real telemetry. Defaults
 refuse to write below 30 samples (`--min`); refit as telemetry accumulates. The
 plugin logs raw, entropy, and calibrated confidence on every `find`, so the
 operating points can be re-derived without another model pass.
+
+### Labelling real sessions
+
+`scripts/hashtext-label.ts` turns `find`/`outcome` records into labelled rows:
+
+| Signal | Label |
+|---|---|
+| agent expanded the block Laya picked | expected = pick, `high` |
+| agent expanded a different candidate | expected = that block, `medium` |
+| labelled block evicted within `--min-resident` turns | downgraded, excluded unless `--include-low` |
+| agent expanded nothing | unlabelled (absence is ambiguous) |
+
+`--review FILE` emits `expected<TAB>query` rows for a human/LLM judge; judged
+rows are the highest-quality input to `hashtext-calibrate.ts` and any future
+fine-tune.
 
 ## Install
 

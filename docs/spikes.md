@@ -1689,3 +1689,27 @@ S45 left two puzzles: Laya looked under-confident on our distribution, and the
 
 Next (L1b) is re-fitting this map on real telemetry; head-only fine-tuning (L2)
 still waits on evidence that ranking, not retrieval or confidence, is the gap.
+
+## S47 — hashtext telemetry labels: outcomes are weak, but usable (2026-10-18) ✅ resolved (gate)
+
+S45/S46 built telemetry and a calibration fitter; the missing link was turning
+recorded outcomes into labelled rows without hand-authoring every query.
+
+- **The label is "what the agent actually opened", not "what was correct".**
+  `scripts/hashtext-label.ts` links `find` records to subsequent `outcome`
+  records by query string and turn distance, then emits: matched expand →
+  expected = Laya's pick (`high`); divergent expand → expected = the block the
+  agent opened, a negative for the pick (`medium`); eviction within
+  `--min-resident` turns downgrades to `low` (excluded by default). A find with
+  **no** expand stays unlabelled — silence is ambiguous, not a negative.
+- **Constants are explicit**: `--window` (turns between find and outcome,
+  default 3), `--min-resident` (default 2), `--include-low`. The default output
+  is the same `hashtext-eval/1` row the eval/calibration scripts already read.
+- **Gate demo (canned Laya)**: 2 finds → 1 labelled `matched_expand` (high) +
+  1 unlabelled; the labelled row is concatenated with authored rows and fed to
+  the calibration refit (`--min 3`), which succeeds. The loop telemetry →
+  label → refit is now exercised end to end.
+- **Caveat recorded on purpose**: matched-expand is a *usage* signal, not proof
+  of correctness — an agent can expand the wrong block and not notice.
+  `--review` emits `expected<TAB>query` for a human/LLM judge; judged rows are
+  the input to any real fine-tune. Keep `--min 30` for calibration writes.
