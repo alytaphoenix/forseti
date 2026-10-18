@@ -1573,3 +1573,45 @@ unit-only (`crew-memory.yaml`, `crew-laya.yaml`, sandbox session, beam-free).
 - **`git branch -D` prints to stdout** (`Deleted branch …`) because the child
   inherits the terminal — the Go runner does the same, so `--headless` output is
   not strictly pure JSON. Noted, not changed (parity first).
+
+## S44 — hashtext cost model: native zstd, tiered index, Laya as selector (2026-10-18) ✅ resolved (measured)
+
+The S41 mechanics worked, so this pass asked what actually costs tokens and
+latency, and which parts of the cold store a small local model can decide.
+
+- **Node 22.22 has zstd in `node:zlib`** (`zstdDecompressSync`, and
+  `{dictionary}` works). Verified against a real store: 200 metadata files
+  read+parsed in **4.7 ms**; **all 200 blocks** (302 KB) decompressed and
+  scanned in **8.3 ms**. The Python CLI costs **37.6 ms** for `list` and
+  **30 ms** for `show` (interpreter startup). So reads moved native; writes
+  stay on the CLI (single format owner). The gate cross-checks native output
+  against `hashtext show`.
+- **Standing index cost dominates storage.** 200 blocks at the original flat
+  format = **2,294 tokens on every call**; 500 blocks = 7,194. A tiered index
+  (resident line + 20 recent + “N more”) is ~180 tokens; a compact line
+  (8-char ref, capped description, expansion cost) is ~14 → ~10 tokens.
+- **Duplicate markers double the payload.** A block referenced twice was
+  injected twice (754 tokens); first-occurrence-only + back-reference halves it
+  and keeps the transcript semantics.
+- **Progressive disclosure is the small-context multiplier.** A 40 KB log at
+  `mode=auto` enters as an outline (~100–300 tokens); `focus` retrieves matching
+  lines ±2 with `… lines a-b omitted …`; `hashtext_read` pulls exact ranges. The
+  block behaves like a searchable document rather than a bucket.
+- **Laya is a selector, not a retriever.** Its encoder sees ~512 tokens, so the
+  index is shortlisted lexically first (≤7 candidates). Over 5–7 candidates it
+  picked correctly 4/4 (confidence 0.88–1.00), abstained on an unrelated prompt
+  (“other”, 0.49), and ran in 27–45 ms warm (412 ms first). A binary
+  “does this turn need a block?” gate was tested and **rejected**: it answered
+  “no” to every probe at 0.09–0.75 confidence. The janitor therefore asks a
+  bounded choice (“which ONE resident block is least needed, or keep all”),
+  matching the shape that works.
+- **Request-time archival projects `turn_end.toolResults`.** The event carries
+  `toolCallId`/`toolName`/`content`; storing the text cold and replacing the
+  message’s `content` with a stub in the `context` hook hides bulky output from
+  requests while the session file keeps the original. Verified in the gate
+  (stub carries the ref; expanding restores the content). This is why the
+  earlier `context_edit` rewrite is not needed.
+- **Still deferred, measured:** a trained zstd dictionary saves **42–61%** on
+  realistic 300–740 B blocks (24–69% on larger corpora); CDC + one packed
+  stream saves **45%** on “log v1 + appended lines”. Both are store-level wins,
+  not prompt wins, so they rank below the index work.

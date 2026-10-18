@@ -1228,11 +1228,12 @@ The agent's context window is split into two tiers:
 - **cold** — blocks stored compressed in a content-addressed store and
   addressed by the sha256 fingerprint of their plaintext.
 
-The model sees a cheap index (one line per block: `ref | name | description |
-bytes→stored`) in the system prompt, and declares what it needs. No embeddings,
-no silent retrieval, no lossy summarizer in the loop. Identity is the content
-hash, so dedup is automatic and invalidation is free: changed text is a new
-block.
+The model sees a cheap, **tiered** index in the system prompt — one line for
+the resident set, the most recent 20 cold blocks, then a count for the rest
+(measured: 2,294 → ~180 tokens at 200 blocks) — and declares what it needs. No
+embeddings, no silent retrieval, no lossy summarizer in the loop. Identity is
+the content hash, so dedup is automatic and invalidation is free: changed text
+is a new block.
 
 ### Mechanics — where the swap happens
 
@@ -1261,6 +1262,29 @@ with collision escalation, and a JSON CLI (`put`/`list`/`show`/`rm`/`stats`).
 The plugin shells out to it and keeps an in-memory decompression cache — safe
 because a block's identity is its content hash. A missing CLI degrades to "no
 cold tier": tools return the install hint once, turns keep working.
+
+### Cost model and optimizations (measured 2026-10-18)
+
+The bottleneck is **standing prompt cost**, not storage: a flat 200-block index
+is ~2,294 tokens on every call. Measured levers, now implemented:
+
+| Lever | Effect |
+|---|---|
+| Tiered index (resident line + 20 recent + count) | 2,294 → ~180 tokens @200 blocks |
+| Compact line (8-char ref, name, capped desc, token cost) | 822 → sub-400 tokens |
+| Native reads (metadata + Node zstd + sha verify) | 37.6 ms `list` / 30 ms `show` → 4.7 ms / 8.3 ms; no CLI needed for reads |
+| One materialization per request | duplicate marker 754 → 387 tokens |
+| Progressive disclosure (`auto`→outline, `focus`, `range`) | a 40 KB block enters context at ~100–300 tokens |
+| Token estimates in metadata | `stats` is O(metadata), not O(corpus) |
+| Request-time archival (>8 KB tool results) | old tool output projected to one line; session file untouched |
+
+Laya is used as a **bounded decision model over a lexical shortlist**, never as
+a retriever (its encoder sees ~512 tokens). Measured on 5–7 candidate blocks:
+correct pick 4/4 at confidence 0.88–1.00, explicit abstention (“other” at 0.49)
+on an unrelated prompt, ~30 ms warm. A binary “does this turn need a block?”
+gate was tested and rejected: it answered “no” to every probe. The janitor asks
+“which one resident block is least needed?” — the same bounded-choice shape
+that works.
 
 ### Boundary
 

@@ -1105,3 +1105,30 @@ rewrite), lossy `BlockCodec`s, semantic-retrieval fallback triggers.
 Exit criteria met: a block can be stored, indexed, expanded, reconstructed,
 evicted and re-expanded across calls with the transcript carrying only a
 one-line marker; identical content dedups; a missing CLI is inert.
+
+### Phase 20b — optimization & hardening pass (2026-10-18, S44)
+
+Driven by measurements on the real store (200 blocks, 302 KB corpus) and the
+live Laya endpoint. Goal: cut standing prompt cost and per-turn overhead, then
+make the cold store behave like a large, searchable context instead of a bucket.
+
+| Task | Status |
+|---|---|
+| Tiered index: resident line + 20 recent blocks + count; compact lines (8-char ref, capped desc, token cost) | ✅ 2,294 → ~180 tokens @200 blocks (measured) |
+| Metadata sanitization at write and render (`\n`, control chars, `\|`, `<`, `>`; length caps) | ✅ store + plugin; test `test_put_sanitizes_labels` |
+| Native reads: metadata scan + Node zstd + sha256 verify, CLI write path, LRU text cache (16 MB/64) | ✅ 37.6/30 ms → 4.7/8.3 ms; smoke cross-checks native vs CLI |
+| One materialization per request (repeat marker → back-reference) | ✅ smoke asserts one copy |
+| Residency cap (8, oldest evicted + reported), optional age TTL, authoritative state writes | ✅ fixed a merge-on-write bug that resurrected evictions |
+| Ambiguous refs distinguished from not-found | ✅ `lookupRef` |
+| Read-path timeout 5 s (writes 30 s); never stall a turn | ✅ |
+| Store: tokens_est in metadata, O(metadata) stats, meta-before-payload delete, fsync, `gc`, sanitized labels | ✅ 66 pytest tests |
+| CLI: `grep`, `show --lines`, `gc` | ✅ contract tests |
+| Progressive disclosure: `expand(mode=auto/outline/focus/range/full)`, line-level focus ±2 with omission markers | ✅ smoke: 40 KB block enters as ~100–300 tok |
+| `hashtext_read` (numbered line ranges) and `hashtext_grep` (cross-block regex) | ✅ smoke |
+| Request-time archival: >8 KB tool results stored cold at `turn_end`, projected to a stub per request (opt-out) | ✅ smoke: projection + re-expand |
+| Laya assist: lexical shortlist → bounded choice; `hashtext_find`, `/hash auto on` (auto-expand ≥0.85, suggest ≥0.60, janitor ≥0.80), decision log | ✅ smoke with canned endpoint; live probe correct 4/4 (0.88–1.00), binary gate rejected |
+| Gate `scripts/hashtext-smoke.ts` extended to 45+ assertions incl. missing-CLI (native reads keep working) | ✅ PASS |
+
+Deferred: zstd dictionary training (−42…61% on realistic small blocks,
+measured), CDC packfile for evolving artifacts (−45%, measured), project/tag
+scoping, prompt-cache stable-prefix mode (append-at-tail projection).
