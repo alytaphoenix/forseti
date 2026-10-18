@@ -32,6 +32,10 @@ serde_json = "1"
 # 18D-4: checks run under a process group so the timeout sweeps grandchildren
 # (the Go engine's `Setpgid: true`, P13 BUG-08); libc::kill reaches the group.
 libc = "0.2"
+# 18D-5c: the memory (127.0.0.1:8752) and laya (127.0.0.1:8751) services are
+# loopback JSON-over-HTTP. reqwest is already in the tree via switchyard-server;
+# only the blocking + json surfaces are added, no TLS needed for loopback.
+reqwest = { version = "0.13", features = ["blocking", "json"], default-features = false }
 
 [[bin]]
 name = "forseti-host"

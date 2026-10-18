@@ -1512,3 +1512,33 @@ possible; both were read in source and pinned by `scripts/hashtext-smoke.ts`.
   `systemPrompt` override would drop an earlier section mutation (it would —
   `forceSystemPrompt` wins). The plugin only mutates sections, so ordering with
   the MCP extension is safe.
+
+## S42 — memory + laya on the Rust runner: two live surprises (Phase 18D-5c-1, 2026-10-18) ✅ resolved (live)
+
+Both loopback services were up, so 18D-5c-1 could be proven live rather than
+unit-only (`crew-memory.yaml`, `crew-laya.yaml`, sandbox session, beam-free).
+
+- **Memory: a node can recall its own upstream's write IN THE SAME RUN.** The
+  builder's dispatch printed `auto: 1 entries for "builder Execute this plan…"`
+  — the planner's `memory_write` (which happens at `node_done`, before the next
+  node dispatches) was already ingested and recalled. That is the intended P14
+  flow, but it is the first time the Rust ordering proved it end-to-end.
+- **Both writes reported the SAME id (#999042).** Not a bug in the port: the
+  builder's output contains the plan verbatim, so its embedding cosine with the
+  planner's row is ≥ 0.95 and memory v2's near-dup MERGE updated the existing
+  row instead of inserting (P12). Lesson for reading logs: `memory_write` ids
+  are row ids, not per-node ids — a crew that echoes upstream output will merge
+  into it, and later recalls return the merged text.
+- **Laya: the gate fired at conf 0.511 over a 0.4 floor**, `chosen=opsfix`
+  (the availability option), `codefix` skipped with `not chosen`, latency 299 ms.
+  `state_file: LAYA_TRIAGE.md` was honored — the judged evidence was the
+  artifact, not the pane (`state from file: LAYA_TRIAGE.md`), which is exactly
+  the S19 finding that the scrollback truncates the encoder and carries the
+  prompt echo.
+- **The event's `model` is the routing name, not a checkpoint**: laya reported
+  `model: "english"` via `routing.model`. It is carried into `laya_decision` as
+  `Model` exactly as the Go runner does, so `watch`/the badge see the same field.
+- **Ordering inside a wave**: laya edges resolve BEFORE the plain edge pass
+  (which skips `laya:` edges), one grouped call per settled node — a failed
+  endpoint skips every laya edge of that node with `laya gate failed-safe: …`,
+  never hanging the graph.

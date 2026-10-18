@@ -35,10 +35,12 @@ use serde_json::{Value, json};
 
 use super::herdr;
 use super::model::Crew;
+use super::model::Edge;
 use super::role::RolePack;
-use super::runner::{HerdrBackend, MemoryLink, NoMemory, NodeExecutor, PaneBackend};
+use super::runner::{HerdrBackend, MemoryLink, NoMemory, NodeExecutor, PaneBackend, truncate_utf8};
 use super::scheduler::run_check;
 use super::scheduler::{EdgeState, Event, Options, Scheduler, Status};
+use super::services::{LayaChoice, LayaClient, LayaDecider, MemoryClient};
 
 /// What a finished run reports.
 #[derive(Debug, Clone, Default)]
@@ -114,6 +116,19 @@ impl Run {
         let runs = Path::new(&cwd).join(".forseti/runs");
         std::fs::create_dir_all(&runs).map_err(|e| format!("runs dir: {e}"))?;
 
+        // P14 memory hand-off: pi panes get no per-pane env through the herdr
+        // socket API (S26), so the crew namespace rides a file the pi tools read.
+        if self.crew.memory.is_some() {
+            let ns = self.crew.memory_ns();
+            let path = Path::new(&cwd).join(".forseti/memory-crew");
+            if let Err(e) = std::fs::write(&path, format!("{ns}\n")) {
+                self.emit(Event::info(
+                    "run_start",
+                    format!("memory-crew hand-off write failed: {e}"),
+                ));
+            }
+        }
+
         // 1. run log (the Go name shape)
         let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
         let mut log = File::create(&log_path).map_err(|e| format!("run log: {e}"))?;
@@ -178,13 +193,21 @@ impl Run {
 
         // 5. drive the graph
         let mut backend = HerdrBackend::new(&client);
-        // 18D-5c swaps this for the HTTP link (auto-recall/auto-write).
-        let mut memory = NoMemory;
+        let mut memory: Box<dyn MemoryLink> = if self.crew.memory.is_some() {
+            Box::new(MemoryClient::new())
+        } else {
+            // NoMemory keeps the node path unconditional for crews without a
+            // `memory:` block (the Go engine still queries, but the namespace
+            // is "" and nothing is written).
+            Box::new(NoMemory)
+        };
+        let mut laya = LayaClient::new();
         drive(
             &mut self.sched,
             &self.roles,
             &mut backend,
-            &mut memory,
+            &mut *memory,
+            &mut laya,
             self.opts.node_timeout,
             &mut |sched| sink.flush(sched),
         );
@@ -295,6 +318,7 @@ pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
     roles: &RolePack,
     backend: &mut B,
     memory: &mut dyn MemoryLink,
+    laya: &mut dyn LayaDecider,
     timeout: Duration,
     flush: &mut F,
 ) -> bool {
@@ -322,6 +346,13 @@ pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
         }
 
         sched.run_due_checks(run_check);
+        // laya-gated edges first: ONE grouped decision per settled node; the
+        // plain pass below skips them (Go's evaluateLayaEdges ordering).
+        for name in &ready {
+            if sched.node(name).map(|st| st.status) == Some(Status::Done) {
+                evaluate_laya_edges(sched, &mut es, laya, name);
+            }
+        }
         for name in &ready {
             if sched.node(name).map(|st| st.status) == Some(Status::Done) {
                 let out = sched
@@ -338,6 +369,94 @@ pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
         flush(sched);
     }
     sched.settle_unreachable()
+}
+
+/// Resolves a settled node's laya-gated outgoing edges with ONE bounded
+/// decision (S19): a choice over the group's targets (+ the implicit "other").
+/// The argmax above the winning edge's `min_confidence` activates exactly that
+/// edge; everything else skips with the reason recorded. A dead or failing
+/// endpoint fail-safes to skipping — the graph never hangs on a decision.
+///
+/// State precedence: the group's first declared `state_file` (the artifact the
+/// agent wrote — the pane scrollback truncates the encoder and carries the
+/// prompt echo), else the node's captured output.
+fn evaluate_laya_edges(
+    sched: &mut Scheduler,
+    es: &mut EdgeState,
+    laya: &mut dyn LayaDecider,
+    node: &str,
+) {
+    let edges: Vec<Edge> = sched
+        .crew()
+        .out_edges(node)
+        .into_iter()
+        .filter(|e| e.is_laya())
+        .collect();
+    if edges.is_empty() {
+        return;
+    }
+    let mut state = sched
+        .node(node)
+        .map(|st| st.output.clone())
+        .unwrap_or_default();
+    if let Some(f) = edges.iter().find(|e| !e.state_file.is_empty()) {
+        let path = Path::new(sched.effective_cwd()).join(&f.state_file);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                state = text;
+                sched.emit(
+                    Event::on_node("laya_decision", node)
+                        .with_info(format!("state from file: {}", f.state_file)),
+                );
+            }
+            Err(e) => sched.emit(Event::on_node("laya_decision", node).with_info(format!(
+                "state_file unreadable ({e}) — falling back to output"
+            ))),
+        }
+    }
+    if state.len() > 4000 {
+        // evidence, not a full dump (the upstream cap is 50k)
+        state = truncate_utf8(&state, 4000);
+    }
+    let choices: Vec<LayaChoice> = edges
+        .iter()
+        .map(|e| LayaChoice {
+            target: e.to.clone(),
+            instructions: e.laya_instructions(),
+        })
+        .collect();
+    match laya.decide(&state, &choices) {
+        Ok(d) => {
+            sched.emit(
+                Event::on_node("laya_decision", node)
+                    .with_model(d.checkpoint.clone())
+                    .with_info(format!(
+                        "chosen={} conf={:.3} latency={}ms",
+                        d.chosen, d.confidence, d.latency_ms
+                    )),
+            );
+            for e in &edges {
+                if e.to == d.chosen && d.confidence >= e.min_confidence {
+                    sched.fire_edge(es, e);
+                } else {
+                    let why = if e.to == d.chosen {
+                        format!(
+                            "abstained: conf {:.3} < min_confidence {:.2}",
+                            d.confidence, e.min_confidence
+                        )
+                    } else {
+                        "not chosen".to_string()
+                    };
+                    sched.miss_edge(es, e, &format!("laya gate: {why}"));
+                }
+            }
+        }
+        Err(err) => {
+            for e in &edges {
+                sched.miss_edge(es, e, &format!("laya gate failed-safe: {err}"));
+            }
+        }
+    }
 }
 
 // MARK: staging helpers
@@ -555,6 +674,7 @@ fn log_stamp() -> String {
 mod tests {
     use super::*;
     use crate::crew::load;
+    use crate::crew::services::{LayaDecision, NoLaya};
     use std::collections::VecDeque;
 
     struct FakeBackend {
@@ -633,6 +753,7 @@ edges:
             &roles,
             &mut backend,
             &mut memory,
+            &mut NoLaya,
             Duration::from_secs(5),
             &mut |_s: &mut Scheduler| flushed += 1,
         );
@@ -686,6 +807,7 @@ edges:
             &roles,
             &mut backend,
             &mut memory,
+            &mut NoLaya,
             Duration::from_secs(5),
             &mut |_s: &mut Scheduler| {},
         );
@@ -718,6 +840,7 @@ phases:
             &roles,
             &mut backend,
             &mut memory,
+            &mut NoLaya,
             Duration::from_secs(5),
             &mut |_s: &mut Scheduler| {},
         );
@@ -750,6 +873,7 @@ agents:
             &roles,
             &mut backend,
             &mut memory,
+            &mut NoLaya,
             Duration::from_secs(5),
             &mut |_s: &mut Scheduler| {},
         );
@@ -826,6 +950,181 @@ phases:
         assert_eq!(nodes[0]["name"], "a");
         assert_eq!(nodes[1]["status"], "blocked");
         assert!(v["ts"].as_str().unwrap().ends_with('Z'));
+    }
+
+    struct StubLaya {
+        decision: Result<LayaDecision, String>,
+        seen: Vec<String>,
+    }
+
+    impl StubLaya {
+        fn choosing(chosen: &str, confidence: f64) -> Self {
+            StubLaya {
+                decision: Ok(LayaDecision {
+                    chosen: chosen.to_string(),
+                    confidence,
+                    checkpoint: "ckpt".to_string(),
+                    latency_ms: 12,
+                }),
+                seen: Vec::new(),
+            }
+        }
+
+        fn failing(err: &str) -> Self {
+            StubLaya {
+                decision: Err(err.to_string()),
+                seen: Vec::new(),
+            }
+        }
+    }
+
+    impl LayaDecider for StubLaya {
+        fn decide(&mut self, state: &str, _choices: &[LayaChoice]) -> Result<LayaDecision, String> {
+            self.seen.push(state.to_string());
+            self.decision.clone()
+        }
+    }
+
+    fn laya_crew() -> &'static str {
+        r#"
+name: laya-fire
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+  - {name: c, prompt: z}
+edges:
+  - {from: a, to: b, when: "laya:choice:go b", min_confidence: 0.5}
+  - {from: a, to: c, when: "laya:choice:go c", min_confidence: 0.5}
+"#
+    }
+
+    fn drive_laya(yaml: &str, laya: &mut StubLaya) -> Scheduler {
+        let (mut sched, roles, _dir) = setup(yaml);
+        let mut backend = FakeBackend {
+            reads: VecDeque::from(vec![
+                String::new(),
+                "decide this".into(),
+                String::new(),
+                "b did it".into(),
+            ]),
+            waits: VecDeque::new(),
+        };
+        let mut memory = NoMemory;
+        drive(
+            &mut sched,
+            &roles,
+            &mut backend,
+            &mut memory,
+            laya,
+            Duration::from_secs(5),
+            &mut |_s: &mut Scheduler| {},
+        );
+        sched
+    }
+
+    #[test]
+    fn a_laya_gate_activates_only_the_chosen_edge() {
+        let mut laya = StubLaya::choosing("b", 0.9);
+        let sched = drive_laya(laya_crew(), &mut laya);
+        assert_eq!(laya.seen, ["decide this"], "state = the node output");
+        assert_eq!(sched.node("b").unwrap().status, Status::Done);
+        assert_eq!(sched.node("c").unwrap().status, Status::Skipped);
+        let decision = sched
+            .events()
+            .iter()
+            .find(|e| e.kind == "laya_decision")
+            .expect("decision event");
+        assert_eq!(decision.model, "ckpt");
+        assert_eq!(decision.info, "chosen=b conf=0.900 latency=12ms");
+        let skips: Vec<&Event> = sched
+            .events()
+            .iter()
+            .filter(|e| e.kind == "edge_skip")
+            .collect();
+        assert_eq!(skips.len(), 1);
+        assert_eq!(skips[0].info, "a>c laya gate: not chosen");
+    }
+
+    #[test]
+    fn a_below_threshold_confidence_abstains_from_its_own_edge() {
+        let mut laya = StubLaya::choosing("b", 0.2);
+        let sched = drive_laya(laya_crew(), &mut laya);
+        assert_eq!(sched.node("b").unwrap().status, Status::Skipped);
+        assert_eq!(sched.node("c").unwrap().status, Status::Skipped);
+        let skips: Vec<&Event> = sched
+            .events()
+            .iter()
+            .filter(|e| e.kind == "edge_skip")
+            .collect();
+        assert_eq!(skips.len(), 2);
+        assert_eq!(
+            skips[0].info,
+            "a>b laya gate: abstained: conf 0.200 < min_confidence 0.50"
+        );
+        assert_eq!(skips[1].info, "a>c laya gate: not chosen");
+    }
+
+    #[test]
+    fn a_dead_laya_endpoint_fail_safes_to_skips() {
+        let mut laya = StubLaya::failing("laya endpoint unreachable (http://127.0.0.1:8751)");
+        let sched = drive_laya(laya_crew(), &mut laya);
+        assert_eq!(sched.node("b").unwrap().status, Status::Skipped);
+        assert_eq!(sched.node("c").unwrap().status, Status::Skipped);
+        for ev in sched.events().iter().filter(|e| e.kind == "edge_skip") {
+            assert!(ev.info.contains("laya gate failed-safe:"), "{}", ev.info);
+        }
+        assert_eq!(
+            sched
+                .events()
+                .iter()
+                .filter(|e| e.kind == "laya_decision")
+                .count(),
+            0,
+            "a failed decision emits no chosen event"
+        );
+    }
+
+    #[test]
+    fn a_state_file_is_the_evidence_instead_of_the_output() {
+        let (mut sched, roles, dir) = setup(
+            r#"
+name: laya-file
+agents:
+  - {name: a, prompt: x}
+  - {name: b, prompt: y}
+edges:
+  - {from: a, to: b, when: "laya:choice:go", min_confidence: 0.5, state_file: ARTIFACT.md}
+"#,
+        );
+        std::fs::write(dir.join("ARTIFACT.md"), "FROM FILE").unwrap();
+        let mut backend = FakeBackend {
+            reads: VecDeque::from(vec![
+                String::new(),
+                "pane output that must not be judged".into(),
+                String::new(),
+                "done".into(),
+            ]),
+            waits: VecDeque::new(),
+        };
+        let mut memory = NoMemory;
+        let mut laya = StubLaya::choosing("b", 0.9);
+        drive(
+            &mut sched,
+            &roles,
+            &mut backend,
+            &mut memory,
+            &mut laya,
+            Duration::from_secs(5),
+            &mut |_s: &mut Scheduler| {},
+        );
+        assert_eq!(laya.seen, ["FROM FILE"]);
+        assert_eq!(sched.node("b").unwrap().status, Status::Done);
+        assert!(
+            sched
+                .events()
+                .iter()
+                .any(|e| e.kind == "laya_decision" && e.info == "state from file: ARTIFACT.md")
+        );
     }
 
     #[test]

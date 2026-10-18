@@ -41,6 +41,7 @@ pub mod routes;
 pub mod run;
 pub mod runner;
 pub mod scheduler;
+pub mod services;
 pub mod template;
 pub mod validate;
 

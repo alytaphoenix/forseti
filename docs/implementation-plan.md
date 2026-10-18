@@ -697,8 +697,37 @@ them exactly (stdout, stderr, exit code).
        with both shell checks passing (exit 0), and a deliberately failing check
        produced `check_fail` + `checks_failed=1` + exit 1. Teardown left no
        agents and no extra tabs in the session.
-   - **18D-5c** — memory HTTP client + laya + switchyard proxy + worktree +
-     review pane.
+   - **18D-5c — the remaining integrations, staged.**
+     **18D-5c-1 ✅ done (2026-10-18)** — `host/src/crew/services.rs`: the two
+     loopback services, both advisory.
+     - `MemoryClient` implements `MemoryLink` (POST `/recall` `{query, agent, k,
+       crew?}` — `crew` omitted for the empty namespace; POST `/write` `{agent:
+       "crew-<ns>", crew, text, run, source, tags}` → `id`), with the Go
+       clients' error text. `Run::run` builds it only when the crew declares
+       `memory:` (else `NoMemory`) and writes the `.forseti/memory-crew`
+       hand-off file for pi's tools (S26: no per-pane env through the socket).
+     - `LayaClient` implements `LayaDecider` (POST `/v1/systemone` with the
+       `choice` question + criteria + the implicit `other`), reading the
+       **calibrated** `confidence` and `routing.model` (the event's `model`).
+       `drive()` now runs `evaluate_laya_edges` before the plain edge pass:
+       state precedence = the group's first `state_file` (else the node
+       output, capped at 4 000 bytes), one grouped call per settled node, the
+       argmax above `min_confidence` fires exactly one edge, everything else
+       misses with `not chosen` / `abstained: conf … < min_confidence …`, and a
+       dead endpoint fail-safes to skipping every laya edge (S19).
+     - Deps: `reqwest` (blocking + json, already in the tree via
+       switchyard-server; loopback needs no TLS).
+     - **Live (2026-10-18)**: `crew-memory.yaml` → planner auto-recall 0
+       entries, then the builder's recall found the planner's write in the SAME
+       run (`1 entries`), both `memory_write` events, `.forseti/memory-crew` =
+       the namespace, exit 0. `crew-laya.yaml` → judged `LAYA_TRIAGE.md`
+       (`state from file`), `chosen=opsfix conf=0.511 latency=299ms` over a 0.4
+       gate, `codefix` skipped (`not chosen`), exit 0. S42 records both.
+     - **18D-5c-2 (next)** — the switchyard proxy lifecycle (spawn this binary
+       with a generated TOML, materialize the pi provider, tail the routing
+       log into `route_decision` events, restore at teardown) + the worktree
+       lifecycle (`worktree.create`, husk sweep, `-a` trust, teardown removal +
+       branch delete) + the lazygit review pane.
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
    compared side by side; the Go engine retires only once the Rust engine passes
    the smoke gate unsupervised.
@@ -756,6 +785,23 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-5c-1)
+- `cargo test` in `host/` — **101 unit tests + 1 oracle** (+1 ignored): 11 new.
+  `services` (7) runs the clients against a one-shot `TcpListener` HTTP server
+  and asserts the exact payloads/paths (`/recall` with and without `crew`,
+  `k<=0→3`; `/write` `agent:"crew-<ns>"`, run/source/tags; the non-200 text
+  `memory endpoint 503`; laya's choice question + criteria + `other`, the
+  calibrated confidence, `other` → no activation, a missing `route` answer).
+  `run` (4) drives laya edges with a stub decider: the chosen edge fires and
+  the sibling skips, a below-threshold confidence abstains on its own edge, a
+  dead endpoint fail-safes every edge, and `state_file` is the judged evidence.
+- **Live** (2026-10-18, `sandbox`, `beam-free`, both services up): the memory
+  crew auto-recalled its own earlier write within one run and wrote both nodes;
+  the laya crew judged the artifact file, fired `opsfix` at conf 0.511 over a
+  0.4 gate, and skipped `codefix`. Both exit 0.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; oracle `--check`
+  still 85 records.
 
 ### Gates (18D-5b)
 - `cargo test` in `host/` — **90 unit tests + 1 oracle** (+1 ignored): 7 new
