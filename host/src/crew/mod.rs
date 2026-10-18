@@ -34,6 +34,7 @@ pub mod bus;
 pub mod command;
 pub mod explain;
 pub mod herdr;
+pub mod live;
 pub mod model;
 pub mod pattern;
 pub mod proxy;

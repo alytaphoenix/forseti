@@ -116,6 +116,21 @@ func candidateHostBins() []string {
 	return out
 }
 
+// ResolveHostBin locates our Rust host binary (the engine's second
+// implementation): FORSETI_HOST_BIN → host/target/{release,debug} built in this
+// repo → $PATH. `crew "run|validate" --engine rust` delegates to it.
+func ResolveHostBin() (string, error) {
+	for _, p := range candidateHostBins() {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	if p, err := exec.LookPath(string(RouterHost)); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("forseti-host not found — build host/ (cargo build --release) or set FORSETI_HOST_BIN")
+}
+
 func findRepoRoot(dir string) string {
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "host", "Cargo.toml")); err == nil {

@@ -770,9 +770,33 @@ them exactly (stdout, stderr, exit code).
          **Model policy**: examples pin `openrouter/free`; the smoke gate
          overrides to `opencode-go/beam-free` for determinism (free-pool
          variance/429s, S48).
-6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
-   compared side by side; the Go engine retires only once the Rust engine passes
-   the smoke gate unsupervised.
+6. **18D-6 ✅ done (2026-10-18, no Rust TUI by design)** — the engine switch
+   and the UI-only live streams.
+   - `forseti-crew run|validate --engine go|rust` (or `FORSETI_CREW_ENGINE`):
+     `rust` execs `forseti-host` with translated flags and propagates its exit
+     code, so a live run can be compared side by side. `validate` is
+     byte-identical either way (the oracle pins it); the host binary resolves
+     like the router (`FORSETI_HOST_BIN` → `host/target/{release,debug}` →
+     `$PATH`).
+   - `host/src/crew/live.rs`: the `pane_agent_status_changed` subscription →
+     `node_status` events + `live_status` (a `blocked` push ends a RUNNING node;
+     a settled node is never flipped back), best-effort blocked notifications
+     (disabled on this setup — the ttt badge is the alert), and one
+     `pattern_matched` waiter per `watch:` entry, deduped by line and using
+     `pane.wait_for_output`'s past-scrollback match (S12).
+   - Both streams are merged into the scheduler and drained at each flush: the
+     event SET matches the Go engine; the ordering is batched per node rather
+     than live. That is deliberate — the consumers are the run log, the
+     `crew-status.json` bridge and `watch`, all of which read the same files.
+   - `scripts/crew-smoke.sh` takes `FORSETI_CREW_ENGINE=go|rust`; the rust leg
+     builds the host and pins `FORSETI_HOST_BIN` to the fresh debug binary, so
+     a stale release build cannot be exercised.
+   - **TUI decision (2026-10-18)**: no Rust TUI. The human surfaces are the run
+     log (identical JSONL — the Go `watch` TUI reads Rust runs), the
+     `crew-status.json` bridge (both engines write it, contract pinned), and
+     ttt, where pi is headed (S38). Reimplementing Bubble Tea would duplicate a
+     surface we are about to replace; the Go `watch` remains the TUI for both
+     engines.
 
 ### Gates (18D-1)
 - `cargo test` in `host/` — 14 unit tests + the oracle integration test
@@ -827,6 +851,22 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-6)
+- `cargo test` in `host/` — **121 unit tests + 1 oracle** (+1 ignored): 3 new
+  `live` tests (pane→node status mapping incl. an unknown pane, the watch event
+  shape, and the blocked transition that ends a running node but leaves a
+  settled one alone).
+- **Live** (2026-10-18, sandbox, beam-free): a `--engine rust` checked-crew run
+  emitted `node_status` (working/done per node) and two `pattern_matched`
+  events, both checks passed, exit 0. `forseti-crew validate --engine rust` is
+  byte-identical to the Go engine (plain and `--explain`).
+- **`FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` → PASS** (checked
+  crew + phased barrier, watch event, bus files, hermeticity); the default
+  `go` leg still PASSes after the switch. The Rust run log parses as the same
+  17-event schema (`run_start … phase_done … run_end`).
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; `gofmt`/`go vet`
+  clean; oracle `--check` 85 records.
 
 ### Gates (18D-5c-2b)
 - `cargo test` in `host/` — **118 unit tests + 1 oracle** (+1 ignored): 16

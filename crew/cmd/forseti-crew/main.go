@@ -10,6 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"time"
 
 	"forseti/crew/internal/runner"
@@ -64,6 +66,7 @@ type runFlags struct {
 	keepWorktree bool
 	review       bool
 	model        string
+	engine       string
 }
 
 func parseRun(fs *flag.FlagSet, args []string) *runFlags {
@@ -79,7 +82,18 @@ func parseRun(fs *flag.FlagSet, args []string) *runFlags {
 	fs.BoolVar(&f.keepWorktree, "keep-worktree", false, "keep the worktree after the run")
 	fs.BoolVar(&f.review, "review", false, "end on a lazygit review of the worktree (implies --keep-worktree + --keep-tab)")
 	fs.StringVar(&f.model, "model", "", "override model for direct-model nodes (FORSETI_CREW_MODEL env also works)")
+	fs.StringVar(&f.engine, "engine", "", "engine: go (default) or rust — rust delegates to forseti-host (FORSETI_CREW_ENGINE env also works)")
 	_ = fs.Parse(args)
+	if f.engine == "" {
+		f.engine = os.Getenv("FORSETI_CREW_ENGINE")
+	}
+	if f.engine == "" {
+		f.engine = "go"
+	}
+	if f.engine != "go" && f.engine != "rust" {
+		fmt.Fprintln(os.Stderr, "run: --engine must be go or rust")
+		os.Exit(2)
+	}
 	if f.model == "" {
 		f.model = os.Getenv("FORSETI_CREW_MODEL")
 	}
@@ -94,10 +108,71 @@ func loadCrew(path string) (*schema.Crew, error) {
 	return schema.Load(data)
 }
 
+// execRustRun translates the parsed run flags into `forseti-host crew run` and
+// execs it: the Rust engine is a drop-in for the same crew files (docs S40).
+func execRustRun(f *runFlags) {
+	args := []string{"crew", "run", "-f", f.file, "--timeout", strconv.Itoa(f.timeout)}
+	if f.session != "" {
+		args = append(args, "--session", f.session)
+	}
+	if f.tab != "" {
+		args = append(args, "--tab", f.tab)
+	}
+	if f.cwd != "" {
+		args = append(args, "--cwd", f.cwd)
+	}
+	if f.model != "" {
+		args = append(args, "--model", f.model)
+	}
+	if f.headless {
+		args = append(args, "--headless")
+	}
+	if f.keepTab {
+		args = append(args, "--keep-tab")
+	}
+	if f.worktree != "" {
+		args = append(args, "--worktree", f.worktree)
+	}
+	if f.keepWorktree {
+		args = append(args, "--keep-worktree")
+	}
+	if f.review {
+		args = append(args, "--review")
+	}
+	execRust(args)
+}
+
+// execRust runs the Rust host with inherited stdio and the same exit code.
+func execRust(args []string) {
+	host, err := switchyard.ResolveHostBin()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "engine rust:", err)
+		os.Exit(1)
+	}
+	cmd := exec.Command(host, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			os.Exit(ee.ExitCode())
+		}
+		fmt.Fprintln(os.Stderr, "engine rust:", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 func cmdValidate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	explain := fs.Bool("explain", false, "print the resolved graph (roles, patterns, edges) after validating")
 	f := parseRun(fs, args)
+	if f.engine == "rust" {
+		args := []string{"crew", "validate", "-f", f.file}
+		if *explain {
+			args = append(args, "--explain")
+		}
+		execRust(args)
+		return
+	}
 	crew, err := loadCrew(f.file)
 	if err != nil {
 		// P13-B23: a missing file is a read error, not a crew validation verdict
@@ -163,6 +238,10 @@ func cmdRun(args []string) {
 	if f.timeout < 1 {
 		fmt.Fprintln(os.Stderr, "run: --timeout must be >= 1 (minutes)")
 		os.Exit(2)
+	}
+	if f.engine == "rust" {
+		execRustRun(f)
+		return
 	}
 	crew, err := loadCrew(f.file)
 	if err != nil {

@@ -14,6 +14,9 @@ BIN="crew/bin/forseti-crew"
 CREWFILE="crew/examples/crew-checks.yaml"
 PHASEFILE="crew/examples/crew-phases.yaml"
 PROBE="HELLO_CREW.md"
+# Phase 18D-6: the Rust engine is a drop-in via `--engine rust`; the gate builds
+# it and pins the fresh binary so a stale release build can never be used.
+ENGINE="${FORSETI_CREW_ENGINE:-go}"
 
 # P13-B19: scratch files in a private mktemp dir (fixed /tmp names collided
 # across users/runs and left world-writable debris behind)
@@ -24,6 +27,11 @@ PHASES="$WORK/phases.jsonl"
 
 echo "crew-smoke: building…"
 ( cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew )
+if [ "$ENGINE" = rust ]; then
+  ( cd host && cargo build -q ) || { echo "crew-smoke: FAIL — cargo build"; exit 1; }
+  export FORSETI_HOST_BIN="$PWD/host/target/debug/forseti-host"
+fi
+echo "crew-smoke: engine: $ENGINE"
 
 # Phase 18D-1: the Rust crew engine must reproduce the Go engine's validate
 # output byte for byte. Static leg (no herdr) — fail fast before the live run.
@@ -62,7 +70,7 @@ export FORSETI_CREW_MODEL="${FORSETI_CREW_MODEL:-opencode-go/beam-free}"
 echo "crew-smoke: running checked crew headless in sandbox session (a few minutes)…"
 echo "crew-smoke: model: $FORSETI_CREW_MODEL"
 rm -f "$PROBE"
-if ! "$BIN" run --headless -f "$CREWFILE" --session sandbox > "$EVENTS" 2>&1; then
+if ! "$BIN" run --headless --engine "$ENGINE" -f "$CREWFILE" --session sandbox > "$EVENTS" 2>&1; then
   # P13 hardening: surface WHY, not just the raw tail — failure events first
   echo "crew-smoke: FAIL — run exited nonzero"
   grep -E '"type":"(node_failed|check_fail|edge_skip|teardown)"' "$EVENTS" | tail -10 || true
@@ -101,7 +109,7 @@ fi
 
 echo "crew-smoke: running PHASED crew (P11: strict barrier between phases)…"
 rm -f "$PROBE"
-if ! "$BIN" run --headless -f "$PHASEFILE" --session sandbox > "$PHASES" 2>&1; then
+if ! "$BIN" run --headless --engine "$ENGINE" -f "$PHASEFILE" --session sandbox > "$PHASES" 2>&1; then
   echo "crew-smoke: FAIL — phased run exited nonzero"
   grep -E '"type":"(node_failed|check_fail|phase_)"' "$PHASES" | tail -10 || true
   echo '--- event tail ---'

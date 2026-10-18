@@ -34,6 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use super::herdr;
+use super::live::{Live, LiveMaps};
 use super::model::Crew;
 use super::model::Edge;
 use super::proxy::{self, Proxy, RoutingTailer};
@@ -77,6 +78,8 @@ pub struct Run {
     restore_provider: Option<proxy::Restore>,
     /// Tails the router's NDJSON into `route_decision` events.
     tailer: Option<RoutingTailer>,
+    /// The live status stream + `watch:` waiters (UI-only).
+    live: Option<Live>,
 }
 
 impl Run {
@@ -106,6 +109,7 @@ impl Run {
             proxy: None,
             restore_provider: None,
             tailer: None,
+            live: None,
         }
     }
 
@@ -116,7 +120,8 @@ impl Run {
     /// Stages and runs the crew. Blocking; returns the outcome even when nodes
     /// failed (the caller maps `blocked`/`checks_failed` to an exit code).
     pub fn run(&mut self) -> Result<RunOutcome, String> {
-        let client = connect(&self.opts.session)?;
+        // Arc: the live streams and the watch waiters own their own handles
+        let client = std::sync::Arc::new(connect(&self.opts.session)?);
         let cwd = self.opts.cwd.clone();
 
         if std::env::var("FORSETI_CREW_MODEL")
@@ -255,7 +260,13 @@ impl Run {
         }
         sink.flush(&mut self.sched);
 
-        // 5. drive the graph
+        // 5. live status stream + watch waiters (UI-only; 6B-2/6C-1)
+        let live = Live::start(std::sync::Arc::clone(&client), &self.crew, &pane_ids);
+        sink.live = Some(live.maps());
+        sink.extra = Some(live.queued());
+        self.live = Some(live);
+
+        // 6. drive the graph
         let mut backend = HerdrBackend::new(&client);
         let mut memory: Box<dyn MemoryLink> = if self.crew.memory.is_some() {
             Box::new(MemoryClient::new())
@@ -266,21 +277,25 @@ impl Run {
             Box::new(NoMemory)
         };
         let mut laya = LayaClient::new();
+        let live_maps = self.live.as_ref().map(|l| l.maps());
         drive(
             &mut self.sched,
             &self.roles,
             &mut backend,
             &mut *memory,
             &mut laya,
-            self.opts.node_timeout,
+            live_maps.as_ref(),
             &mut |sched| sink.flush(sched),
         );
 
         // 6. summary + teardown (blocked keeps the tab, P13 BUG-09)
         let _ = self.sched.settle_unreachable();
         self.sched.update_phase_progress();
-        // fold the router's tailed records in BEFORE the summary, so
-        // route_decision events precede run_end deterministically
+        // fold the tailed + live events in BEFORE the summary, so they
+        // precede run_end deterministically
+        if let Some(mut l) = self.live.take() {
+            l.stop();
+        }
         if let Some(mut t) = self.tailer.take() {
             t.stop();
         }
@@ -373,7 +388,10 @@ impl Run {
         let keep_worktree = self.sched.opts().keep_worktree;
         let keep_tab = self.sched.opts().keep_tab;
         let _ = client.agent_view_clear(source);
-        // the router goes after the view: tailer, provider key, process
+        // the router goes after the view: live streams, tailer, key, process
+        if let Some(mut l) = self.live.take() {
+            l.stop();
+        }
         if let Some(mut t) = self.tailer.take() {
             t.stop();
         }
@@ -521,15 +539,17 @@ impl Run {
 
 /// The wave loop (Go `Run.Run` step 7), backend-parameterized so a whole crew can
 /// be driven over a fake backend in tests. Returns whether the run ended blocked.
-pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
+pub(crate) fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
     sched: &mut Scheduler,
     roles: &RolePack,
     backend: &mut B,
     memory: &mut dyn MemoryLink,
     laya: &mut dyn LayaDecider,
-    timeout: Duration,
+    running: Option<&std::sync::Arc<std::sync::Mutex<LiveMaps>>>,
     flush: &mut F,
 ) -> bool {
+    // the scheduler owns the per-node settle budget (Options.node_timeout)
+    let timeout = sched.opts().node_timeout;
     let mut es = EdgeState::new();
     loop {
         let ready = sched.ready(&es);
@@ -540,6 +560,12 @@ pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
         sched.emit_phase_starts(&names);
 
         for name in &ready {
+            if let Some(maps) = running
+                && let Some(pane) = sched.node(name).map(|st| st.pane_id.clone())
+                && !pane.is_empty()
+            {
+                Live::set_running(maps, name, Some(&pane));
+            }
             {
                 let mut ex = NodeExecutor {
                     sched: &mut *sched,
@@ -549,6 +575,9 @@ pub fn drive<B: PaneBackend, F: FnMut(&mut Scheduler)>(
                     timeout,
                 };
                 ex.run(name);
+            }
+            if let Some(maps) = running {
+                Live::set_running(maps, name, None);
             }
             flush(sched);
         }
@@ -831,6 +860,10 @@ struct Sink<'a> {
     events: Vec<Event>,
     /// Router events from the tailer thread (drained on every flush).
     tail: Option<std::sync::Arc<std::sync::Mutex<Vec<Event>>>>,
+    /// Live status/watch events from the stream threads.
+    extra: Option<std::sync::Arc<std::sync::Mutex<Vec<Event>>>>,
+    /// herdr's live statuses to merge into the node states before draining.
+    live: Option<std::sync::Arc<std::sync::Mutex<LiveMaps>>>,
 }
 
 impl<'a> Sink<'a> {
@@ -842,12 +875,24 @@ impl<'a> Sink<'a> {
             headless,
             events: Vec::new(),
             tail: None,
+            extra: None,
+            live: None,
         }
     }
 
     fn flush(&mut self, sched: &mut Scheduler) {
+        if let Some(live) = &self.live
+            && let Ok(maps) = live.lock()
+        {
+            super::live::apply_live(&maps, sched);
+        }
         let mut batch = sched.drain_events();
         if let Some(t) = &self.tail
+            && let Ok(mut queued) = t.lock()
+        {
+            batch.append(&mut queued);
+        }
+        if let Some(t) = &self.extra
             && let Ok(mut queued) = t.lock()
         {
             batch.append(&mut queued);
@@ -1023,7 +1068,7 @@ edges:
             &mut backend,
             &mut memory,
             &mut NoLaya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| flushed += 1,
         );
         assert!(!blocked);
@@ -1077,7 +1122,7 @@ edges:
             &mut backend,
             &mut memory,
             &mut NoLaya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| {},
         );
         assert!(!blocked);
@@ -1110,7 +1155,7 @@ phases:
             &mut backend,
             &mut memory,
             &mut NoLaya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| {},
         );
         let phases: Vec<&str> = sched
@@ -1143,7 +1188,7 @@ agents:
             &mut backend,
             &mut memory,
             &mut NoLaya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| {},
         );
         assert!(blocked);
@@ -1321,7 +1366,7 @@ edges:
             &mut backend,
             &mut memory,
             laya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| {},
         );
         sched
@@ -1419,7 +1464,7 @@ edges:
             &mut backend,
             &mut memory,
             &mut laya,
-            Duration::from_secs(5),
+            None,
             &mut |_s: &mut Scheduler| {},
         );
         assert_eq!(laya.seen, ["FROM FILE"]);

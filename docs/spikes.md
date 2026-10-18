@@ -1757,3 +1757,45 @@ The proxy port itself came up clean (config render → router `--dry-run` → sp
   (0600, extracted once from OpenCode's local credential store; never printed or
   committed). `~/.pi/agent/models.json` was backed up to `models.json.bak`
   before the provider entry was added.
+
+## S49 — 18D-6: the engine switch, the live streams, and why there is no Rust TUI (2026-10-18) ✅ resolved (live + gate)
+
+- **The switch is a thin exec, and that is the point.** `forseti-crew
+  run|validate --engine rust` resolves `forseti-host` exactly like the router
+  (`FORSETI_HOST_BIN` → `host/target/{release,debug}` → `$PATH`), translates the
+  parsed flags, inherits stdio and propagates the child's exit code. There is no
+  shared code path to drift: `validate` is byte-identical (plain AND `--explain`,
+  verified by diff), and `run` is the Rust engine end to end.
+- **The live streams are batched, not live.** `pane_agent_status_changed` pushes
+  and `watch:` hits are queued by their threads and drained into the run log at
+  each flush, so within one node the order differs from Go (statuses appear
+  after `node_done` rather than during the run) while the event SET matches.
+  That is fine for every consumer we have — run log, `crew-status.json`, and
+  `watch` — and it avoids sharing the scheduler across threads.
+- **`pattern_matched` fires on the prompt echo too.** `pane.wait_for_output`
+  matches past scrollback instantly (S12), and the prompt itself contains
+  "DONE", so the first hit is the echo line and the second is the answer. The Go
+  engine behaves identically; the smoke gate only requires that at least one
+  `pattern_matched` with the builder exists, so this is parity, not a bug. The
+  dedupe is per exact line, which is what stops a watcher from replaying the
+  same echo forever.
+- **Stream events needed their own `ts`**: they bypass `Scheduler::emit`, so the
+  first live run logged `"ts":""` for every `node_status`/`pattern_matched`.
+  Fixed in the event constructors.
+- **A late `blocked` push must not undo a settled node.** `apply_live` only
+  flips a node that is still RUNNING (Go has the same guard); a unit test pins
+  it, because a late push flipping `done` back to `blocked` would corrupt the
+  summary and the exit code.
+- **The gate runs the Rust engine unsupervised**:
+  `FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` builds the host, pins
+  `FORSETI_HOST_BIN` to the fresh debug binary (a stale release build must never
+  be exercised), and passes the checked crew + the phased barrier (watch event,
+  bus files, hermeticity). The `go` leg still passes after the switch.
+- **No Rust TUI, deliberately.** The Go `watch` TUI reads the same JSONL, the
+  `crew-status.json` bridge is written by both engines (contract pinned by a
+  test), and per the 2026-10-18 direction the human surface is ttt with pi
+  inside it (S38). Reimplementing Bubble Tea would duplicate a surface we are
+  about to replace. The one real gap left by not porting it is the TUI's
+  interactive builder (crew authoring), which remains Go-only.
+- **Residual divergences (documented, not hidden)**: sequential waves (perf
+  only; S40), the TUI (above), and the interactive builder.
