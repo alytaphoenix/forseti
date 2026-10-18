@@ -37,8 +37,8 @@
 // (messages without system prompt, before every LLM call), `before_agent_start`
 // (`systemPromptOptions.sections` mutations feed the re-render), `turn_end`
 // (`toolResults` for archival). Node 22.22 zstd: `zstdDecompressSync` incl.
-// `{dictionary}`. See docs/spikes.md (S41/S44). Telemetry + picker eval:
-// `scripts/hashtext-{dataset,eval}.ts` (S45).
+// `{dictionary}`. See docs/spikes.md (S41/S44). Telemetry, picker eval and
+// isotonic calibration: `scripts/hashtext-{dataset,eval,calibrate}.ts` (S45/S46).
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
@@ -80,6 +80,7 @@ const MARKER_HINT = "[hashtext ";
 const NONCE = randomBytes(3).toString("hex");
 const DECISIONS_FILE = path.join(STORE_DIR, "decisions.jsonl");
 const DECISIONS_MAX_BYTES = 8 * 1024 * 1024;
+const CALIBRATION_FILE = path.join(STORE_DIR, "calibration.json");
 
 const INSTALL_HINT =
 	`hashtext not found (HASHTEXT_BIN='${process.env.HASHTEXT_BIN ?? "hashtext"}'). ` +
@@ -398,6 +399,62 @@ let layaWarned = false;
 /** Last Laya pick/auto-expand, so the next expand/evict can be attributed. */
 let pendingPick: PendingPick | null = null;
 
+// Consumer-side confidence calibration: isotonic points fitted from labelled
+// decisions (`scripts/hashtext-calibrate.ts`). Applies to the gating number
+// (`answer_confidence`) only; argmax is unaffected.
+interface CalibrationPoint {
+	x: number;
+	y: number;
+}
+let calibration: CalibrationPoint[] | null = null;
+let calibrationMtime = 0;
+let calibrationCheckedAt = 0;
+
+async function loadCalibration(): Promise<void> {
+	if (Date.now() - calibrationCheckedAt < 5_000) return;
+	calibrationCheckedAt = Date.now();
+	try {
+		const info = await stat(CALIBRATION_FILE);
+		if (info.mtimeMs === calibrationMtime) return;
+		const payload = JSON.parse(await readFile(CALIBRATION_FILE, "utf8")) as {
+			points?: Array<[number, number]>;
+		};
+		const points = (payload.points ?? [])
+			.filter(
+				(point): point is [number, number] =>
+					Array.isArray(point) &&
+					point.length === 2 &&
+					Number.isFinite(point[0]) &&
+					Number.isFinite(point[1]),
+			)
+			.map(([x, y]) => ({
+				x: Math.min(1, Math.max(0, Number(x))),
+				y: Math.min(1, Math.max(0, Number(y))),
+			}))
+			.sort((a, b) => a.x - b.x);
+		calibration = points.length >= 2 ? points : null;
+		calibrationMtime = info.mtimeMs;
+	} catch {
+		calibration = null;
+		calibrationMtime = 0;
+	}
+}
+
+export function calibrateConfidence(raw: number): number {
+	if (!calibration || calibration.length < 2) return raw;
+	const x = Math.min(1, Math.max(0, raw));
+	if (x <= calibration[0].x) return calibration[0].y;
+	for (let i = 1; i < calibration.length; i++) {
+		const a = calibration[i - 1];
+		const b = calibration[i];
+		if (x <= b.x) {
+			const span = b.x - a.x || 1;
+			return a.y + ((x - a.x) / span) * (b.y - a.y);
+		}
+	}
+	return calibration[calibration.length - 1].y;
+}
+
 function sessionKey(ctx: ExtensionContext): string {
 	try {
 		const id = ctx.sessionManager.getSessionId();
@@ -452,6 +509,7 @@ async function loadState(ctx: ExtensionContext): Promise<void> {
 	};
 	turn = Number(saved.turn ?? 0);
 
+	await loadCalibration().catch(() => {});
 	try {
 		await refreshMetas(true);
 		storeOk = true;
@@ -1006,7 +1064,10 @@ async function archiveResults(toolResults: unknown[], ctx: ExtensionContext): Pr
 
 interface LayaPick {
 	choice: string;
+	/** Calibrated top probability (`answer_confidence`) — the field to gate on. */
 	confidence: number;
+	/** Normalized entropy (`confidence` in the wire response) — decisiveness, not P(correct). */
+	entropy_confidence: number;
 	probabilities?: Record<string, unknown>;
 	latency_ms: number;
 }
@@ -1029,13 +1090,26 @@ export async function layaChoose(
 		});
 		if (!res.ok) return null;
 		const data = (await res.json()) as {
-			answers?: { pick?: { choice?: string; confidence?: number; probabilities?: Record<string, unknown> } };
+			answers?: {
+				pick?: {
+					choice?: string;
+					confidence?: number;
+					answer_confidence?: number;
+					probabilities?: Record<string, unknown>;
+				};
+			};
 		};
 		const answer = data.answers?.pick;
 		if (!answer?.choice) return null;
+		// `confidence` is normalized entropy (decisiveness); `answer_confidence` is
+		// max(p), the calibrated quantity the library fits and ECE measures.
+		// Gating on entropy silently made the auto threshold unreachable.
+		const entropy = Number(answer.confidence ?? 0);
+		const calibrated = Number(answer.answer_confidence ?? answer.confidence ?? 0);
 		return {
 			choice: answer.choice,
-			confidence: Number(answer.confidence ?? 0),
+			confidence: calibrated,
+			entropy_confidence: entropy,
 			probabilities: answer.probabilities,
 			latency_ms: Math.round(performance.now() - started),
 		};
@@ -1182,6 +1256,8 @@ export async function findBlocks(query: string): Promise<{ candidates: BlockMeta
 		candidates: candidateDetails(candidates),
 		pick: pick?.choice ?? null,
 		confidence: pick?.confidence ?? null,
+		entropy_confidence: pick?.entropy_confidence ?? null,
+		calibrated: pick ? calibrateConfidence(pick.confidence) : null,
 		latency_ms: pick?.latency_ms ?? null,
 		probabilities: pick?.probabilities ?? null,
 	});
@@ -1265,7 +1341,8 @@ export default function forsetiHashtext(pi: ExtensionAPI) {
 					if (pick && pick.choice !== "other") {
 						const meta = candidates.find((candidate) => candidate.id === pick.choice);
 						if (meta) {
-							if (pick.confidence >= LAYA_AUTO_CONFIDENCE) {
+							const gate = calibrateConfidence(pick.confidence);
+							if (gate >= LAYA_AUTO_CONFIDENCE) {
 								await expandRef(meta.sha256, { mode: "auto" }, ctx);
 								await logDecision({
 									kind: "auto_expand",
@@ -1273,17 +1350,19 @@ export default function forsetiHashtext(pi: ExtensionAPI) {
 									pick: meta.id,
 									name: meta.name,
 									confidence: pick.confidence,
+									calibrated: gate,
 									candidates: candidates.map((candidate) => candidate.id),
 								});
 								section = renderIndexSection();
-							} else if (pick.confidence >= LAYA_SUGGEST_CONFIDENCE) {
+							} else if (gate >= LAYA_SUGGEST_CONFIDENCE) {
 								section +=
-									`\nlikely: ${displayRef(meta)} ${sanitizeLabel(meta.name, 24)} (${pick.confidence.toFixed(2)}) — hashtext_expand`;
+									`\nlikely: ${displayRef(meta)} ${sanitizeLabel(meta.name, 24)} (${gate.toFixed(2)}) — hashtext_expand`;
 								await logDecision({
 									kind: "suggest",
 									query: prompt.slice(0, 200),
 									pick: meta.id,
 									confidence: pick.confidence,
+									calibrated: gate,
 								});
 							}
 						}
@@ -1397,7 +1476,8 @@ export default function forsetiHashtext(pi: ExtensionAPI) {
 					const stats = payload.stats;
 					ctx.ui.notify(
 						`hashtext store ${stats.root}\nblocks: ${stats.blocks} · original ${stats.bytes} B · stored ${stats.stored} B (${Math.round(Number(stats.ratio) * 100)}%)\n` +
-							`resident in this session: ${resident.length}/${MAX_RESIDENT} · archive: ${archive.size} · auto: ${settings.auto ? "on" : "off"}`,
+							`resident in this session: ${resident.length}/${MAX_RESIDENT} · archive: ${archive.size} · auto: ${settings.auto ? "on" : "off"}` +
+							`\ncalibration: ${calibration ? `${calibration.length} points` : "none (raw answer_confidence)"}`,
 						"info",
 					);
 					return;

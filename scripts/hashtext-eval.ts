@@ -56,7 +56,7 @@ interface Row {
 
 await refreshMetas(true);
 const metas = allMetas();
-console.log(`store: ${STORE} · blocks: ${metas.length} · shortlist k=${k}${offline ? " · offline" : ""}`);
+if (!json) console.log(`store: ${STORE} · blocks: ${metas.length} · shortlist k=${k}${offline ? " · offline" : ""}`);
 
 const raw = await readFile(dataPath, "utf8");
 const rows: Row[] = [];

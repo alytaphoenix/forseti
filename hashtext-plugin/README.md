@@ -80,8 +80,10 @@ blocks are immutable, so it never goes stale.
   topical queries at confidence 0.88–1.00, abstains on unrelated prompts;
   ~30 ms warm. (A binary "needs a block?" gate was tested and rejected — it
   answered "no" to everything.)
-- **auto** — confidence ≥ 0.85 expands the pick; 0.60–0.85 appends a
-  `likely: …` suggestion line to the index.
+- **auto** — calibrated confidence ≥ 0.85 expands the pick; 0.60–0.85 appends a
+  `likely: …` suggestion line to the index. "Calibrated" means the isotonic map
+  from `<store>/calibration.json` when present (see below), otherwise Laya's
+  `answer_confidence`.
 - **janitor** — at `turn_end`, with ≥3 resident blocks, Laya picks the least
   likely needed (or `keep`); ≥ 0.80 evicts it. Bounded choice, not a per-block
   yes/no.
@@ -129,18 +131,38 @@ bun run scripts/hashtext-eval.ts --offline          # retrieval + baseline
 bun run scripts/hashtext-eval.ts                    # + Laya against the live endpoint
 ```
 
-Measured on the first pass (8-block store, 19 rows):
+Measured on the first pass (8-block store; 41 eval rows, 18 authored):
 
 - **Retrieval was the bottleneck**: name/description-only recall@7 was 56.3%
   (12.5% on content-derived queries). The content-aware pass took it to 100%.
-- **Laya's confidence is under-calibrated for this distribution**: correct picks
-  at 0.05–0.16, ECE 0.61 — the 0.85 auto threshold would never fire. Recalibrate
-  (temperature fit) before considering any fine-tune.
+- **Laya returns two confidence-like numbers.** `confidence` is normalized
+  entropy (decisiveness); `answer_confidence` is max(p), the calibrated
+  quantity the library fits and ECE measures. The plugin now gates on
+  `answer_confidence` — gating on entropy made the 0.85 threshold unreachable.
+- **Even so it is under-confident here**: correct picks at 0.24–0.37, ECE 0.27.
+  `scripts/hashtext-calibrate.ts --write` fits a monotonic (isotonic) map from
+  `answer_confidence` to empirical accuracy and writes
+  `<store>/calibration.json`. On 32 decisions the in-sample ECE went 0.273 →
+  0.068, and the 0.85 operating point selected 66% of picks at 95% precision —
+  i.e. the threshold became usable. Accuracy is unchanged by construction
+  (isotonic is monotone; the argmax can't move).
 - Ranking tied the lexical baseline on decision rows; the abstention head is
-  where Laya earns its place.
+  where Laya earns its place (7/7 abstentions correct).
 - Synthetic keyword queries are tagged `retrieval` (recall only): their labels
   are too noisy for accuracy/ECE. Use authored or telemetry-derived queries for
   judgement metrics.
+
+## Confidence calibration
+
+```sh
+bun run scripts/hashtext-calibrate.ts            # report: ECE, threshold table
+bun run scripts/hashtext-calibrate.ts --write    # fit + write calibration.json
+```
+
+Fit on **decision** rows only, from authored queries or real telemetry. Defaults
+refuse to write below 30 samples (`--min`); refit as telemetry accumulates. The
+plugin logs raw, entropy, and calibrated confidence on every `find`, so the
+operating points can be re-derived without another model pass.
 
 ## Install
 

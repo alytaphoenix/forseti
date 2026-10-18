@@ -1651,3 +1651,41 @@ logs) with 19 rows.
   with `matched_pick`, `resident_turns`), rotated at 8 MB. The dataset builder
   can dump it (`--from-decisions`), and `--queries FILE` accepts LLM-authored
   `expected<TAB>query` rows — the recommended path for a real training set.
+
+## S46 — hashtext picker: the wrong confidence field, and a calibration that works (2026-10-18) ✅ resolved (measured)
+
+S45 left two puzzles: Laya looked under-confident on our distribution, and the
+0.85 auto-expand threshold never fired. Both had the same root cause.
+
+- **We were gating on the wrong number.** Laya returns `confidence` (normalized
+  Shannon entropy over the options — "how decisive is this distribution") and
+  `answer_confidence` (`max(p)` — the quantity temperature scaling fits and ECE
+  measures). The plugin read `confidence`. On the same live calls:
+  entropy **0.164 / 0.052**, answer_confidence **0.367 / 0.238**. The library
+  documentation is explicit that the two "must not be compared against the same
+  threshold". The plugin now gates on `answer_confidence` and logs both
+  (`confidence`, `entropy_confidence`, `calibrated`).
+- **Even the right field is under-confident here** (0.24–0.37 on correct picks;
+  ECE 0.273 over 32 decisions). The checkpoint's temperatures are fit to its
+  original task mixture, not 7-option block metadata.
+- **Consumer-side isotonic calibration fixes the gate without touching weights.**
+  `scripts/hashtext-calibrate.ts` fits a monotone map from answer_confidence to
+  empirical accuracy and writes `<store>/calibration.json`; the plugin loads it
+  and gates on the mapped value. In-sample (n=32 decisions): ECE **0.273 →
+  0.068**, and the **0.85** operating point selected **65.6%** of picks at
+  **95.2%** precision — the threshold became usable. Accuracy is invariant by
+  construction (monotone map, same argmax).
+- **The fitter refuses toy data**: default `--min 30`; the gate uses `--min 3`
+  only to exercise the write path. Holdout ECE is reported when ≥5 rows are held
+  out, otherwise flagged as in-sample (an upper bound on the gain).
+- **Label quality matters more than model choice**: on the 41-row set, authored
+  queries scored 72.2%, synthetic vocab 100%, abstentions 7/7, retrieval probes
+  unscored. Some authored labels are themselves ambiguous — the next dataset
+  should be judged, not just authored.
+- **Warm latency** across 40 calls: 37.5 ms mean / 43 ms p95.
+- **Test gotcha**: a blocking `spawnSync` starves an in-process mock server, so
+  the calibration child timed out against the canned Laya endpoint. The gate
+  uses async spawn for that step.
+
+Next (L1b) is re-fitting this map on real telemetry; head-only fine-tuning (L2)
+still waits on evidence that ranking, not retrieval or confidence, is the gap.

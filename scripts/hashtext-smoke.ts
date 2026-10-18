@@ -9,7 +9,7 @@
 //   archival · Laya find/auto/janitor · /hash evict · missing-CLI degradation
 //
 // Requires: `hashtext` on PATH (or HASHTEXT_BIN), `bun`.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -300,7 +300,7 @@ console.log("\nREAL-STORE PASS");
 const datasetOut = path.join(STORE, "gate-eval.jsonl");
 const dataset = spawnSync(
 	process.execPath,
-	["run", path.join(HERE, "hashtext-dataset.ts"), "--synthetic", "12", "--out", datasetOut],
+	["run", path.join(HERE, "hashtext-dataset.ts"), "--synthetic", "20", "--out", datasetOut],
 	{ env: { ...process.env, HASHTEXT_DIR: STORE }, encoding: "utf8" },
 );
 if (dataset.status !== 0) {
@@ -324,6 +324,38 @@ assert(report.decision_rows > 0, "decision rows are separated from retrieval pro
 assert(report.recall_at_k >= 0.9, `content-aware shortlist recall@k = ${(report.recall_at_k * 100).toFixed(0)}%`);
 assert(typeof report.ece === "number", "eval reports calibration (ECE)");
 console.log("\nDATASET/EVAL PASS");
+
+function runAsync(command: string, argv: string[], env: Record<string, string | undefined>): Promise<{ status: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(command, argv, { env });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => (stdout += chunk));
+		child.stderr.on("data", (chunk) => (stderr += chunk));
+		child.on("close", (status) => resolve({ status, stdout, stderr }));
+		child.on("error", () => resolve({ status: 1, stdout, stderr }));
+	});
+}
+
+// ---- phase 3b: calibration fitter -----------------------------------------
+// Async spawn (not spawnSync): the canned Laya endpoint runs in this process,
+// and a blocking spawn would starve its event loop.
+const calRun = await runAsync(
+	process.execPath,
+	["run", path.join(HERE, "hashtext-calibrate.ts"), "--data", datasetOut, "--min", "3", "--write", "--json"],
+	{ ...process.env, HASHTEXT_DIR: STORE },
+);
+if (calRun.status !== 0) {
+	process.stderr.write(calRun.stderr ?? "");
+	console.error("FAIL: calibration fitter");
+	process.exit(1);
+}
+const calReport = JSON.parse((calRun.stdout ?? "").slice((calRun.stdout ?? "").indexOf("{")));
+assert(calReport.rows_in > 0, "calibration reads decision samples");
+assert(Array.isArray(calReport.points) && calReport.points.length >= 2, "calibration emits a monotone map");
+assert(typeof calReport.written === "string" && calReport.written.includes("calibration.json"), "calibration artifact written");
+assert(calReport.ece_calibrated <= calReport.ece_raw + 0.001, "calibration does not worsen ECE on the eval rows");
+console.log("\nCALIBRATION PASS");
 
 // ---- phase 3: missing CLI (same store; native reads must survive) ----------
 mkdirSync(path.join(STORE, "home"), { recursive: true });

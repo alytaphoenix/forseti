@@ -1151,3 +1151,16 @@ fine-tune (L2); synthetic content queries are retrieval probes, not labels.
 
 Deferred: L1 temperature fit on telemetry, L2 head-only fine-tune, an
 LLM-authored query set (`--queries`), and an A/B of auto thresholds.
+
+### Phase 20d — confidence field fix + consumer-side calibration (2026-10-18, S46)
+
+| Task | Status |
+|---|---|
+| Gate on `answer_confidence` (max p), not `confidence` (normalized entropy); log raw, entropy, and calibrated values | ✅ fixes the unreachable 0.85 threshold |
+| `scripts/hashtext-calibrate.ts`: isotonic fit (PAVA), holdout ECE, threshold/coverage/precision table, suggested threshold, `--write` with `--min` guard | ✅ gate writes the artifact at `--min 3`; production default 30 |
+| Plugin loads `<store>/calibration.json` (mtime refresh) and gates auto/suggest on the mapped value | ✅ `/hash stats` shows calibration state |
+| Measured (32 decisions, in-sample): ECE 0.273 → 0.068; at 0.85 coverage 65.6%, precision 95.2% | ✅ recorded |
+| Gate phase for the fitter (async spawn so the canned Laya server can answer) | ✅ PASS |
+
+Next: refit on real telemetry (`--from-decisions` rows need labels), then decide
+whether L2 head-only fine-tuning has a case.
