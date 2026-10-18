@@ -17,7 +17,7 @@
 // edit tool firstChangedLine, x-opencode-session header).
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -28,6 +28,39 @@ const CONTEXT_FILE = path.join(FORSETI_DIR, "context.json");
 const REVIEW_FILE = path.join(FORSETI_DIR, "review.json");
 const MIN_GAP_MS = 1200;
 const VAULT = process.env.FORSETI_VAULT ?? path.join(homedir(), "forseti");
+
+// Crew agent status channel (ttt-hosted pi). ttt has no agent concept — a pane
+// is just a PTY — so when forseti spawns pi as a crew node it sets
+// FORSETI_AGENT_NAME and this extension publishes the lifecycle state to
+// .forseti/agent-status/<name>.json. A runner (the Rust TttBackend) gates on
+// the same idle/working boundary herdr's native pi stream provides. Advisory: a
+// failed write never affects a turn. pi 1.0.3 lifecycle (verified by the
+// otty-integration extension): session_start -> agent_start -> (tool_call)* ->
+// agent_end brackets ONE prompt. `pid` lets a reader detect a dead agent (a
+// crashed pi leaves the last state behind).
+const AGENT_NAME = (process.env.FORSETI_AGENT_NAME || "").trim();
+const AGENT_STATUS_DIR = (process.env.FORSETI_STATUS_DIR || "").trim();
+
+async function writeAgentStatus(state: "idle" | "working", tool?: string): Promise<void> {
+	if (!AGENT_NAME) return;
+	const dir = AGENT_STATUS_DIR || path.join(process.cwd(), ".forseti", "agent-status");
+	try {
+		await mkdir(dir, { recursive: true });
+		const body = JSON.stringify({
+			name: AGENT_NAME,
+			state,
+			pid: process.pid,
+			ts: new Date().toISOString(),
+			...(tool ? { tool } : {}),
+		});
+		// atomic: a reader never sees a half-written record
+		const tmp = path.join(dir, `.${AGENT_NAME}.${process.pid}.tmp`);
+		await writeFile(tmp, body, "utf8");
+		await rename(tmp, path.join(dir, `${AGENT_NAME}.json`));
+	} catch {
+		// advisory only
+	}
+}
 
 // P14 crew memory namespace for pi panes inside a crew run. The herdr socket
 // API has no per-pane env (spikes S26), so the crew runner drops a
@@ -388,6 +421,22 @@ export default function forseti(pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: `memory_recall: endpoint unreachable (${e?.message ?? e}) — start it with: scripts/memory-serve.sh start` }], details: { ok: false } };
 			}
 		},
+	});
+
+	// ---- Crew agent status channel (ttt-hosted pi) ---------------------------
+	// Only active when forseti spawned this pi with FORSETI_AGENT_NAME; every
+	// other session is untouched.
+	pi.on("session_start", async () => {
+		void writeAgentStatus("idle");
+	});
+	pi.on("agent_start", async () => {
+		void writeAgentStatus("working");
+	});
+	pi.on("tool_call", async (event) => {
+		void writeAgentStatus("working", (event as { toolName?: string }).toolName);
+	});
+	pi.on("agent_end", async () => {
+		void writeAgentStatus("idle");
 	});
 
 	// ---- Phase 2d-2: review mode --------------------------------------------

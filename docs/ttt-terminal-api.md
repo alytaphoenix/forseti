@@ -53,7 +53,13 @@ upstream has since moved to v1.8.0, so a future rebase is expected).
   (`spawn`/`send`/`read`/`focus`/`list`) behind `terminal.control` and
   `terminal.read`.
 
-Still to do after the fork: the pi status channel and the forseti `TttBackend`.
+- **pi status channel ✅ (S51)** — `pi-extension/index.ts` writes
+  `.forseti/agent-status/<name>.json` on the pi lifecycle when
+  `FORSETI_AGENT_NAME` is set; the name arrives through the fork's
+  `ttt.terminal.spawn{env=…}` (`82d88d3`).
+
+Still to do: the forseti `TttBackend` (the `PaneBackend` implementation that
+uses this channel for `prompt_wait`).
 
 ## The delta (three increments, smallest first)
 

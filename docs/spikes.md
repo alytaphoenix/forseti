@@ -1835,3 +1835,79 @@ upstream's v1.8.0 HEAD.
   failures on this box (macOS `/private/var` vs `/var`, fake-git availability,
   plugin fs roots) — verified identical on the pristine tag by stashing the
   diff. The touched packages (`terminal`, `config`, `ui`, `plugin`) pass.
+
+## S48 — hashtext: LLM-generated data, and the fine-tune verdict (2026-10-18) ✅ resolved (measured)
+
+S47 closed the telemetry loop; this pass asked whether a Laya fine-tune is
+justified. Built a realistic corpus and a free-LLM data pipeline, then measured.
+
+- **Corpus**: 136 section-level blocks from the docs (design/plan/spikes/README/
+  AGENTS), the plugin and scripts, the hashtext sources, and two deploy logs.
+  Sections are the realistic unit: overlapping vocabulary, near-duplicate
+  headings, wildly different lengths.
+- **Generator** (`scripts/hashtext-generate.ts`, free `openrouter/free`): 3
+  natural-language requests per block from a content excerpt, with resumable
+  incremental writes and fallbacks. 32 eval rows (24 queries + 8 abstentions)
+  survived rate limits in the first pass; quality is clearly better than the
+  keyword generator (e.g. "What headers does the pi-extension switchyard.ts
+  inject before provider headers…?").
+- **Judge** (`scripts/hashtext-judge.ts`, same free model): 30/32 rows labelled
+  with an `acceptable` set, because a section-level corpus legitimately lets
+  several blocks answer one request. Strict source-block labels had understated
+  recall badly; judged labels are the honest measure.
+- **Retrieval**: adding BM25 over block content (tf × idf, length normalisation,
+  always combined with metadata) took **recall@7 to 100%** and lexical top-1 to
+  **80%**. The content scan is ~8 ms for 200 blocks, natively.
+- **Laya, on the same judged rows**: **68%** pick accuracy — **12 points below
+  the lexical baseline**. Switch matrix: both 17, lexical-only 3, **laya-only
+  0**, neither 5. It never fixed a lexical mistake on this set and broke three
+  correct picks. Abstention: precision 50%, recall 42.9% (it missed 4 of 7
+  genuine abstentions); ECE 0.387 on answer_confidence. Warm latency ~285 ms.
+- **Verdict: a Laya fine-tune is NOT justified yet.** There is real ranking
+  headroom (recall 100% vs top-1 80%), but the base model shows no signal of
+  capturing it; the first fix is a cheap reranker / better BM25 features, then
+  re-measure. Fine-tuning would cost days and a judged dataset to chase a gap
+  the baseline is already losing on.
+- **Caveats**: 32 rows (20 ranking) is directional, not significant; the judge
+  is a free model and its `acceptable` sets can be incomplete; the free router
+  rate-limits, so the generator must stay resumable.
+
+Next if pursued: judge 200+ rows, fit a logistic reranker over BM25/name/recency
+features on a split, and only if that plateaus below recall should L2
+(head-only, frozen encoder) be considered.
+
+## S51 — the pi status channel for a ttt-hosted agent (2026-10-18) ✅ resolved (live)
+
+ttt has no agent concept, so a hosted pi is invisible to the crew engine: herdr
+gives `pane_agent_status_changed` for `kind: pi` natively, ttt gives nothing.
+The channel is a file the forseti pi extension writes, at
+`.forseti/agent-status/<name>.json` (or `$FORSETI_STATUS_DIR`), enabled only when
+`FORSETI_AGENT_NAME` is set — a plain pi session writes nothing.
+
+- **Hooks: pi 1.0.3's lifecycle, verified live.** `session_start` → `idle`,
+  `agent_start` → `working`, `tool_call` → `working` + the tool name,
+  `agent_end` → `idle`. (`turn_start`/`turn_end` also exist, but
+  `agent_start`/`agent_end` bracket one PROMPT, which is the boundary the crew
+  engine waits on; the Otty app's shipped `otty-integration.ts` uses exactly
+  these hooks, which is how they were identified.) A live probe captured the
+  full sequence — `idle`, `working`, `working {"tool":"write"}`, `idle` — from a
+  single pi run.
+- **Record shape**: `{name, state: "idle"|"working", pid, ts, tool?}`. `pid`
+  lets a reader detect a crashed agent (the last state would otherwise look
+  live); the write is atomic (tmp + rename) so a reader never sees a partial
+  record.
+- **`blocked` is NOT observable from the extension surface.** pi's approval /
+  question UI is not an event, so a ttt-hosted agent that is waiting on a human
+  looks `working` until the turn times out. The crew engine must treat a
+  `working` node past its settle budget as needing attention; a real `blocked`
+  needs a pi-level signal we do not have (recorded as a limitation, not a plan).
+- **The name reaches pi through the fork's new `env` support**: `C`
+  (`ttt.terminal.spawn`) now takes `env = {FORSETI_AGENT_NAME = "<node>"}`,
+  appended to the inherited environment (`terminal.New` already accepted an env
+  slice; the fork commit is `82d88d3`). This is the piece that makes the spawn
+  self-identifying without a per-cwd hand-off file.
+- **Test**: `FORSETI_AGENT_NAME=probe2 pi -a -p "Create a file …" --model
+  openrouter/free` with a polling loop over the status file; final record
+  `{"state":"idle"}`, exit 0. The probe also showed pi's sessions are keyed by
+  cwd (`~/.pi/agent/sessions/--private-tmp-pi-cwd--/…`), so a ttt-hosted agent
+  gets its own session store per run cwd.
