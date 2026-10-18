@@ -386,6 +386,29 @@ impl Crew {
             .collect()
     }
 
+    /// Edges entering a node (the scheduler's fan-in AND set).
+    pub fn in_edges(&self, name: &str) -> Vec<Edge> {
+        self.edges
+            .iter()
+            .filter(|e| e.to == name)
+            .cloned()
+            .collect()
+    }
+
+    /// The phase position of an agent, or -1 when the crew declares no phases
+    /// (or the agent is unphased — validation rejects that when phases exist).
+    pub fn phase_of(&self, agent: &str) -> i32 {
+        if self.phases.is_empty() {
+            return -1;
+        }
+        for (i, p) in self.phases.iter().enumerate() {
+            if p.agents.iter().any(|m| m == agent) {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
     /// The directed cycles in the graph (P13 BUG-11): DFS from the entry nodes
     /// in declaration order, recording the path slice that closes each cycle.
     pub fn find_cycles(&self) -> Vec<Vec<String>> {

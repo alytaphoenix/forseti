@@ -14,6 +14,9 @@
 //! * **18D-3** — `herdr`, the herdr JSON socket client (NDJSON over a Unix
 //!   socket: dial-per-call one-shots, the one persistent `events.subscribe`
 //!   stream, and every typed helper the runner needs).
+//! * **18D-4** — `scheduler`, the P13/P19 wave scheduler: fan-in AND, cycle
+//!   back edges + `max_visits`, phase barriers, verdict gates, per-visit
+//!   checks. Pure decisions — no herdr, no threads; 18D-5 drives it.
 //!
 //! Deliberate divergences (documented, not oracle-covered): regex-engine error
 //! text (Go RE2 vs the Rust `regex` crate) and YAML parse-error text.
@@ -26,6 +29,7 @@ pub mod model;
 pub mod pattern;
 pub mod role;
 pub mod routes;
+pub mod scheduler;
 pub mod validate;
 
 pub use command::{Outcome, validate};

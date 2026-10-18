@@ -606,12 +606,48 @@ them exactly (stdout, stderr, exit code).
    - Not an oracle surface (`herdrd` talks to a live server, no goldens):
      coverage is unit tests over a **real** `UnixListener` in a temp dir plus an
      `#[ignore]`d live round-trip (`ping` + `agent.list`).
-4. **18D-4** — the scheduler: fan-in AND, DFS-classified back edges +
-   `max_visits`, phases, verdict gates, per-visit checks — ported against the Go
-   scheduler's unit tests.
+4. **18D-4 ✅ done (2026-10-18)** — the scheduler,
+   `host/src/crew/scheduler.rs`: the P13/P19 wave scheduler as *decisions only*
+   (no herdr, no threads, no panes), so it is deterministic and unit-testable.
+   The runner (18D-5) drives it wave by wave.
+   - Ported 1:1: `NodeState`/`Status` (the Go strings, as an enum so a terminal
+     set cannot drift), `PhaseState`, `EdgeState` (`visited`/`ok`/collected
+     skips), `fire_edge` (re-arm a settled target; `max_visits` cap → skip),
+     `miss_edge` (permanently skip a still-pending target), `node_ready`
+     (fan-in AND, back edges ignored for entry, phase barrier), `phase_unlocked`
+     / `emit_phase_starts` / `update_phase_progress` / `current_phase`,
+     `run_due_checks` (visit-keyed `check:<i>#<visits>`, a later pass clears
+     `_failed`, `check_skip` for blocked/skipped after-nodes, `check_fail` only
+     for a failed one), `settle_unreachable` (pending → skipped, blocked keeps
+     tab+worktree), `snapshot` value copies, `edge_satisfied`
+     (idle/regex/verdict) with the Go `compileCached` regex cache, and
+     `settle_edges` (the wave loop's inner pass, including the exact
+     `when "re:X" not matched on a output` skip text).
+   - `run_check(shell, dir)` executes a check with the Go engine's safety
+     properties: a 5-minute budget, **own process group** + group SIGKILL so
+     grandchildren cannot hold the pipes past the deadline (P13 BUG-08), a
+     timeout reported as a failure even when the direct child exited 0 (Go's
+     `WaitDelay`), a 240-byte tail, and `exit status N` / `signal: N` text.
+   - Events are **collected** (`emit` timestamps + queues; `drain_events`), not
+     streamed: the run log / status bridge / TUI are 18D-5's sinks. Timestamps
+     are RFC3339 UTC millis (Go's `time.Time` JSON shape) from a dependency-free
+     civil-from-days formatter; `run_id` is Go's `20060102-150405` UTC stamp.
+   - `Crew` gained `in_edges`/`phase_of` (the Go `incoming` + `PhaseOf`).
+   - Tests: the Go scheduler suite ported one-for-one (edge forms, verdicts,
+     the phase barrier incl. blocked-holds and skipped-releases, re-arm +
+     `max_visits`, the uncapped loop body, the capped guard, fan-in AND,
+     miss-skips, cycle-body readiness, per-visit checks) plus a test-only
+     `drive()` that runs the Go wave loop to quiescence — proving a
+     reviewer loop converges LBTM→LBTM→LGTM in 7 dispatches and that a phase
+     barrier actually delays the next wave.
 5. **18D-5** — the runner: pane dispatch, prompt+settle (`agent.prompt.wait`, the
    reasoning-model empty-settle guard), templates (`{{ .upstream }}`,
    `{{ node }}`, `{{ artifact }}`, `{{ memory }}`), run log, memory/bus.
+   Design note (2026-10-18, user direction): pi should also be launchable
+   **inside ttt** (S38), so the runner should sit behind a `PaneBackend` trait
+   (spawn/prompt/prompt-wait/read/focus/status) with the herdr impl first —
+   the Go engine hardcodes `*herdrd.Client`, and that is the one place a Rust
+   port can improve on it without diverging.
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
    compared side by side; the Go engine retires only once the Rust engine passes
    the smoke gate unsupervised.
@@ -669,6 +705,23 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-4)
+- `cargo test` in `host/` — **59 unit tests + 1 oracle** (+1 ignored): the 19
+  new `scheduler` tests cover the Go `runner_test.go` scheduler suite
+  one-for-one (`TestEdgeSatisfied`, `TestEdgeSatisfiedVerdict`,
+  `TestPhaseUnlocked`, `TestPhaseProgressEvents`,
+  `TestFireEdgeReArmsSettledTarget`, `TestUncappedEdgeRefiresLoopBody`,
+  `TestCappedEdgeStillStops`, `TestNodeReadyFanInAND`,
+  `TestNodeReadyCycleBodyWaitsForItsGate`,
+  `TestChecksRerunWhenAfterNodeIsRevisited`) plus the blocked/failed
+  after-node check paths, the skip text, RFC3339/civil-date helpers, the
+  unreachable sweep, and the two end-to-end `drive()` runs.
+- `run_check` is exercised for real (`true`, `exit 3` + stderr tail) and for
+  the BUG-08 property: `sh -c "sleep 30 & exit 0"` returns a timeout failure in
+  under 10 s because the group kill takes the grandchild that holds the pipes.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; the oracle is
+  untouched (85 records) — the scheduler is not a validate surface.
 
 ## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified end to end LIVE** (2026-10-17)
 

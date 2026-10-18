@@ -29,6 +29,9 @@ regex = "1"
 # Phase 18D-3: the herdr JSON socket API speaks serde_json values (the Go
 # client passes `any` to encoding/json); 18D-5's run log is JSONL too.
 serde_json = "1"
+# 18D-4: checks run under a process group so the timeout sweeps grandchildren
+# (the Go engine's `Setpgid: true`, P13 BUG-08); libc::kill reaches the group.
+libc = "0.2"
 
 [[bin]]
 name = "forseti-host"
