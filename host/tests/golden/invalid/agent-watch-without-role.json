@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-watch-without-role.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-watch-without-role.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": watch/writes need a role (or move them into the role archetype)\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": watch/writes need a role (or move them into the role archetype)\n",
   "stdout": ""
 }

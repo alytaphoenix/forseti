@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/route-bad-picker.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/route-bad-picker.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: route \"r\": picker \"fastest\" must be efficient_first or capable_first\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: route \"r\": picker \"fastest\" must be efficient_first or capable_first\n",
   "stdout": ""
 }

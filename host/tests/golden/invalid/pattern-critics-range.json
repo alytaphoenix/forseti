@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-critics-range.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-critics-range.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-critics-range.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern \"p\": critics 8 must be 2..7 (a panel of one is a reviewer, not a judge)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern \"p\": critics 8 must be 2..7 (a panel of one is a reviewer, not a judge)\n",
+  "stdout": ""
+}

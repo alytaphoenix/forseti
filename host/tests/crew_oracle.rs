@@ -65,6 +65,61 @@ fn rust_engine_matches_go_goldens() {
         if got.exit != exit {
             failures.push(format!("{rel}: exit want {exit} got {}", got.exit));
         }
+
+        // `prompts` pins the prompt templates: `validate --explain` cannot see a
+        // role/pattern text drift, so compare the resolved node prompts against
+        // the Go dump (parsed, so JSON escaping never matters).
+        let prompts = &rec["prompts"];
+        let pexit = prompts["exit"].as_i64().expect("golden .prompts.exit") as i32;
+        let pstdout = rec["prompts"]["stdout"]
+            .as_str()
+            .expect("golden .prompts.stdout");
+        let pstderr = rec["prompts"]["stderr"]
+            .as_str()
+            .expect("golden .prompts.stderr");
+        match forseti_host::crew::load(&std::fs::read_to_string(file).unwrap_or_default()) {
+            Err(err) => {
+                if p_exit_ok(pexit) {
+                    failures.push(format!(
+                        "{rel}: prompts valid in Go but Rust errored: {err}"
+                    ));
+                } else if !p_stderr_matches(&err, pstderr) {
+                    failures.push(format!(
+                        "{rel}: prompts stderr\n  want {pstderr:?}\n  got  {err:?}"
+                    ));
+                }
+            }
+            Ok(crew) => {
+                if !p_exit_ok(pexit) {
+                    failures.push(format!(
+                        "{rel}: prompts invalid in Go ({pstderr:?}) but Rust loaded it"
+                    ));
+                    continue;
+                }
+                let json: serde_json::Value =
+                    serde_json::from_str(pstdout).expect("golden prompts stdout is JSON");
+                let agents = json["agents"].as_array().expect("golden prompts .agents");
+                if agents.len() != crew.agents.len() {
+                    failures.push(format!(
+                        "{rel}: prompts node count want {} got {}",
+                        agents.len(),
+                        crew.agents.len()
+                    ));
+                    continue;
+                }
+                for (i, want) in agents.iter().enumerate() {
+                    let got = &crew.agents[i];
+                    let wn = want["name"].as_str().unwrap_or_default();
+                    let wp = want["prompt"].as_str().unwrap_or_default();
+                    if got.name != wn || got.prompt != wp {
+                        failures.push(format!(
+                            "{rel}: prompt #{i}\n  want name={wn:?} prompt={wp:?}\n  got  name={:?} prompt={:?}",
+                            got.name, got.prompt
+                        ));
+                    }
+                }
+            }
+        }
     }
     assert!(
         failures.is_empty(),
@@ -72,6 +127,15 @@ fn rust_engine_matches_go_goldens() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+fn p_exit_ok(exit: i32) -> bool {
+    exit == 0
+}
+
+/// The Go `prompts` command prints `INVALID: <err>` on any load failure.
+fn p_stderr_matches(err: &str, want: &str) -> bool {
+    want == format!("INVALID: {err}\n")
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {

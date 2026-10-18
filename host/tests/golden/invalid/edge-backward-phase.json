@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/edge-backward-phase.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/edge-backward-phase.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge 0: \"b\"\u2192\"a\" goes backward (phase \"p2\" \u2192 \"p1\") \u2014 cross-phase loop-backs unsupported in v1\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: edge 0: \"b\"\u2192\"a\" goes backward (phase \"p2\" \u2192 \"p1\") \u2014 cross-phase loop-backs unsupported in v1\n",
   "stdout": ""
 }

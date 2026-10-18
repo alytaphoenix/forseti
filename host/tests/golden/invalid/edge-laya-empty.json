@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/edge-laya-empty.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/edge-laya-empty.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge 0: empty laya instructions\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: edge 0: empty laya instructions\n",
   "stdout": ""
 }

@@ -1,0 +1,10 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+patterns:
+  - id: p
+    pattern: executor
+    subject: a
+    params:
+      max_fixes: 11

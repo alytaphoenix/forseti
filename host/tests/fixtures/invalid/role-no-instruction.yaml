@@ -1,0 +1,7 @@
+name: t
+roles:
+  - name: r
+    profile: R
+agents:
+  - name: a
+    role: r

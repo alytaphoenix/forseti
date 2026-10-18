@@ -1182,7 +1182,7 @@ compatibility oracle. Findings:
   `cargo test` needs no Go toolchain and no network. `--check` re-captures and
   diffs byte for byte. Corpus = 8 examples (minus the pinned `crew-sop.yaml`,
   which needs 18D-2) + 2 valid fixtures + 50 invalid fixtures, one rule each:
-  **60 records**.
+  **60 records**. (S35 grew it to 85 once 18D-2 landed.)
 - **The Go `validate` shell-outs to the router, so the oracle needs a stub.**
   With `routes:` present, `validate` runs `forseti-host --config … --dry-run`.
   Pointing `FORSETI_CREW_ROUTER_BIN` at an `exit 0` script removes the dry-run
@@ -1215,4 +1215,102 @@ compatibility oracle. Findings:
   memory `recall_k 3` / `write_max_chars 4000`, route `picker
   efficient_first` / `confidence 0.5`. The Rust `memory_ns()` mirrors
   `MemorySpec.NS`: the memory block absent or `namespace:` empty → the crew name.
+
+## S35 — 18D-2: `prompts`, the parity surface `--explain` cannot see (Phase 18D-2, 2026-10-18) ✅ resolved (unit + recorded diff)
+
+Stage 18D-2 ports the Phase-19 authoring layer (roles, SOP patterns, verdicts)
+into the Rust engine. The oracle already diffs the resolved *graph*
+(`validate --explain`), but the patterns' value is largely in the **prompt text**
+they synthesize — and a prompt is invisible to `--explain`. Findings:
+
+- **A new Go subcommand is the cheapest honest fix.** `forseti-crew prompts -f
+  FILE` loads + validates the crew and prints `{"agents":[{name,prompt},…]}` after
+  expansion. The oracle captures it into each golden record under `"prompts"`
+  (`{argv,exit,stdout,stderr}`), and `crew_oracle.rs` loads the crew through the
+  Rust library and diffs `name`+`prompt` node-by-node — parsed, so JSON escaping
+  is irrelevant. This keeps the existing `validate` contract untouched (no new
+  template engine needed before 18D-5).
+- **The prompt leg is load-bearing, not decorative.** A one-word mutation
+  (`worst-first` → `worst first`) in `pattern.rs` fails two goldens
+  (`examples/crew-sop`, `valid/sop-patterns`); the same mutation is invisible to
+  `--explain`. All ~10 synthesized templates match Go on the first capture, so the
+  ported code is faithful rather than merely self-consistent.
+- **What the Rust port had to mirror exactly** (learned while diffing): only the
+  *review-loop* reviewer prompt is `strings.TrimSpace`'d, the panel's judge prompt
+  is not; the executor splices `params.task` **after** the `{{ node }}` binding
+  and falls back to `Implement the task.` only when both are empty; the verify
+  prompt's bullet list is `- cmd\n` per item followed by a blank line; the panel
+  extends `lenses` with `lens N: your own strongest objection` when `critics`
+  exceeds the declared lens count; `verdictLabel`/`badLabel` take the text after
+  the **last** `:`.
+- **`explain` additions.** A roled node is tagged `role=<id>(<Profile>)` (the
+  profile only when the archetype has one), and a `patterns:` block
+  (`"  %-10s %s subject=%s\n"`) lists each pattern's id/kind/subject after the
+  nodes and before the checks.
+- **Validation-order parity is what makes the 22 new fixtures pass on the first
+  try.** `Crew::validate` now runs `expand_patterns()` → `RolePack::validate` →
+  `crew has no agents` → … in the Go order, so a role/pattern error always wins
+  over a graph error for a crew that is broken in both ways.
+- **One nondeterminism conceded:** Go iterates `p.Members` (a map) when checking
+  for unknown members, so a pattern with *two* bad members reports an arbitrary
+  one; Rust reports the `BTreeMap` (lexicographic) first. Fixtures use a single
+  bad member, so the corpus stays deterministic; the divergence is outside it.
+- **Corpus:** 85 records = 9 examples + 4 valid + 72 invalid. The valid additions
+  exercise role overrides + pub/sub (`sop-roles.yaml`) and a pattern chain with a
+  reused judge/implementer member (`sop-patterns.yaml`); 22 invalid fixtures cover
+  the role rules (unknown role, bad tier/react_mode/action `expected`, missing
+  `models:`, no instruction fallback) and the pattern rules (bad/long/duplicate
+  id, unknown pattern, unknown param, `max_revisions`/`critics`/`max_rounds`/
+  `max_fixes` ranges, missing subject/task, bad subject/member/`then`, node
+  collision, edge collision, a synthesized node's missing model tier).
+
+## S36 — can pi host a pluggable side panel? (design question, 2026-10-18) ✅ resolved (source: pi 1.0.3 dist + docs)
+
+Question carried from the Phase-15/19 planning: *"Can pi host a pluggable side
+panel (ttt bridge, crew TUI, latency), or should we fork pi into the forseti
+agent?"* Investigated against the installed package
+(`~/.hermes/node/lib/node_modules/@earendil-works/pi-coding-agent`, **1.0.3** —
+not 0.99.1 as AGENTS.md said; every forseti-relevant hook re-verified present:
+`before_provider_headers`/`after_provider_response`, `registerTool`,
+`registerCommand`, `typebox` bundled, `edit.details.firstChangedLine`).
+
+- **pi has a real extension UI surface, but no docked side panel.** The
+  authoritative type is `ExtensionUIContext`
+  (`dist/core/extensions/types.d.ts`). `ctx.ui` offers `setWidget`, `setFooter`,
+  `setHeader`, `setEditorComponent`, `setStatus`, `setTitle`, `custom`, plus
+  dialogs (`select`/`confirm`/`input`/`editor`) and `onTerminalInput()`.
+- **What maps to "panel", and its shape:**
+  - `setWidget(key, content, {placement: "aboveEditor"|"belowEditor"})` — accepts
+    a **component factory** `(tui, theme) => Component`, so arbitrary persistent
+    content can live above/below the editor. Placement is only the main vertical
+    column: there is no left/right dock.
+  - `ctx.ui.custom(factory, {overlay: true, overlayOptions})` — a component with
+    **keyboard focus**, positioned via `OverlayOptions` (`width`, `anchor:
+    "right"`, `row`/`col`, `offsetX`, `margin`, `nonCapturing`, a `visible`
+    predicate for responsive show/hide). This is the only shape that yields a
+    focus-holding region coexisting with the transcript: it *draws over* rather
+    than re-flowing, and `OverlayHandle` (`focus`/`unfocus`/`setHidden`/
+    `getBounds`) arbitrates focus. `nonCapturing: true` gives a display-only
+    right-docked panel that never steals the editor.
+  - `setFooter(factory)` / `setHeader(factory)` — replace a whole region; the
+    footer factory receives a `FooterDataProvider` carrying `setStatus()`
+    entries (this is what the ttt crew-status badge already rides) plus git
+    branch. `setEditorComponent` swaps the editor itself.
+- **Component model is public and sufficient** (`@earendil-works/pi-tui`):
+  `Component { render(width), handleInput?, handleMouse?, invalidate() }`,
+  `Focusable { focused }`, `CURSOR_MARKER`, and composable `Container`/`VStack`/
+  `HStack`/`Box`/`ScrollView`/`MouseRegion`. Docs warn: *do not create a second
+  terminal renderer inside an extension* — compose these instead.
+- **Answer:** no fork needed. A ttt-bridge / crew / latency panel is buildable as
+  a pi extension — a `nonCapturing` right-anchored overlay (always-on display) or
+  a `custom({overlay:true})` panel (interactive), fed by the same shared files the
+  ttt plugin uses (`crew-status.json`, `.forseti/bus/*.md`, the memory/panes
+  sockets). The one thing pi cannot do is a true split-pane with independent
+  focus side-by-side with the editor; the overlay is the sanctioned approximation.
+  Forking pi would buy that layout at the cost of losing upstream — not warranted.
+- **Caveat (not yet exercised live):** widget/overlay focus routing and mouse
+  behavior were read from types + docs, not driven in a live pi session; if the
+  panel is built, prove the focus model with a real extension first (the
+  `doom-overlay` / `custom-footer` examples in the package are the starting
+  points).
 

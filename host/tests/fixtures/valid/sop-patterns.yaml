@@ -1,0 +1,51 @@
+name: sop-patterns
+models:
+  efficient: opencode-go/beam-free
+  capable: opencode-go/longcat-2.5-preview-free
+roles:
+  - name: architect
+    profile: Architect
+    goal: design it
+    tier: capable
+    writes: design
+    instruction: Design the thing, briefly.
+agents:
+  - name: seed
+    role: planner
+  - name: design
+    role: architect
+    watch: [plan]
+    prompt: "Plan:\n\n{{ artifact \"plan\" }}"
+  - name: human_review
+    role: reviewer
+    prompt: A human-style review of the panel's judgement.
+  - name: solo_judge
+    role: judge
+    prompt: Judge the design on the evidence.
+  - name: builder
+    role: engineer
+    prompt: Build exactly what the design names.
+patterns:
+  - id: rev
+    pattern: reviewer_loop
+    subject: design
+    params:
+      criteria: The design must name exactly one file to add.
+      then: ap
+  - id: ap
+    pattern: adversarial_panel
+    subject: design
+    members:
+      judge: solo_judge
+    params:
+      critics: 2
+      lenses: [correctness, failure modes]
+      criteria: The design must name exactly one file to add.
+      then: human_review
+  - id: run
+    pattern: executor
+    subject: design
+    members:
+      implementer: builder
+    params:
+      checks: ["true"]

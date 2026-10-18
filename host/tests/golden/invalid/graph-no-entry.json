@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/graph-no-entry.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/graph-no-entry.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: crew has no entry node (every agent has an incoming edge) \u2014 nothing can start; an all-cycle crew needs an entry agent with no incoming edges\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: crew has no entry node (every agent has an incoming edge) \u2014 nothing can start; an all-cycle crew needs an entry agent with no incoming edges\n",
   "stdout": ""
 }

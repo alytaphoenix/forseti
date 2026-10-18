@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-empty-prompt.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-empty-prompt.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": empty prompt\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": empty prompt\n",
   "stdout": ""
 }

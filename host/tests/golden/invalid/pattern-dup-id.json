@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-dup-id.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-dup-id.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-dup-id.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: duplicate pattern id \"p\"\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: duplicate pattern id \"p\"\n",
+  "stdout": ""
+}

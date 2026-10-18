@@ -7,6 +7,16 @@
   ],
   "exit": 0,
   "file": "crew/examples/crew-memory.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "crew/examples/crew-memory.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"planner\",\"prompt\":\"You are the planner. Do NOT edit files. Produce a numbered plan\\n(max 4 steps) to add HELLO_MEMORY.md containing \\\"crew memory works\\\".\\nIf a Shared memory block appears above, respect its facts. End with PLAN_READY.\\n\"},{\"name\":\"builder\",\"prompt\":\"Execute this plan exactly:\\n\\n{{ .planner }}\\n\\nReply with the single word DONE.\\n\"}]}\n"
+  },
   "stderr": "",
   "stdout": "crew crew-memdemo\nnodes:\n  planner                  model=opencode-go/beam-free writes=planner ENTRY\n  builder                  model=opencode-go/beam-free writes=builder\n                             \u2190 planner [re:PLAN_READY]\nmemory: namespace=crew-memdemo recall_k=3 write_max_chars=4000\ncrew/examples/crew-memory.yaml valid\n"
 }

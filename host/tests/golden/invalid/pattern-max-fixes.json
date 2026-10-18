@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-max-fixes.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-max-fixes.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-max-fixes.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern \"p\": max_fixes 11 must be 1..10\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern \"p\": max_fixes 11 must be 1..10\n",
+  "stdout": ""
+}

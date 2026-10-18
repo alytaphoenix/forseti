@@ -1,0 +1,11 @@
+name: t
+roles:
+  - name: r
+    profile: R
+    instruction: go
+    actions:
+      - name: step
+        expected: json
+agents:
+  - name: a
+    role: r

@@ -1,19 +1,26 @@
-//! crew.yaml v1 — the Rust port of `crew/internal/schema` (Phase 18D-1).
+//! crew.yaml v1 — the Rust port of `crew/internal/schema` (Phase 18D).
 //!
 //! The Go engine (`crew/`, `forseti-crew`) is the compatibility surface while
 //! this port is staged: every rule here is checked against the Go engine's
 //! output by `scripts/crew-host-oracle.py`, whose goldens live in
-//! `host/tests/golden/`. Stage 18D-1 covers the base graph
-//! (agents/edges/phases/checks/watch/memory/routes); the Phase-19 layer (roles,
-//! SOP patterns, typed pub/sub, verdict edges) parses but is rejected loudly
-//! (see `validate::STAGE_2_UNSUPPORTED`) and lands in 18D-2.
+//! `host/tests/golden/`.
+//!
+//! * **18D-1** — the base graph (agents/edges/phases/checks/watch/memory/
+//!   routes): `model`, `routes`, `validate`, `explain`, `command`.
+//! * **18D-2** — the Phase-19 authoring layer: `role` (the archetype library
+//!   and `RolePack.Validate`), `pattern` (SOP patterns compiled into the
+//!   graph), `bus` (verdict parsing). `Crew::validate` runs both at the top,
+//!   exactly as the Go engine does.
 //!
 //! Deliberate divergences (documented, not oracle-covered): regex-engine error
 //! text (Go RE2 vs the Rust `regex` crate) and YAML parse-error text.
 
+pub mod bus;
 pub mod command;
 pub mod explain;
 pub mod model;
+pub mod pattern;
+pub mod role;
 pub mod routes;
 pub mod validate;
 

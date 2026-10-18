@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-bad-subject.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-bad-subject.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-bad-subject.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern \"p\": subject \"ghost\" is not a declared agent\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern \"p\": subject \"ghost\" is not a declared agent\n",
+  "stdout": ""
+}

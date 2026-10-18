@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/edge-laya-min-confidence.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/edge-laya-min-confidence.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge 0: min_confidence must be in (0,1]\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: edge 0: min_confidence must be in (0,1]\n",
   "stdout": ""
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/edge-unknown-from.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/edge-unknown-from.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge 0: unknown from \"zz\"\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: edge 0: unknown from \"zz\"\n",
   "stdout": ""
 }

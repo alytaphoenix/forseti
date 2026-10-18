@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-id-too-long.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-id-too-long.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-id-too-long.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern 0: id \"aaaaaaaaaaaaaaaaaaaaaaa\" must match [a-z][a-z0-9_-]{0,21} (it prefixes generated node names)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern 0: id \"aaaaaaaaaaaaaaaaaaaaaaa\" must match [a-z][a-z0-9_-]{0,21} (it prefixes generated node names)\n",
+  "stdout": ""
+}

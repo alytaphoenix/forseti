@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/phase-bad-name.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/phase-bad-name.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: phase 0: name \"P1\" violates herdr rule [a-z][a-z0-9_-]{0,31}\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: phase 0: name \"P1\" violates herdr rule [a-z][a-z0-9_-]{0,31}\n",
   "stdout": ""
 }

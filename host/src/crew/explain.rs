@@ -3,6 +3,7 @@
 //! declared (derived/pattern edges appended in expansion order).
 
 use super::model::Crew;
+use super::role::RolePack;
 use std::collections::HashMap;
 
 /// Renders the resolved graph after validation: each node's archetype,
@@ -35,11 +36,18 @@ pub fn explain(c: &Crew) -> String {
             .push(edge_label(e));
     }
 
+    let pack = RolePack::new(&c.roles);
     b.push_str("nodes:\n");
     for a in &c.agents {
         let mut meta: Vec<String> = Vec::new();
         if !a.role.is_empty() {
-            meta.push(format!("role={}", a.role));
+            let mut label = format!("role={}", a.role);
+            if let Some(r) = pack.get(&a.role)
+                && !r.profile.is_empty()
+            {
+                label.push_str(&format!("({})", r.profile));
+            }
+            meta.push(label);
         }
         if !a.route.is_empty() {
             meta.push(format!("route={}", a.route));
@@ -67,6 +75,15 @@ pub fn explain(c: &Crew) -> String {
         }
     }
 
+    if !c.patterns.is_empty() {
+        b.push_str("patterns:\n");
+        for p in &c.patterns {
+            b.push_str(&format!(
+                "  {:<10} {} subject={}\n",
+                p.id, p.pattern, p.subject
+            ));
+        }
+    }
     if !c.checks.is_empty() {
         b.push_str("checks:\n");
         for ck in &c.checks {

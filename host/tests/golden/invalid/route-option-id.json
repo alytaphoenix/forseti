@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/route-option-id.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/route-option-id.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: route \"r\": options.id is set by forseti\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: route \"r\": options.id is set by forseti\n",
   "stdout": ""
 }

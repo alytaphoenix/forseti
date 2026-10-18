@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/route-reserved-option.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/route-reserved-option.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: route \"r\": options.picker duplicates the stage_router field forseti derives\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: route \"r\": options.picker duplicates the stage_router field forseti derives\n",
   "stdout": ""
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 0,
   "file": "host/tests/fixtures/valid/defaults.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/valid/defaults.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"only\",\"prompt\":\"hello\"},{\"name\":\"routed\",\"prompt\":\"routed work\"}]}\n"
+  },
   "stderr": "",
   "stdout": "crew defaults\nnodes:\n  only                     writes=only ENTRY\n  routed                   route=tier writes=routed ENTRY\nchecks:\n  after only                 true\nmemory: namespace=scratch recall_k=3 write_max_chars=4000\nhost/tests/fixtures/valid/defaults.yaml valid\n"
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-unknown-route.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-unknown-route.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": unknown route \"nope\"\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": unknown route \"nope\"\n",
   "stdout": ""
 }

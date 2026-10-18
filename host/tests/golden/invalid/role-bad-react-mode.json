@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/role-bad-react-mode.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/role-bad-react-mode.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/role-bad-react-mode.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: role \"r\": react_mode \"loop\" must be one_shot or by_order\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: role \"r\": react_mode \"loop\" must be one_shot or by_order\n",
+  "stdout": ""
+}

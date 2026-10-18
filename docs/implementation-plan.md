@@ -520,7 +520,7 @@ coupling, loses crash isolation; S28).
   `forseti-crew validate` now runs it (`crew/examples/crew-routes.yaml`
   exercises stage_router/auto/plan_execute/llm_classifier+judge/advisor).
 
-### 18D — runner/TUI on the host (staged Rust port) ✅ **18D-1 implemented + oracle-gated** (2026-10-17)
+### 18D — runner/TUI on the host (staged Rust port) ✅ **18D-1 + 18D-2 implemented + oracle-gated** (2026-10-18)
 
 Direction (agreed): `forseti-host` grows from "embedded router" into the crew
 **engine** (herdr client, scheduler, runner, TUI) while the Go `forseti-crew`
@@ -546,21 +546,40 @@ them exactly (stdout, stderr, exit code).
      `host/tests/golden/<kind>/<crew>.json` (`{file, argv, exit, stdout, stderr}`)
      and `host/tests/crew_oracle.rs` replays every record through the Rust engine
      — so `cargo test` needs no Go. `--check` fails on a stale/missing/unexpected
-     golden. The corpus is `crew/examples/*.yaml` (minus the **pinned**
-     `STAGE_18D2_SKIP = {crew-sop.yaml}`, which asserts rather than silently
-     narrowing) + `host/tests/fixtures/{valid,invalid}/*.yaml` — 60 records
-     (8 examples, 2 valid, 50 one-rule-per-file invalid fixtures). Route dry-run
-     nondeterminism is removed by pointing `FORSETI_CREW_ROUTER_BIN` at a
-     `exit 0` stub (the Rust engine has no dry-run yet).
+     golden. The corpus is `crew/examples/*.yaml` + `host/tests/fixtures/{valid,invalid}/*.yaml`:
+     60 records at 18D-1 (when `crew-sop.yaml` was pinned-skipped), 85 after
+     18D-2 (9 examples, 4 valid, 72 one-rule-per-file invalid fixtures) — the
+     `STAGE_18D2_SKIP` gate and its `crew-sop.yaml` entry were removed once the
+     Phase-19 layer landed. Route dry-run nondeterminism is removed by pointing
+     `FORSETI_CREW_ROUTER_BIN` at a `exit 0` stub (the Rust engine has no dry-run
+     yet).
    - Documented divergences (outside the corpus): regex-engine error text (Go RE2
      vs the Rust `regex` crate) and YAML parse-error text; both keep Go's prefixes
      (`edge N: bad regex …`, `parse crew.yaml: …`).
-   - Unit tests cover what the oracle cannot: the stage-18D-2 rejection, the two
-     regex-error rules, every valid `when` form + defaults, and the graph helpers
-     (`find_cycles`, `back_edges` DFS classification, `derive_subscriptions`,
-     `entry`, `writes_type`, the CLI missing-file message).
-2. **18D-2 (next)** — role archetypes + SOP patterns + typed pub/sub + verdict
-   gates (the P19 layer). The oracle then covers `crew-sop.yaml` too.
+   - Unit tests cover what the oracle cannot: the two regex-error rules, every
+     valid `when` form + defaults, and the graph helpers (`find_cycles`,
+     `back_edges` DFS classification, `derive_subscriptions`, `entry`,
+     `writes_type`, the CLI missing-file message). (18D-2 replaced the
+     stage-rejection test with the role/pattern/bus suites; the corpus grew to
+     85 records — see the 18D-2 gates below.)
+2. **18D-2 ✅ done (2026-10-18)** — the Phase-19 authoring layer: `role` (the
+   archetype library + `RolePack.Validate`), `pattern` (the four SOP patterns
+   compiled into the graph), `bus` (`ParseVerdict`). `Crew::validate` now runs
+   `expand_patterns()` then `RolePack::validate` at the top, in the Go engine's
+   exact order, and the stage-18D-2 rejection shim is gone. Ported byte-for-byte:
+   the synthesized node names (`rl-reviewer`, `ap-critic-2`, `ap-judge`,
+   `ex-implement`, `ex-verify`), `then:` chain resolution (a pattern id → its
+   ENTRY nodes), the phase join (a synthesized node joins its subject's phase; a
+   subject-less executor joins the last), `criteria_note`, and the ~22 role/
+   pattern validation strings. `explain` gained the `role=<id>(<Profile>)` node
+   tag and the `patterns:` block.
+   - **`prompts` parity surface (new)**: `validate --explain` pins the graph but
+     not the prompt text the runner will render, so the Go CLI gained a
+     `forseti-crew prompts -f FILE` subcommand that dumps every resolved node's
+     prompt as JSON. The oracle captures it into each golden record (`prompts`),
+     and `crew_oracle.rs` loads the crew through the Rust library and diffs
+     name+prompt node-by-node — a one-word pattern/role text drift fails the gate
+     (verified by mutation).
 3. **18D-3** — herdr socket client: NDJSON framing, dial-per-call one-shots,
    `events.subscribe`, `layout.apply`, `agent.*`, `pane.*`, `worktree.*`.
 4. **18D-4** — the scheduler: fan-in AND, DFS-classified back edges +
@@ -576,7 +595,8 @@ them exactly (stdout, stderr, exit code).
 ### Gates (18D-1)
 - `cargo test` in `host/` — 14 unit tests + the oracle integration test
   (`host/tests/crew_oracle.rs`) replaying all **60 goldens** green; `cargo clippy
-  --all-targets` and `cargo fmt --check` clean.
+  --all-targets` and `cargo fmt --check` clean. (The corpus has since grown to 85
+  and the unit suite to 27 — see 18D-2 below.)
 - `scripts/crew-host-oracle.py --check` → `goldens current (60 records)`, i.e. the
   committed goldens equal a fresh capture from the Go engine.
 - The Go side is unchanged and green: `gofmt -l .` empty, `go test ./...` in
@@ -589,6 +609,25 @@ them exactly (stdout, stderr, exit code).
   is byte-identical to `forseti-crew validate -f FILE --explain`, including the
   `← <from> [when]` arrow lines and every default (`kind: pi`, `when: idle`,
   check names, memory recall_k/write_max_chars, route picker/confidence).
+
+### Gates (18D-2)
+- `cargo test` in `host/` — **28 tests** (27 unit + the oracle): `role` (7:
+  prefix scaffold, tier resolution + subscriptions, explicit-model-wins,
+  tierless-crew rejection, unknown-role list, watch/writes-without-role, the
+  error strings), `pattern` (6: reviewer-loop synthesis + back edge, panel +
+  executor roster/checks, `then:`→entry-nodes, phase join, declared-member reuse,
+  `criteria` rendering), `bus` (the 11-row Go `TestParseVerdict` table), plus the
+  oracle replay of **85 goldens** including `prompts` name+prompt parity.
+- `scripts/crew-host-oracle.py --check` → `goldens current (85 records)`.
+- Corpus additions: `crew/examples/crew-sop.yaml` (the four-pattern SOP crew) +
+  valid `sop-roles.yaml` / `sop-patterns.yaml` + 22 invalid role/pattern
+  one-rule-per-file fixtures.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; `gofmt -l .` empty;
+  `go vet ./...` + `go test ./...` green in `crew/` (the new `prompts`
+  subcommand included).
+- Mutation check: a one-word change to a synthesized prompt in `pattern.rs`
+  fails two goldens (`examples/crew-sop`, `valid/sop-patterns`) — the prompt
+  leg is not vacuous.
 
 ## Phase 19 — roles + SOP patterns: MetaGPT-style archetypes and declarative multi-agent flows — ✅ **implemented + verified end to end LIVE** (2026-10-17)
 

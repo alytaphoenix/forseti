@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/phase-agent-twice.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/phase-agent-twice.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": already in phase \"p1\" (each agent lives in at most one phase)\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": already in phase \"p1\" (each agent lives in at most one phase)\n",
   "stdout": ""
 }

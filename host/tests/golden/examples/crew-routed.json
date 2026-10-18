@@ -7,6 +7,16 @@
   ],
   "exit": 0,
   "file": "crew/examples/crew-routed.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "crew/examples/crew-routed.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"scout-a\",\"prompt\":\"Reply with exactly: ROUTE_A_OK and nothing else.\\n\"},{\"name\":\"scout-b\",\"prompt\":\"Reply with exactly: ROUTE_B_OK and nothing else.\\n\"}]}\n"
+  },
   "stderr": "",
   "stdout": "crew demo-routed-pool\nnodes:\n  scout-a                  route=auto-pool writes=scout-a ENTRY\n  scout-b                  route=auto-pool writes=scout-b ENTRY\ncrew/examples/crew-routed.yaml valid\n"
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 0,
   "file": "crew/examples/crew-worktree.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "crew/examples/crew-worktree.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"author\",\"prompt\":\"Create a file named WORKTREE_REVIEW.md in the repo root containing a\\nshort markdown checklist titled \\\"Agent review checklist\\\" with two items.\\nReply with the single word WRITTEN when done.\\n\"}]}\n"
+  },
   "stderr": "",
   "stdout": "crew demo-worktree-review\nnodes:\n  author                   model=opencode-go/beam-free writes=author ENTRY\nchecks:\n  after author               git status --porcelain | grep -q WORKTREE_REVIEW.md\n  after author               grep -q 'review checklist' WORKTREE_REVIEW.md\ncrew/examples/crew-worktree.yaml valid\n"
 }

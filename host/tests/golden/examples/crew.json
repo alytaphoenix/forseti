@@ -7,6 +7,16 @@
   ],
   "exit": 0,
   "file": "crew/examples/crew.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "crew/examples/crew.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"planner\",\"prompt\":\"You are the planner in a two-agent crew. Do NOT edit any files.\\nProduce a numbered plan (max 5 steps, one line each) to add a file\\nnamed HELLO_CREW.md to the repo root containing the line\\n\\\"crew pipeline works\\\". End your reply with the single word PLAN_READY.\\n\"},{\"name\":\"builder\",\"prompt\":\"You are the coder in a two-agent crew. Execute this plan exactly,\\ntouching only what it names:\\n\\n{{ .planner }}\\n\\nWhen done, reply with the single word DONE.\\n\"}]}\n"
+  },
   "stderr": "",
   "stdout": "crew demo-planner-builder\nnodes:\n  planner                  model=opencode-go/beam-free writes=planner ENTRY\n  builder                  model=opencode-go/beam-free writes=builder\n                             \u2190 planner [re:PLAN_READY]\ncrew/examples/crew.yaml valid\n"
 }

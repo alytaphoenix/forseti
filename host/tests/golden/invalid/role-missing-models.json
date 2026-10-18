@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/role-missing-models.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/role-missing-models.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/role-missing-models.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": role \"reviewer\" needs tier \"capable\" \u2014 set models: {capable: provider/model} or give the node an explicit model/route\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: agent \"a\": role \"reviewer\" needs tier \"capable\" \u2014 set models: {capable: provider/model} or give the node an explicit model/route\n",
+  "stdout": ""
+}

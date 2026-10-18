@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-bad-id.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-bad-id.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-bad-id.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern 0: id \"Bad\" must match [a-z][a-z0-9_-]{0,21} (it prefixes generated node names)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern 0: id \"Bad\" must match [a-z][a-z0-9_-]{0,21} (it prefixes generated node names)\n",
+  "stdout": ""
+}

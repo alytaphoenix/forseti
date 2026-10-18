@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/edge-bad-when.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/edge-bad-when.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge 0: when \"sometimes\" not a status, re:<regex>, laya:choice:<instructions>, or verdict:<label>\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: edge 0: when \"sometimes\" not a status, re:<regex>, laya:choice:<instructions>, or verdict:<label>\n",
   "stdout": ""
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/route-option-driven-empty.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/route-option-driven-empty.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: route \"r\": type composite is option-driven \u2014 set options: with its switchyard keys\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: route \"r\": type composite is option-driven \u2014 set options: with its switchyard keys\n",
   "stdout": ""
 }

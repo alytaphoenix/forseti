@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/crew-name.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/crew-name.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: crew name \"Bad Name\" violates herdr rule [a-z][a-z0-9_-]{0,31} (it names run logs and view sources)\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: crew name \"Bad Name\" violates herdr rule [a-z][a-z0-9_-]{0,31} (it names run logs and view sources)\n",
   "stdout": ""
 }

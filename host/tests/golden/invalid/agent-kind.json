@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-kind.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-kind.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": kind \"claude\" unsupported (v1: pi only)\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": kind \"claude\" unsupported (v1: pi only)\n",
   "stdout": ""
 }

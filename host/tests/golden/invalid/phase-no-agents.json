@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/phase-no-agents.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/phase-no-agents.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: phase \"p1\": no agents\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: phase \"p1\": no agents\n",
   "stdout": ""
 }

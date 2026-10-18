@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-unknown-param.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-unknown-param.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-unknown-param.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern \"p\" (reviewer_loop): unknown param \"max_revision\" (allowed: criteria, max_revisions, subject_label, then)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern \"p\" (reviewer_loop): unknown param \"max_revision\" (allowed: criteria, max_revisions, subject_label, then)\n",
+  "stdout": ""
+}

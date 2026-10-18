@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/phase-agent-unphased.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/phase-agent-unphased.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"b\": not in any phase (phases are declared \u2014 add it to one)\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"b\": not in any phase (phases are declared \u2014 add it to one)\n",
   "stdout": ""
 }

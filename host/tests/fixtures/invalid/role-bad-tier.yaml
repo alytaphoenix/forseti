@@ -1,0 +1,9 @@
+name: t
+roles:
+  - name: r
+    profile: R
+    tier: fast
+agents:
+  - name: a
+    role: r
+    prompt: x

@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-memory-mode.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-memory-mode.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": memory must be on|off (got \"maybe\")\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent \"a\": memory must be on|off (got \"maybe\")\n",
   "stdout": ""
 }

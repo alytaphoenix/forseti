@@ -282,6 +282,9 @@ pub struct Pattern {
     /// kind-specific dials
     #[serde(default)]
     pub params: BTreeMap<String, Value>,
+    /// `validate` is not re-entrant for expansion (P19C, Go's `expanded`).
+    #[serde(skip)]
+    pub expanded: bool,
 }
 
 impl Crew {

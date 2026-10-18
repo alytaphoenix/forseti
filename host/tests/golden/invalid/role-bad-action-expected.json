@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/role-bad-action-expected.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/role-bad-action-expected.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/role-bad-action-expected.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: role \"r\" action \"step\": expected \"json\" must be text, verdict or list\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: role \"r\" action \"step\": expected \"json\" must be text, verdict or list\n",
+  "stdout": ""
+}

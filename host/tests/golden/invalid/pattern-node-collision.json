@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-node-collision.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-node-collision.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-node-collision.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern node \"p-reviewer\" collides with a declared agent (rename the pattern or its id)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern node \"p-reviewer\" collides with a declared agent (rename the pattern or its id)\n",
+  "stdout": ""
+}

@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-edge-duplicate.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-edge-duplicate.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-edge-duplicate.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: edge a\u2192r already declared (pattern would duplicate it)\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: edge a\u2192r already declared (pattern would duplicate it)\n",
+  "stdout": ""
+}

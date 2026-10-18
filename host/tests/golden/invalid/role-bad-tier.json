@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/role-bad-tier.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/role-bad-tier.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/role-bad-tier.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: role \"r\": tier \"fast\" must be efficient or capable\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: role \"r\": tier \"fast\" must be efficient or capable\n",
+  "stdout": ""
+}

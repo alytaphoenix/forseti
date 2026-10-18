@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/graph-unbounded-cycle.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/graph-unbounded-cycle.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: cycle a \u2192 b has no edge with max_visits \u2014 refusing unbounded loop\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: cycle a \u2192 b has no edge with max_visits \u2014 refusing unbounded loop\n",
   "stdout": ""
 }

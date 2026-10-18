@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/route-needs-tiers.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/route-needs-tiers.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: route \"r\": type stage_router needs both efficient and capable\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: route \"r\": type stage_router needs both efficient and capable\n",
   "stdout": ""
 }

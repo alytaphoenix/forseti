@@ -1,0 +1,5 @@
+name: t
+agents:
+  - name: a
+    role: ghost
+    prompt: x

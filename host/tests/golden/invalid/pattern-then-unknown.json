@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/pattern-then-unknown.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/pattern-then-unknown.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/pattern-then-unknown.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: pattern \"p\": then \"ghost\" is neither a declared agent nor a pattern id\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: pattern \"p\": then \"ghost\" is neither a declared agent nor a pattern id\n",
+  "stdout": ""
+}

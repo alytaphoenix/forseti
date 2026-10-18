@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/phase-dup.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/phase-dup.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: duplicate phase name \"p1\"\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: duplicate phase name \"p1\"\n",
   "stdout": ""
 }

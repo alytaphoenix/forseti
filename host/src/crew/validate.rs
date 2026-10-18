@@ -17,13 +17,7 @@ use super::{
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
-/// Stage 18D-1 covers the base graph (agents, edges, phases, checks, watch,
-/// memory, routes). The Phase-19 authoring layer — `roles:`, `patterns:` and a
-/// node's `role:` — parses but is rejected loudly here rather than silently
-/// ignored, so a crew can never validate differently in the two engines without
-/// the divergence being visible. Stage 18D-2 ports it.
-pub const STAGE_2_UNSUPPORTED: &str = "roles:/patterns: are not yet supported by the Rust crew engine (stage 18D-2 of the port) — run the Go engine (`forseti-crew`) for this crew";
-
+/// Valid agent statuses (`when: <status>`).
 const VALID_STATUSES: [&str; 5] = ["idle", "working", "blocked", "done", "unknown"];
 
 impl Crew {
@@ -37,24 +31,14 @@ impl Crew {
                 self.name
             ));
         }
-        // 18D-1 scope guard (Go: expandPatterns + RolePack.Validate).
-        if !self.roles.is_empty()
-            || !self.patterns.is_empty()
-            || self.agents.iter().any(|a| !a.role.is_empty())
-        {
-            return Err(STAGE_2_UNSUPPORTED.to_string());
-        }
-        // The archetype-resolution rule that survives without the role library:
-        // watch/writes are role features, so a role-less node declaring either
-        // is a validation error (Go: RolePack.Validate).
-        for a in &self.agents {
-            if a.role.is_empty() && (!a.writes.is_empty() || !a.watch.is_empty()) {
-                return Err(format!(
-                    "agent {:?}: watch/writes need a role (or move them into the role archetype)",
-                    a.name
-                ));
-            }
-        }
+        // P19: patterns instantiate first (they append agents/edges), then the
+        // role pack resolves archetypes onto nodes, then the typed pub/sub
+        // derived from watch/writes adds subscription edges — all before the
+        // ordinary graph validation below, so nothing a pattern or role
+        // produced escapes it.
+        self.expand_patterns()?;
+        let pack = crate::crew::role::RolePack::new(&self.roles);
+        pack.validate(self)?;
         if self.agents.is_empty() {
             return Err("crew has no agents".to_string());
         }
@@ -428,7 +412,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::STAGE_2_UNSUPPORTED;
     use crate::crew::{Crew, load};
 
     fn err(yaml: &str) -> String {
@@ -437,20 +420,6 @@ mod tests {
 
     fn ok(yaml: &str) -> Crew {
         load(yaml).unwrap_or_else(|e| panic!("should be valid: {e}"))
-    }
-
-    #[test]
-    fn stage_2_features_are_rejected_loudly() {
-        // A crew file that needs the Phase-19 layer must never validate as if
-        // the roles/patterns simply were not there.
-        let roles = "name: t\nroles:\n  - name: r\n    profile: R\n    tier: capable\nagents:\n  - name: a\n    prompt: x\n";
-        assert_eq!(err(roles), STAGE_2_UNSUPPORTED);
-
-        let patterns = "name: t\npatterns:\n  - id: rl\n    pattern: reviewer_loop\n    subject: a\nagents:\n  - name: a\n    prompt: x\n";
-        assert_eq!(err(patterns), STAGE_2_UNSUPPORTED);
-
-        let agent_role = "name: t\nagents:\n  - name: a\n    role: reviewer\n    prompt: x\n";
-        assert_eq!(err(agent_role), STAGE_2_UNSUPPORTED);
     }
 
     #[test]

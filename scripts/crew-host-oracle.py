@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""crew-host-oracle.py — the Phase 18D-1 gate: the Rust crew engine must match Go.
+"""crew-host-oracle.py — the Phase 18D gate: the Rust crew engine must match Go.
 
 The Go engine (`forseti-crew`) is the compatibility surface while the runner/TUI
 port is staged. This script captures, from the Go binary, the exact
 stdout/stderr/exit of
 
     forseti-crew validate -f FILE --explain
+    forseti-crew prompts  -f FILE            (the resolved prompt templates)
 
 for a corpus of crews, and writes one JSON record per crew under
 `host/tests/golden/`. `host/tests/crew_oracle.rs` replays the same corpus
 through the Rust engine (`forseti-host crew validate`) and diffs the records, so
 the Rust port can be finished stage by stage without either engine being frozen.
+Each record carries a nested `prompts` capture too: `--explain` pins the graph,
+`prompts` pins the synthesized prompt text the runner renders (a pattern/role
+text drift is otherwise invisible until a live run — docs/spikes.md S35).
 
     scripts/crew-host-oracle.py            regenerate the goldens
     scripts/crew-host-oracle.py --check    fail if the committed goldens are stale
 
 Corpus
-  crew/examples/*.yaml          the shipped examples. A crew that needs the
-                                Phase-19 layer (roles/patterns, stage 18D-2) is
-                                skipped against an EXPLICIT list, so the gate
-                                cannot silently narrow as examples are added.
+  crew/examples/*.yaml          the shipped examples (all of them; 18D-2 landed
+                                the Phase-19 layer, so `crew-sop.yaml` is in).
   host/tests/fixtures/valid/    valid crews that add coverage the examples lack
   host/tests/fixtures/invalid/  one crew per validation rule
 
@@ -32,7 +34,6 @@ deterministic and independent of whichever router build happens to be present.
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -42,9 +43,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "host/tests/golden"
 
-# Crews that need the Phase-19 layer (roles/patterns), which stage 18D-2 ports.
-STAGE_18D2_SKIP = {"crew-sop.yaml"}
-
 VALID_KINDS = ("valid", "invalid")
 
 
@@ -52,45 +50,35 @@ def relative(p: Path) -> str:
     return str(p.relative_to(ROOT))
 
 
-def needs_stage_18d2(path: Path) -> bool:
-    text = path.read_text()
-    return bool(
-        re.search(r"(?m)^(roles|patterns):", text) or re.search(r"(?m)^\s+role:", text)
-    )
-
-
 def corpus() -> list[tuple[str, Path]]:
     cases: list[tuple[str, Path]] = []
-    skipped = set()
     for p in sorted((ROOT / "crew/examples").glob("*.yaml")):
-        if needs_stage_18d2(p):
-            skipped.add(p.name)
-            continue
         cases.append(("examples", p))
-    if skipped != STAGE_18D2_SKIP:
-        sys.exit(
-            "examples needing the Phase-19 layer changed: expected "
-            f"{sorted(STAGE_18D2_SKIP)}, found {sorted(skipped)} — implement stage "
-            "18D-2 or update STAGE_18D2_SKIP"
-        )
     for kind in VALID_KINDS:
         for p in sorted((ROOT / f"host/tests/fixtures/{kind}").glob("*.yaml")):
             cases.append((kind, p))
     return cases
 
 
-def capture(binary: Path, file: Path, env: dict) -> dict:
-    argv = ["validate", "-f", relative(file), "--explain"]
+def run(binary: Path, argv: list[str], env: dict) -> dict:
     proc = subprocess.run(
         [str(binary), *argv], cwd=ROOT, capture_output=True, text=True, env=env
     )
     return {
-        "file": relative(file),
         "argv": argv,
         "exit": proc.returncode,
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
+
+
+def capture(binary: Path, file: Path, env: dict) -> dict:
+    # `validate --explain` pins the graph; `prompts` pins the prompt templates,
+    # so a role/pattern text drift cannot hide behind an unchanged graph.
+    rec = {"file": relative(file)}
+    rec.update(run(binary, ["validate", "-f", relative(file), "--explain"], env))
+    rec["prompts"] = run(binary, ["prompts", "-f", relative(file)], env)
+    return rec
 
 
 def render(record: dict) -> str:

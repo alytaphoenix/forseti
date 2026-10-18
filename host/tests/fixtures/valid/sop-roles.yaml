@@ -1,0 +1,32 @@
+name: sop-roles
+models:
+  capable: opencode-go/longcat-2.5-preview-free
+roles:
+  - name: architect
+    profile: Architect
+    goal: design it
+    constraints: keep it short
+    tier: capable
+    writes: design
+    watch: [plan]
+    instruction: Design the thing, briefly.
+    actions:
+      - name: design
+        desc: write the design
+        instruction: Write a short design.
+        expected: text
+        reads: [plan]
+        writes: design
+  - name: reviewer
+    profile: Strict reviewer
+    goal: be strict
+    tier: capable
+    writes: review
+    instruction: Review strictly.
+agents:
+  - name: seed
+    role: planner
+  - name: design
+    role: architect
+  - name: strict
+    role: reviewer

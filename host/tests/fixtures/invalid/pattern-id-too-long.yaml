@@ -1,0 +1,8 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+patterns:
+  - id: aaaaaaaaaaaaaaaaaaaaaaa
+    pattern: reviewer_loop
+    subject: a

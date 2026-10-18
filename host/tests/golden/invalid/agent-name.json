@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/agent-name.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/agent-name.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent 0: name \"A\" violates herdr rule [a-z][a-z0-9_-]{0,31}\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: agent 0: name \"A\" violates herdr rule [a-z][a-z0-9_-]{0,31}\n",
   "stdout": ""
 }

@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/dup-agent.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/dup-agent.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: duplicate agent name \"a\"\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: duplicate agent name \"a\"\n",
   "stdout": ""
 }

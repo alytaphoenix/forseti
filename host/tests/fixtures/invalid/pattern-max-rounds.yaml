@@ -1,0 +1,10 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+patterns:
+  - id: p
+    pattern: adversarial_panel
+    subject: a
+    params:
+      max_rounds: 0

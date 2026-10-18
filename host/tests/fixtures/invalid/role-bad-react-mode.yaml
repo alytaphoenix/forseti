@@ -1,0 +1,9 @@
+name: t
+roles:
+  - name: r
+    profile: R
+    react_mode: loop
+    instruction: go
+agents:
+  - name: a
+    role: r

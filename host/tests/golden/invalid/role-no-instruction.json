@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/invalid/role-no-instruction.yaml",
+    "--explain"
+  ],
+  "exit": 1,
+  "file": "host/tests/fixtures/invalid/role-no-instruction.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/role-no-instruction.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: agent \"a\": no prompt and role \"r\" has no instruction to fall back on\n",
+    "stdout": ""
+  },
+  "stderr": "INVALID: agent \"a\": no prompt and role \"r\" has no instruction to fall back on\n",
+  "stdout": ""
+}

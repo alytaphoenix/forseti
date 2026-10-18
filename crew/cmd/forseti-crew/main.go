@@ -27,6 +27,8 @@ func main() {
 		cmdRun(os.Args[2:])
 	case "validate":
 		cmdValidate(os.Args[2:])
+	case "prompts":
+		cmdPrompts(os.Args[2:])
 	case "watch":
 		cmdWatch(os.Args[2:])
 	case "-h", "--help", "help":
@@ -46,6 +48,7 @@ usage:
                    [--session NAME] [--worktree BRANCH] [--keep-worktree]
                    [--review] [--model P/M]
   forseti-crew validate [-f crew.yaml]
+  forseti-crew prompts [-f crew.yaml]
   forseti-crew watch [-f run.jsonl] [--follow=false]`)
 }
 
@@ -119,6 +122,34 @@ func cmdValidate(args []string) {
 		fmt.Print(schema.Explain(crew))
 	}
 	fmt.Println(f.file, "valid")
+}
+
+// cmdPrompts dumps every resolved node's prompt template as JSON, after
+// validation (so patterns/roles have expanded). It is the parity surface for
+// the staged Rust port: `validate --explain` pins the graph, `prompts` pins the
+// prompt text the runner renders — a pattern or role text drift would otherwise
+// be invisible until a live run (docs/spikes.md S35).
+func cmdPrompts(args []string) {
+	fs := flag.NewFlagSet("prompts", flag.ExitOnError)
+	f := parseRun(fs, args)
+	crew, err := loadCrew(f.file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "INVALID:", err)
+		os.Exit(1)
+	}
+	type node struct {
+		Name   string `json:"name"`
+		Prompt string `json:"prompt"`
+	}
+	out := struct {
+		Agents []node `json:"agents"`
+	}{Agents: make([]node, 0, len(crew.Agents))}
+	for i := range crew.Agents {
+		out.Agents = append(out.Agents, node{Name: crew.Agents[i].Name, Prompt: crew.Agents[i].Prompt})
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(out)
 }
 
 func cmdRun(args []string) {

@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "host/tests/fixtures/valid/sop-roles.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "host/tests/fixtures/valid/sop-roles.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/valid/sop-roles.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"seed\",\"prompt\":\"\"},{\"name\":\"design\",\"prompt\":\"\"},{\"name\":\"strict\",\"prompt\":\"\"}]}\n"
+  },
+  "stderr": "",
+  "stdout": "crew sop-roles\nmodels: capable=opencode-go/longcat-2.5-preview-free\nroles (crew-declared): architect profile=Architect tier=capable actions=design; reviewer profile=Strict reviewer tier=capable\nnodes:\n  seed                     role=planner(Planner) model=opencode-go/longcat-2.5-preview-free writes=plan ENTRY\n  design                   role=architect(Architect) model=opencode-go/longcat-2.5-preview-free writes=design watch=plan\n                             \u2190 seed [idle]\n  strict                   role=reviewer(Strict reviewer) model=opencode-go/longcat-2.5-preview-free writes=review ENTRY\nhost/tests/fixtures/valid/sop-roles.yaml valid\n"
+}

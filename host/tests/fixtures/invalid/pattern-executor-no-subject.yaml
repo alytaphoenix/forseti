@@ -1,0 +1,7 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+patterns:
+  - id: p
+    pattern: executor

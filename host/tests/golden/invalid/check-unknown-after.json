@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/check-unknown-after.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/check-unknown-after.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: check 0: after \"zz\" is not an agent\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: check 0: after \"zz\" is not an agent\n",
   "stdout": ""
 }

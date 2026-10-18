@@ -7,6 +7,16 @@
   ],
   "exit": 1,
   "file": "host/tests/fixtures/invalid/watch-unknown-node.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "host/tests/fixtures/invalid/watch-unknown-node.yaml"
+    ],
+    "exit": 1,
+    "stderr": "INVALID: watch 0: node \"zz\" is not an agent\n",
+    "stdout": ""
+  },
   "stderr": "INVALID: watch 0: node \"zz\" is not an agent\n",
   "stdout": ""
 }

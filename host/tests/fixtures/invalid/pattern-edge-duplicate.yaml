@@ -1,0 +1,15 @@
+name: t
+agents:
+  - name: a
+    prompt: x
+  - name: r
+    prompt: y
+edges:
+  - from: a
+    to: r
+patterns:
+  - id: p
+    pattern: reviewer_loop
+    subject: a
+    members:
+      reviewer: r
