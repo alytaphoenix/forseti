@@ -204,6 +204,17 @@ impl Event {
         self.info = info.into();
         self
     }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    pub fn with_metrics(mut self, cost_usd: f64, ctx_pct: f64) -> Self {
+        self.cost_usd = cost_usd;
+        self.ctx_pct = ctx_pct;
+        self
+    }
 }
 
 /// The scheduler's shared edge bookkeeping (one per run). Skip events are
@@ -258,6 +269,9 @@ pub struct Options {
     pub keep_worktree: bool,
     /// End the run on a lazygit review of the worktree; implies keeping both.
     pub review: bool,
+    /// Substitutes the model of every direct-model node during an outage; route
+    /// nodes keep their switchyard pools (`--model` / `FORSETI_CREW_MODEL`).
+    pub model_override: String,
 }
 
 impl Default for Options {
@@ -269,6 +283,7 @@ impl Default for Options {
             keep_tab: false,
             keep_worktree: false,
             review: false,
+            model_override: String::new(),
         }
     }
 }

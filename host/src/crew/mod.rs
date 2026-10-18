@@ -17,6 +17,11 @@
 //! * **18D-4** — `scheduler`, the P13/P19 wave scheduler: fan-in AND, cycle
 //!   back edges + `max_visits`, phase barriers, verdict gates, per-visit
 //!   checks. Pure decisions — no herdr, no threads; 18D-5 drives it.
+//! * **18D-5a** — `template` (the Go `text/template` subset crews use, with the
+//!   S32 parse errors verbatim) and `runner` (the `PaneBackend` trait + herdr
+//!   impl, and the Go `runNode` path: render → prompt+settle → retry guard →
+//!   bus/artifact → events). The orchestration (tab/pane layout, subscription,
+//!   run log, teardown) is 18D-5b.
 //!
 //! Deliberate divergences (documented, not oracle-covered): regex-engine error
 //! text (Go RE2 vs the Rust `regex` crate) and YAML parse-error text.
@@ -29,7 +34,9 @@ pub mod model;
 pub mod pattern;
 pub mod role;
 pub mod routes;
+pub mod runner;
 pub mod scheduler;
+pub mod template;
 pub mod validate;
 
 pub use command::{Outcome, validate};

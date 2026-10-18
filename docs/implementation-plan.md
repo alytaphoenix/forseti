@@ -640,14 +640,39 @@ them exactly (stdout, stderr, exit code).
      `drive()` that runs the Go wave loop to quiescence — proving a
      reviewer loop converges LBTM→LBTM→LGTM in 7 dispatches and that a phase
      barrier actually delays the next wave.
-5. **18D-5** — the runner: pane dispatch, prompt+settle (`agent.prompt.wait`, the
-   reasoning-model empty-settle guard), templates (`{{ .upstream }}`,
-   `{{ node }}`, `{{ artifact }}`, `{{ memory }}`), run log, memory/bus.
-   Design note (2026-10-18, user direction): pi should also be launchable
-   **inside ttt** (S38), so the runner should sit behind a `PaneBackend` trait
-   (spawn/prompt/prompt-wait/read/focus/status) with the herdr impl first —
-   the Go engine hardcodes `*herdrd.Client`, and that is the one place a Rust
-   port can improve on it without diverging.
+5. **18D-5 — the runner, staged.**
+   **18D-5a ✅ done (2026-10-18)** — the backend-agnostic core:
+   `host/src/crew/template.rs` + `host/src/crew/runner.rs`.
+   - `template`: the Go `text/template` SUBSET crews actually use —
+     `{{ .name }}` field access (absent key renders `<no value>`, exactly Go's
+     `missingkey=default`; the runner binds every incoming edge so a miss is an
+     authoring bug), `{{ node|artifact|memory "arg" }}` (the arg may be
+     hyphenated), `{{- … -}}` trim markers, and the S32 parse-time failures
+     verbatim: `template: <node>:<line>: function "draft" not defined` and
+     `...: bad character U+002D`. Parsing is two-phase (`parse` → resolve calls
+     → `render_parts`) so the runner's mutable function values are computed
+     with sequential borrows.
+   - `runner`: the **`PaneBackend` trait** (`read`/`prompt`/`prompt_wait`/
+     `focus`/`status`) with `HerdrBackend` over 18D-3 — the ttt backend (S38)
+     is the same shape, so there will be one runner, not two.
+   - `NodeExecutor` = the Go `runNode` path: phase instructions + role prefix,
+     template render, auto-recall block, baseline read, prompt+settle in ONE
+     call, `blocked` → `node_blocked` (never auto-answered), the
+     reasoning-model empty-settle retry (once, guarded by `emptySettleProne`),
+     `parsePiStatus` cost/context capture, `.forseti/bus/<node>.md` + the typed
+     `bus/typed/<type>.md` artifact, `node_start`/`node_done`/`node_failed`/
+     `node_retry`/`verdict`/`memory_*` events, and auto-write.
+   - `MemoryLink` is a trait (recall/write) so the HTTP client + laya/switchyard
+     lifecycle land in 18D-5c without touching the node path.
+   - **Design note (user direction 2026-10-18)**: pi should also be launchable
+     **inside ttt** (S38) — the trait exists so `TttBackend` slots in behind the
+     same runner, which is the one place the Rust port improves on the Go
+     engine's hardcoded `*herdrd.Client`.
+   - **18D-5b (next)** — the herdr orchestration: `Run` loop, crew tab/pane
+     layout, agent start + readiness, the events subscription, run log JSONL,
+     crew-status bridge, teardown.
+   - **18D-5c** — memory HTTP client + laya + switchyard proxy + worktree +
+     review pane.
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
    compared side by side; the Go engine retires only once the Rust engine passes
    the smoke gate unsupervised.
@@ -705,6 +730,27 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-5a)
+- `cargo test` in `host/` — **81 unit tests + 1 oracle** (+1 ignored): 22 new
+  (9 `template` + 13 `runner`).
+- `template`: field access (dotted and `{{.x}}`), an empty upstream renders
+  empty, an absent key renders Go's `<no value>`, hyphenated call arguments,
+  trim markers, string escapes, unclosed/unknown actions, and the two S32
+  errors byte-for-byte (`function "draft" not defined`,
+  `bad character U+002D`, with Go's line numbers). The S32 guard loads **every
+  example crew** and renders every agent prompt + phase instructions (28) with
+  stubs.
+- `runner`: the Go pure-helper ports (`parsePiStatus` incl. last-match and the
+  free-id footer, the `emptySettleProne` table both ways, `truncateUTF8` rune
+  safety), and node execution over a fake backend — the happy path (templated
+  upstream, bus + typed artifact bytes, cost/ctx, `verdict`, `node_done.model`),
+  blocked (no bus write), the reasoner retry exactly once, no retry for a
+  healthy model, the Go-shaped template failure, a post-settle read error, phase
+  instructions + role prefix (and `node_start.phase`), and auto-recall +
+  auto-write (`#7 -> crew-memtest`).
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; the oracle is
+  untouched (85 records).
 
 ### Gates (18D-4)
 - `cargo test` in `host/` — **59 unit tests + 1 oracle** (+1 ignored): the 19

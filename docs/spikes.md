@@ -1403,3 +1403,39 @@ been cleaned, so the AGENTS.md "only local source" claim needed restoring).
   now carries the plan. For the Rust engine it means 18D-5 should put pane
   operations behind a `PaneBackend` trait (herdr first, `TttBackend` later)
   rather than hardcoding the herdr client as the Go runner does.
+
+## S39 — the prompt renderer: an un-oracled surface, pinned by tests (Phase 18D-5a, 2026-10-18) ✅ resolved (unit)
+
+18D-5 needed a prompt renderer, and this is the first part of the port the
+oracle CANNOT see: the goldens pin every node's prompt TEMPLATE (S35), but a
+template only becomes a prompt at dispatch, when upstream outputs exist. So the
+question was what pins the Rust renderer.
+
+- **Scope, measured rather than guessed.** Every template form in the repo is
+  one of: `{{ .<node> }}`, `{{ node "<name>" }}`, `{{ artifact "<type>" }}`,
+  `{{ memory "<query>" }}` (plus the deliberate error cases below). So
+  `host/src/crew/template.rs` implements that subset — field access, a
+  one-string-arg call, `{{- … -}}` trim markers — and errors clearly on
+  anything else instead of silently rendering nothing.
+- **Go's parse-time failures are reproduced VERBATIM**, because they are the
+  failures authors actually hit (S32): `template: <node>:<line>: function
+  "draft" not defined` for a bare name, `...: bad character U+002D` for a
+  hyphenated field. Both tested with Go's exact strings and line numbers.
+- **`<no value>` is intentional.** Go's `missingkey=default` renders `<no value>`
+  for an absent map key. The runner binds every INCOMING edge unconditionally
+  (P13 BUG-06), so the only way to see it is a prompt naming a non-upstream —
+  an authoring bug, which must look the same in both engines. A test pins it.
+- **What replaces the oracle**: a test that loads every EXAMPLE crew and
+  parse+renders every agent prompt AND every phase's instructions (28 prompts
+  today) with stub functions. That catches the entire S32 failure class (bare or
+  hyphenated references) in Rust, before a live run, exactly as
+  `schema.TestPatternPromptsRender` does on the Go side.
+- **Rust-specific design: two-phase render.** Go's `Execute` calls the function
+  closures in-string, while they mutate the runner. Rust cannot hold those
+  mutable borrows simultaneously, so the runner parses first, resolves each
+  call, then renders. Deliberately NOT deduplicated: one resolution per
+  OCCURRENCE, so two `{{ memory "q" }}` in one prompt are two recalls and two
+  events, matching Go.
+- **Not covered**: `{{ if }}`/`{{ range }}`/pipelines/`printf` — no crew uses
+  them, and a crew that did would fail loudly at dispatch (a clear
+  `unsupported template action` error) rather than render wrongly.
