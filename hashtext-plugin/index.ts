@@ -1124,8 +1124,10 @@ const STOPWORDS = new Set([
 	"would", "about", "into", "have", "has", "had", "not", "but", "all", "any", "our", "its",
 ]);
 
-/** term -> indices into `metas`; built lazily when name/description scoring is thin. */
-let contentIndex: Map<string, Set<number>> | null = null;
+/** term -> (block index -> term frequency); built lazily for content ranking. */
+let contentIndex: Map<string, Map<number, number>> | null = null;
+let contentLengths: number[] = [];
+let contentAvgLength = 1;
 let contentIndexAt = 0;
 const CONTENT_INDEX_TTL_MS = 60_000;
 const CONTENT_SCAN_BYTES = 512 * 1024;
@@ -1137,9 +1139,10 @@ function contentTokens(text: string): string[] {
 		.filter((token) => token.length >= 3 && !STOPWORDS.has(token));
 }
 
-async function ensureContentIndex(): Promise<Map<string, Set<number>>> {
+async function ensureContentIndex(): Promise<Map<string, Map<number, number>>> {
 	if (contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS) return contentIndex;
-	const index = new Map<string, Set<number>>();
+	const index = new Map<string, Map<number, number>>();
+	const lengths: number[] = new Array(metas.length).fill(0);
 	for (let i = 0; i < metas.length; i++) {
 		let text: string;
 		try {
@@ -1148,17 +1151,22 @@ async function ensureContentIndex(): Promise<Map<string, Set<number>>> {
 			continue;
 		}
 		if (text.length > CONTENT_SCAN_BYTES) text = text.slice(0, CONTENT_SCAN_BYTES);
-		const seen = new Set(contentTokens(text));
-		for (const token of seen) {
+		const tokens = contentTokens(text);
+		lengths[i] = tokens.length;
+		const counts = new Map<string, number>();
+		for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+		for (const [token, tf] of counts) {
 			let bucket = index.get(token);
 			if (!bucket) {
-				bucket = new Set();
+				bucket = new Map();
 				index.set(token, bucket);
 			}
-			bucket.add(i);
+			bucket.set(i, tf);
 		}
 	}
 	contentIndex = index;
+	contentLengths = lengths;
+	contentAvgLength = Math.max(1, lengths.reduce((sum, value) => sum + value, 0) / Math.max(1, metas.length));
 	contentIndexAt = Date.now();
 	return index;
 }
@@ -1175,44 +1183,72 @@ export async function lexicalCandidates(query: string, limit = 7): Promise<Block
 	];
 	if (terms.length === 0) return [];
 	const phrase = query.toLowerCase().trim();
+	const total = Math.max(1, metas.length);
+	const idf = (df: number): number => Math.log(1 + total / Math.max(1, df));
+
+	// Metadata idf: a term in one block's name is far more discriminative than
+	// a term in every description, which is what made section-level stores
+	// return the same handful of generic blocks.
+	const nameDf = new Map<string, number>();
+	const descDf = new Map<string, number>();
+	for (const term of terms) {
+		let nameCount = 0;
+		let descCount = 0;
+		for (const meta of metas) {
+			if (meta.name.toLowerCase().includes(term)) nameCount += 1;
+			if (meta.description.toLowerCase().includes(term)) descCount += 1;
+		}
+		nameDf.set(term, nameCount);
+		descDf.set(term, descCount);
+	}
+
 	const scored = metas
 		.filter((meta) => !residentSet.has(meta.sha256))
 		.map((meta) => {
 			const name = meta.name.toLowerCase();
 			const desc = meta.description.toLowerCase();
 			const kind = meta.kind.toLowerCase();
+			// Long blocks otherwise win on raw term count; normalise by size.
+			const norm = 1 / Math.sqrt(1 + meta.bytes / 8_000);
 			let score = 0;
 			for (const term of terms) {
-				if (name.includes(term)) score += 4;
-				if (desc.includes(term)) score += 3;
-				if (kind.includes(term)) score += 1;
+				if (name.includes(term)) score += 4 * idf(nameDf.get(term) ?? 1);
+				if (desc.includes(term)) score += 3 * idf(descDf.get(term) ?? 1);
+				if (kind.includes(term)) score += 0.5;
 			}
-			if (phrase.length >= 5 && (name.includes(phrase) || desc.includes(phrase))) score += 5;
-			return { meta, score };
+			if (phrase.length >= 5 && (name.includes(phrase) || desc.includes(phrase))) score += 6;
+			return { meta, score: score * norm };
 		})
 		.filter((item) => item.score > 0);
 
-	// Thin metadata match means the query is really about block content: scan
-	// the store (native zstd, ~8 ms for 200 blocks) instead of guessing.
-	if (scored.length < 3) {
+	// Always combine a content scan: section-level stores share generic
+	// vocabulary, so metadata alone misses the specific section. BM25 with
+	// length normalisation handles sections of wildly different sizes.
+	{
 		try {
 			const index = await ensureContentIndex();
+			const k1 = 1.2;
+			const b = 0.75;
 			const contentScores = new Map<string, number>();
 			for (const term of terms) {
 				const bucket = index.get(term);
 				if (!bucket) continue;
-				for (const i of bucket) {
+				const termIdf = idf(bucket.size);
+				for (const [i, tf] of bucket) {
 					const meta = metas[i];
 					if (!meta || residentSet.has(meta.sha256)) continue;
-					contentScores.set(meta.sha256, (contentScores.get(meta.sha256) ?? 0) + 1.5);
+					const length = contentLengths[i] || contentAvgLength;
+					const denom = tf + k1 * (1 - b + b * (length / contentAvgLength));
+					const score = termIdf * ((tf * (k1 + 1)) / (denom || 1));
+					contentScores.set(meta.sha256, (contentScores.get(meta.sha256) ?? 0) + score);
 				}
 			}
 			for (const [sha, score] of contentScores) {
 				const existing = scored.find((item) => item.meta.sha256 === sha);
-				if (existing) existing.score += score;
+				if (existing) existing.score += score * 1.6;
 				else {
 					const meta = bySha.get(sha);
-					if (meta) scored.push({ meta, score });
+					if (meta) scored.push({ meta, score: score * 1.6 });
 				}
 			}
 		} catch {

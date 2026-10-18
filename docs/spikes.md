@@ -1836,7 +1836,7 @@ upstream's v1.8.0 HEAD.
   plugin fs roots) — verified identical on the pristine tag by stashing the
   diff. The touched packages (`terminal`, `config`, `ui`, `plugin`) pass.
 
-## S48 — hashtext: LLM-generated data, and the fine-tune verdict (2026-10-18) ✅ resolved (measured)
+## S52 — hashtext: LLM-generated data, and the fine-tune verdict (2026-10-18) ✅ resolved (measured)
 
 S47 closed the telemetry loop; this pass asked whether a Laya fine-tune is
 justified. Built a realistic corpus and a free-LLM data pipeline, then measured.

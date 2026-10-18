@@ -74,9 +74,9 @@ blocks are immutable, so it never goes stale.
 `/hash auto on` enables the local Laya decision endpoint
 (`FORSETI_LAYA_URL`, default `127.0.0.1:8751`):
 
-- **find** — a lexical shortlist (≤7 candidates by name/description/kind, plus a
-  native content scan when metadata matching is thin) is offered to Laya as a
-  bounded choice with an explicit `other`. Measured: correct pick for 4/4
+- **find** — a lexical shortlist (≤7 candidates) is scored with BM25 over block
+  content plus idf-weighted metadata, then offered to Laya as a bounded choice
+  with an explicit `other`. Measured: correct pick for 4/4
   topical queries at confidence 0.88–1.00, abstains on unrelated prompts;
   ~30 ms warm. (A binary "needs a block?" gate was tested and rejected — it
   answered "no" to everything.)
@@ -129,6 +129,10 @@ bun run scripts/hashtext-dataset.ts --from-decisions --out ~/.hashtext/train.jso
 # turn recorded outcomes into labelled rows + a review TSV
 bun run scripts/hashtext-label.ts --review ~/.hashtext/review.tsv
 
+# free-LLM data: natural queries from blocks, then judge "acceptable" answers
+bun run scripts/hashtext-generate.ts --per-block 3 --out ~/.hashtext/generated.jsonl
+bun run scripts/hashtext-judge.ts --data ~/.hashtext/generated.jsonl
+
 # scorecard: recall@k, lexical baseline, pick accuracy, abstention P/R, ECE, latency
 bun run scripts/hashtext-eval.ts --offline          # retrieval + baseline
 bun run scripts/hashtext-eval.ts                    # + Laya against the live endpoint
@@ -149,8 +153,10 @@ Measured on the first pass (8-block store; 41 eval rows, 18 authored):
   0.068, and the 0.85 operating point selected 66% of picks at 95% precision —
   i.e. the threshold became usable. Accuracy is unchanged by construction
   (isotonic is monotone; the argmax can't move).
-- Ranking tied the lexical baseline on decision rows; the abstention head is
-  where Laya earns its place (7/7 abstentions correct).
+- On the 136-block section corpus with judged `acceptable` sets: BM25 recall@7
+  100%, lexical top-1 80%, **Laya 68%** (laya-only 0, lexical-only 3) with
+  abstention recall 42.9%. Ranking headroom exists, but the base model does not
+  capture it — a fine-tune is not justified before a cheap reranker is tried.
 - Synthetic keyword queries are tagged `retrieval` (recall only): their labels
   are too noisy for accuracy/ECE. Use authored or telemetry-derived queries for
   judgement metrics.

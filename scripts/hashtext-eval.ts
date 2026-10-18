@@ -52,6 +52,8 @@ interface Row {
 	query?: string;
 	expected?: string;
 	tags?: string[];
+	/** Blocks a judge said could answer this query (relaxes strict source labels). */
+	acceptable?: string[];
 }
 
 await refreshMetas(true);
@@ -77,6 +79,7 @@ interface Result {
 	query: string;
 	expected: string;
 	tags: string[];
+	accepted: string[];
 	shouldAbstain: boolean;
 	candidates: string[];
 	rank: number; // -1 = not in shortlist
@@ -99,8 +102,13 @@ for (const row of rows) {
 
 	const candidates = await lexicalCandidates(query, k);
 	const ids = candidates.map((meta) => meta.id);
-	const rank = expected === "other" ? -2 : ids.indexOf(expected);
-	const shouldAbstain = expected === "other";
+	// A judged `acceptable` set relaxes the strict source-block label: section-
+	// level stores overlap, so another block can legitimately answer.
+	const acceptable = Array.isArray(row.acceptable) ? row.acceptable.filter((id): id is string => typeof id === "string") : [];
+	const accepted = new Set(acceptable);
+	if (expected !== "other") accepted.add(expected);
+	const shouldAbstain = expected === "other" && accepted.size === 0;
+	const rank = shouldAbstain ? -2 : Math.max(-1, ids.findIndex((id) => accepted.has(id)));
 
 	let pick: string | null = null;
 	let confidence: number | null = null;
@@ -125,12 +133,13 @@ for (const row of rows) {
 
 	const effectivePick = pick ?? (candidates[0]?.id ?? null);
 	const abstained = effectivePick === "other" || effectivePick === null;
-	const correct = shouldAbstain ? abstained : effectivePick === expected;
+	const correct = shouldAbstain ? abstained : effectivePick !== null && accepted.has(effectivePick);
 
 	results.push({
 		query,
 		expected,
 		tags,
+		accepted: [...accepted],
 		shouldAbstain,
 		candidates: ids,
 		rank,
@@ -202,6 +211,17 @@ for (const row of results) {
 	}
 }
 
+// Switch matrix over ranking rows only (abstention is scored separately); if
+// the model mostly ties, a reranker/fine-tune has no case.
+const switchRows = decisionLabelled;
+const acceptedPick = (row: Result, id: string | null): boolean => Boolean(id && row.accepted.includes(id));
+const switchCounts = {
+	both: switchRows.filter((row) => acceptedPick(row, row.lexicalTop1) && acceptedPick(row, row.pick)).length,
+	lexical_only: switchRows.filter((row) => acceptedPick(row, row.lexicalTop1) && !acceptedPick(row, row.pick)).length,
+	laya_only: switchRows.filter((row) => !acceptedPick(row, row.lexicalTop1) && acceptedPick(row, row.pick)).length,
+	neither: switchRows.filter((row) => !acceptedPick(row, row.lexicalTop1) && !acceptedPick(row, row.pick)).length,
+};
+
 const report = {
 	rows: results.length,
 	labelled: labelled.length,
@@ -214,10 +234,19 @@ const report = {
 		? retrievalRows.filter((row) => row.rank >= 0).length / retrievalRows.length
 		: 0,
 	lexical_top1_accuracy: decisionLabelled.length
-		? decisionLabelled.filter((row) => row.lexicalTop1 === row.expected).length / decisionLabelled.length
+		? decisionLabelled.filter((row) => acceptedPick(row, row.lexicalTop1)).length / decisionLabelled.length
 		: 0,
 	pick_accuracy: accuracy(decisionLabelled.length ? decisionLabelled : decisionRows),
 	pick_accuracy_in_shortlist: accuracy(decisionInShortlist),
+	switch: switchCounts,
+	headroom: Number(
+		(
+			(labelled.length ? inShortlist.length / labelled.length : 0) -
+			(decisionLabelled.length
+				? decisionLabelled.filter((row) => acceptedPick(row, row.lexicalTop1)).length / decisionLabelled.length
+				: 0)
+		).toFixed(3),
+	),
 	abstention: {
 		precision: Number(precision.toFixed(3)),
 		recall: Number(recallAbstain.toFixed(3)),
@@ -253,6 +282,11 @@ if (json) {
 	console.log(`abstention            precision ${pct(report.abstention.precision)} · recall ${pct(report.abstention.recall)}`);
 	console.log(`  false-abstain       ${pct(report.abstention.false_abstain_rate)} · missed-abstain ${pct(report.abstention.missed_abstain_rate)}`);
 	console.log(`ECE                   ${report.ece.toFixed(3)} over ${report.calibrated_rows} decision rows`);
+	console.log(`headroom              ${(report.headroom * 100).toFixed(1)}% (recall@${k} − lexical top-1)`);
+	console.log(
+		`switch                both ${report.switch.both} · lexical-only ${report.switch.lexical_only} · ` +
+			`laya-only ${report.switch.laya_only} · neither ${report.switch.neither}`,
+	);
 	console.log(`laya latency          ${report.latency_ms.mean} ms mean · ${report.latency_ms.p95} ms p95 (${report.laya_round_trips} calls)`);
 	console.log("");
 	console.log(`  retrieval probes: recall@${k} ${pct(report.retrieval_recall_at_k)} (${report.retrieval_rows} rows — ranking not scored)`);

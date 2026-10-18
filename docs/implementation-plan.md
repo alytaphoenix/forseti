@@ -1258,3 +1258,17 @@ whether L2 head-only fine-tuning has a case.
 
 Caveat: matched-expand is a usage signal, not correctness. Judged review rows
 are the input to any real calibration fit (`--min 30`) or fine-tune.
+
+### Phase 20f — LLM dataset + fine-tune justification (2026-10-18, S52)
+
+| Task | Status |
+|---|---|
+| 136-block section-level corpus (docs sections, plugin/scripts, hashtext sources, logs) | ✅ |
+| `scripts/hashtext-generate.ts`: free `openrouter/free`, natural queries, resumable incremental writes, fallbacks | ✅ 32 rows (rate-limited) |
+| `scripts/hashtext-judge.ts`: LLM `acceptable` sets, content snippets, robust parsing, resumable | ✅ 30/32 labelled |
+| BM25 content ranking (tf·idf, length normalisation, always combined with metadata) | ✅ recall@7 **100%**, lexical top-1 **80%** |
+| Eval consumes `acceptable` sets; switch matrix isolates ranking from abstention | ✅ |
+| Verdict | **L2 not justified**: Laya 68% vs lexical 80%; laya-only 0, lexical-only 3; abstention recall 42.9%; ECE 0.387 |
+
+Next if pursued: judge 200+ rows and fit a logistic reranker over BM25 features
+before considering a head-only fine-tune.
