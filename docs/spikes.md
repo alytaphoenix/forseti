@@ -1615,3 +1615,39 @@ latency, and which parts of the cold store a small local model can decide.
   realistic 300–740 B blocks (24–69% on larger corpora); CDC + one packed
   stream saves **45%** on “log v1 + appended lines”. Both are store-level wins,
   not prompt wins, so they rank below the index work.
+
+## S45 — hashtext picker: retrieval beats ranking, and Laya is under-confident (2026-10-18) ✅ resolved (measured)
+
+First pass with telemetry + a labelled eval harness (`scripts/hashtext-dataset.ts`,
+`scripts/hashtext-eval.ts`), on an 8-block store (README, plugin source, docs,
+logs) with 19 rows.
+
+- **The shortlist was the bottleneck, not the model.** Name/description-only
+  scoring found the expected block in **56.3%** of labelled rows (12.5% on
+  content-derived queries). Adding a content-aware pass — scan block text
+  natively only when metadata scoring yields <3 candidates — took recall@7 to
+  **100%** and lexical top-1 to **100%** on decision rows. Retrieval had to be
+  fixed before any ranking claim could be made.
+- **Laya's ranking tied the lexical baseline** on decision rows (8 vocab + 3
+  abstain: 100% pick, 100% abstain, lexical top-1 also 100%). Its clear value is
+  the **abstention head**, not ordering easy candidates. Sample is tiny; treat
+  as a pipeline signal, not a win.
+- **But its confidence is systematically low on this distribution.** Correct
+  picks came back at **0.05–0.16**; ECE **0.61** over 11 decision rows, and a
+  manual probe showed `other` absorbing 0.13–0.37 of the mass. The checkpoint's
+  `temperature_by_options` is calibrated for its original task mixture. Effect:
+  the plugin's **0.85 auto-expand threshold would never fire** even when the
+  pick is right. Recalibration (`Agent.fit_temperatures`, L1) must come before
+  any weight tuning; head-only fine-tuning (L2) is only justified if real-query
+  data still shows ranking errors.
+- **Synthetic content queries are retrieval probes, not judgement labels.**
+  Keyword-soup queries produce labels a human would not reliably agree with, and
+  Laya scored 0% on them. The dataset tags them `retrieval`; accuracy/ECE/
+  abstention are computed on `decision` rows only.
+- **Warm latency** across 19 Laya calls: 39.5 ms mean, 69 ms p95 (first-call
+  load excluded from the mean by the warm server).
+- **Telemetry now exists**: `decisions.jsonl` records `find` (query, candidate
+  details, pick, confidence, probabilities, latency) and `outcome` (expand/evict
+  with `matched_pick`, `resident_turns`), rotated at 8 MB. The dataset builder
+  can dump it (`--from-decisions`), and `--queries FILE` accepts LLM-authored
+  `expected<TAB>query` rows — the recommended path for a real training set.

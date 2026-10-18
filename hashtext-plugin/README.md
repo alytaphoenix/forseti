@@ -12,7 +12,7 @@ only when (and to the extent) the task needs it.
 /hash evict <ref>                  drop it from the hot set (marker remains)
 /hash read <ref> [start] [end]     exact line range, numbered
 /hash grep <pattern>               regex across cold blocks
-/hash stats · gc · archive on|off · auto on|off · clear
+/hash stats · gc · archive on|off · auto on|off · log [n] · clear
 ```
 
 Model tools: `hashtext_put`, `hashtext_list`, `hashtext_find`,
@@ -74,11 +74,12 @@ blocks are immutable, so it never goes stale.
 `/hash auto on` enables the local Laya decision endpoint
 (`FORSETI_LAYA_URL`, default `127.0.0.1:8751`):
 
-- **find** — a lexical shortlist (≤7 candidates by name/description/kind) is
-  offered to Laya as a bounded choice with an explicit `other`. Measured:
-  correct pick for 4/4 topical queries at confidence 0.88–1.00, abstains on
-  unrelated prompts; ~30 ms warm. (A binary "needs a block?" gate was tested
-  and rejected — it answered "no" to everything.)
+- **find** — a lexical shortlist (≤7 candidates by name/description/kind, plus a
+  native content scan when metadata matching is thin) is offered to Laya as a
+  bounded choice with an explicit `other`. Measured: correct pick for 4/4
+  topical queries at confidence 0.88–1.00, abstains on unrelated prompts;
+  ~30 ms warm. (A binary "needs a block?" gate was tested and rejected — it
+  answered "no" to everything.)
 - **auto** — confidence ≥ 0.85 expands the pick; 0.60–0.85 appends a
   `likely: …` suggestion line to the index.
 - **janitor** — at `turn_end`, with ≥3 resident blocks, Laya picks the least
@@ -99,6 +100,47 @@ blocks are immutable, so it never goes stale.
   a torn metadata file, a corrupt payload, or a dead Laya endpoint.
 - Store writes are atomic with fsync; `hashtext gc` removes orphan payloads,
   dangling metadata, and stale temps.
+
+## Telemetry and tuning
+
+Every pick is logged to `<store>/decisions.jsonl` (rotated at 8 MB):
+
+```jsonc
+{"kind":"find","query":"what broke the build?","candidates":[{"id","name","description","kind","tokens_est"}],
+ "pick":"a3f2c1b9d4e0","confidence":0.93,"latency_ms":38,"probabilities":{...}}
+{"kind":"outcome","action":"expand","ref":"a3f2c1b9d4e0","matched_pick":true,"turns_since_pick":0}
+{"kind":"outcome","action":"evict","ref":"…","resident_turns":2,"matched_pick":false}
+```
+
+`/hash log [n]` shows the last entries. Two scripts turn that into a dataset and
+a scorecard, reusing the plugin's *exact* shortlist and Laya client (no logic
+drift):
+
+```sh
+# labelled rows: authored (best), synthetic (vocab/decision + content/retrieval)
+bun run scripts/hashtext-dataset.ts --synthetic 200 --out ~/.hashtext/eval.jsonl
+# or LLM-authored: expected<TAB>query per line
+bun run scripts/hashtext-dataset.ts --queries queries.tsv --out ~/.hashtext/eval.jsonl
+# dump telemetry for later judging
+bun run scripts/hashtext-dataset.ts --from-decisions --out ~/.hashtext/train.jsonl
+
+# scorecard: recall@k, lexical baseline, pick accuracy, abstention P/R, ECE, latency
+bun run scripts/hashtext-eval.ts --offline          # retrieval + baseline
+bun run scripts/hashtext-eval.ts                    # + Laya against the live endpoint
+```
+
+Measured on the first pass (8-block store, 19 rows):
+
+- **Retrieval was the bottleneck**: name/description-only recall@7 was 56.3%
+  (12.5% on content-derived queries). The content-aware pass took it to 100%.
+- **Laya's confidence is under-calibrated for this distribution**: correct picks
+  at 0.05–0.16, ECE 0.61 — the 0.85 auto threshold would never fire. Recalibrate
+  (temperature fit) before considering any fine-tune.
+- Ranking tied the lexical baseline on decision rows; the abstention head is
+  where Laya earns its place.
+- Synthetic keyword queries are tagged `retrieval` (recall only): their labels
+  are too noisy for accuracy/ECE. Use authored or telemetry-derived queries for
+  judgement metrics.
 
 ## Install
 

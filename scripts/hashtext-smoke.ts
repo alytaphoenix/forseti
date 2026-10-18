@@ -255,11 +255,26 @@ await commands.hash.handler("auto on", ctx);
 const found = await tools.hashtext_find.execute("t11", { query: "ci log failing build output" }, undefined, undefined, ctx);
 assert(found.details.pick === REF, "laya picks the top shortlisted block");
 
+const telemetry = readFileSync(path.join(STORE, "decisions.jsonl"), "utf8")
+	.trim()
+	.split("\n")
+	.map((line) => JSON.parse(line));
+const findEntry = telemetry.find((entry: any) => entry.kind === "find" && entry.pick === REF);
+assert(Boolean(findEntry), "telemetry logs the find: query, candidate set, pick");
+assert(Array.isArray(findEntry?.candidates) && findEntry.candidates.length > 0, "telemetry stores candidate details");
+assert(typeof findEntry?.confidence === "number", "telemetry stores confidence");
+
 const autoStart = { type: "before_agent_start", prompt: "ci log failing build output", systemPrompt: "", systemPromptOptions: { sections: {} as Record<string, string> } };
 await fire("before_agent_start", autoStart);
 const autoState = JSON.parse(readFileSync(path.join(STORE, "resident", `${SESSION}.json`), "utf8"));
 assert(autoState.blocks.some((entry: any) => entry.sha === SHA), "auto mode expands a confident pick");
 assert(Boolean(autoState.settings.auto), "auto setting is persisted");
+const outcome = readFileSync(path.join(STORE, "decisions.jsonl"), "utf8")
+	.trim()
+	.split("\n")
+	.map((line) => JSON.parse(line))
+	.find((entry: any) => entry.kind === "outcome" && entry.action === "expand" && entry.ref === REF && entry.matched_pick === true);
+assert(Boolean(outcome), "telemetry attributes the expand to the Laya pick");
 
 const cacheHits = await tools.hashtext_put.execute("t12", { text: "second block for janitor", name: "second" }, undefined, undefined, ctx);
 const third = await tools.hashtext_put.execute("t13", { text: "third block for janitor", name: "third" }, undefined, undefined, ctx);
@@ -280,6 +295,35 @@ const sampleLine = cliBody.split("\n")[10];
 assert(Boolean(sampleLine) && restoredFull.includes(sampleLine), "native read matches the CLI payload");
 
 console.log("\nREAL-STORE PASS");
+
+// ---- phase 3: dataset + eval scaffold (offline, deterministic) -------------
+const datasetOut = path.join(STORE, "gate-eval.jsonl");
+const dataset = spawnSync(
+	process.execPath,
+	["run", path.join(HERE, "hashtext-dataset.ts"), "--synthetic", "12", "--out", datasetOut],
+	{ env: { ...process.env, HASHTEXT_DIR: STORE }, encoding: "utf8" },
+);
+if (dataset.status !== 0) {
+	process.stderr.write(dataset.stderr ?? "");
+	console.error("FAIL: dataset builder");
+	process.exit(1);
+}
+const evalRun = spawnSync(
+	process.execPath,
+	["run", path.join(HERE, "hashtext-eval.ts"), "--data", datasetOut, "--offline", "--json"],
+	{ env: { ...process.env, HASHTEXT_DIR: STORE }, encoding: "utf8" },
+);
+if (evalRun.status !== 0) {
+	process.stderr.write(evalRun.stderr ?? "");
+	console.error("FAIL: eval harness");
+	process.exit(1);
+}
+const report = JSON.parse((evalRun.stdout ?? "").slice((evalRun.stdout ?? "").indexOf("{")));
+assert(report.rows > 0, "dataset builder produced eval rows");
+assert(report.decision_rows > 0, "decision rows are separated from retrieval probes");
+assert(report.recall_at_k >= 0.9, `content-aware shortlist recall@k = ${(report.recall_at_k * 100).toFixed(0)}%`);
+assert(typeof report.ece === "number", "eval reports calibration (ECE)");
+console.log("\nDATASET/EVAL PASS");
 
 // ---- phase 3: missing CLI (same store; native reads must survive) ----------
 mkdirSync(path.join(STORE, "home"), { recursive: true });

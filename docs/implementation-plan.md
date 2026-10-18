@@ -1132,3 +1132,22 @@ make the cold store behave like a large, searchable context instead of a bucket.
 Deferred: zstd dictionary training (−42…61% on realistic small blocks,
 measured), CDC packfile for evolving artifacts (−45%, measured), project/tag
 scoping, prompt-cache stable-prefix mode (append-at-tail projection).
+
+### Phase 20c — telemetry + picker eval (2026-10-18, S45)
+
+| Task | Status |
+|---|---|
+| `decisions.jsonl`: `find` (query, candidate details, pick, confidence, probabilities, latency) + `outcome` (expand/evict with `matched_pick`, `resident_turns`); 8 MB rotation; `/hash log [n]` | ✅ smoke asserts both record types |
+| Content-aware shortlist: native content scan only when name/description scoring yields <3 candidates | ✅ recall@7 56.3% → **100%** (measured) |
+| `scripts/hashtext-dataset.ts`: `--synthetic` (vocab/decision + content/retrieval tags), `--queries FILE` (authored), `--from-decisions` (telemetry), `--laya-out` (laya.evals rows) | ✅ gate |
+| `scripts/hashtext-eval.ts`: recall@k, lexical top-1, pick accuracy, abstention P/R, ECE, latency, per-tag; `--offline`, `--json` | ✅ gate (offline deterministic) |
+| Gate phase: dataset + eval run in `scripts/hashtext-smoke.ts` | ✅ PASS |
+
+Findings that change the tuning plan: ranking **tied** the lexical baseline on
+the first decision set, while Laya's confidence was systematically low (ECE
+0.61; correct picks at 0.05–0.16) — the 0.85 auto threshold would never fire.
+Recalibration (L1: `Agent.fit_temperatures`) must precede any head-only
+fine-tune (L2); synthetic content queries are retrieval probes, not labels.
+
+Deferred: L1 temperature fit on telemetry, L2 head-only fine-tune, an
+LLM-authored query set (`--queries`), and an A/B of auto thresholds.

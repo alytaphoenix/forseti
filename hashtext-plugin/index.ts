@@ -37,12 +37,13 @@
 // (messages without system prompt, before every LLM call), `before_agent_start`
 // (`systemPromptOptions.sections` mutations feed the re-render), `turn_end`
 // (`toolResults` for archival). Node 22.22 zstd: `zstdDecompressSync` incl.
-// `{dictionary}`. See docs/spikes.md (S41/S44).
+// `{dictionary}`. See docs/spikes.md (S41/S44). Telemetry + picker eval:
+// `scripts/hashtext-{dataset,eval}.ts` (S45).
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
@@ -78,6 +79,7 @@ const MARKER_RE = /\[hashtext ([0-9a-f]{4,64}) resident\]/g;
 const MARKER_HINT = "[hashtext ";
 const NONCE = randomBytes(3).toString("hex");
 const DECISIONS_FILE = path.join(STORE_DIR, "decisions.jsonl");
+const DECISIONS_MAX_BYTES = 8 * 1024 * 1024;
 
 const INSTALL_HINT =
 	`hashtext not found (HASHTEXT_BIN='${process.env.HASHTEXT_BIN ?? "hashtext"}'). ` +
@@ -120,6 +122,22 @@ interface ArchiveEntry {
 interface Settings {
 	archive: boolean;
 	auto: boolean;
+}
+
+interface CandidateDetail {
+	id: string;
+	name: string;
+	description: string;
+	kind: string;
+	tokens_est: number;
+}
+
+interface PendingPick {
+	query: string;
+	pick: string;
+	confidence: number;
+	turn: number;
+	candidates: string[];
 }
 
 interface SessionState {
@@ -238,9 +256,10 @@ function setMetas(next: BlockMeta[]): void {
 	bySha = new Map(next.map((meta) => [meta.sha256, meta]));
 	byId = new Map(next.map((meta) => [meta.id, meta]));
 	metasAt = Date.now();
+	contentIndex = null; // block set changed: rebuild lazily
 }
 
-async function refreshMetas(force = false): Promise<BlockMeta[]> {
+export async function refreshMetas(force = false): Promise<BlockMeta[]> {
 	if (!force && Date.now() - metasAt < 2_000) return metas;
 	try {
 		const shards = await readdir(blocksDir());
@@ -327,7 +346,15 @@ function cachedText(sha: string): string | undefined {
 	return value;
 }
 
-async function loadText(meta: BlockMeta): Promise<string> {
+export function allMetas(): BlockMeta[] {
+	return metas;
+}
+
+export function setMetasForTests(next: BlockMeta[]): void {
+	setMetas(next);
+}
+
+export async function loadText(meta: BlockMeta): Promise<string> {
 	const cached = cachedText(meta.sha256);
 	if (cached !== undefined) return cached;
 
@@ -368,6 +395,8 @@ let loadedKey: string | null = null;
 let storeOk = true;
 let cliWarned = false;
 let layaWarned = false;
+/** Last Laya pick/auto-expand, so the next expand/evict can be attributed. */
+let pendingPick: PendingPick | null = null;
 
 function sessionKey(ctx: ExtensionContext): string {
 	try {
@@ -705,6 +734,16 @@ async function expandRef(
 		end: options.end,
 		added: turn,
 	};
+	await logDecision({
+		kind: "outcome",
+		action: "expand",
+		ref: meta.id,
+		name: sanitizeLabel(meta.name, 80),
+		mode,
+		matched_pick: pendingPick ? pendingPick.pick === meta.id : null,
+		query: pendingPick?.query ?? null,
+		turns_since_pick: pendingPick ? turn - pendingPick.turn : null,
+	});
 	const existing = currentResident(meta.sha256);
 	if (existing) Object.assign(existing, entry);
 	else resident.push(entry);
@@ -746,7 +785,16 @@ async function evictRef(ref: string): Promise<{ ok: boolean; text: string }> {
 	if (!residentSet.has(meta.sha256)) {
 		return { ok: true, text: `${meta.id} (${sanitizeLabel(meta.name, 40) || "unnamed"}) is already cold` };
 	}
-	setResident(resident.filter((entry) => entry.sha !== meta.sha256));
+	const entry = currentResident(meta.sha256);
+	await logDecision({
+		kind: "outcome",
+		action: "evict",
+		ref: meta.id,
+		name: sanitizeLabel(meta.name, 80),
+		resident_turns: entry ? turn - entry.added : null,
+		matched_pick: pendingPick ? pendingPick.pick === meta.id : null,
+	});
+	setResident(resident.filter((candidate) => candidate.sha !== meta.sha256));
 	return {
 		ok: true,
 		text: `evicted ${meta.id} (${sanitizeLabel(meta.name, 40) || "unnamed"}) — it stays in the cold index; the transcript keeps a one-line marker`,
@@ -963,11 +1011,12 @@ interface LayaPick {
 	latency_ms: number;
 }
 
-async function layaChoose(
+export async function layaChoose(
 	state: string,
 	instructions: string,
 	criteria: Record<string, string>,
 ): Promise<LayaPick | null> {
+	const started = performance.now();
 	try {
 		const res = await fetch(`${LAYA_URL}/v1/systemone`, {
 			method: "POST",
@@ -988,7 +1037,7 @@ async function layaChoose(
 			choice: answer.choice,
 			confidence: Number(answer.confidence ?? 0),
 			probabilities: answer.probabilities,
-			latency_ms: 0,
+			latency_ms: Math.round(performance.now() - started),
 		};
 	} catch {
 		return null;
@@ -1001,7 +1050,46 @@ const STOPWORDS = new Set([
 	"would", "about", "into", "have", "has", "had", "not", "but", "all", "any", "our", "its",
 ]);
 
-function lexicalCandidates(query: string, limit = 7): BlockMeta[] {
+/** term -> indices into `metas`; built lazily when name/description scoring is thin. */
+let contentIndex: Map<string, Set<number>> | null = null;
+let contentIndexAt = 0;
+const CONTENT_INDEX_TTL_MS = 60_000;
+const CONTENT_SCAN_BYTES = 512 * 1024;
+
+function contentTokens(text: string): string[] {
+	return text
+		.toLowerCase()
+		.split(/[^a-z0-9_]+/)
+		.filter((token) => token.length >= 3 && !STOPWORDS.has(token));
+}
+
+async function ensureContentIndex(): Promise<Map<string, Set<number>>> {
+	if (contentIndex && Date.now() - contentIndexAt < CONTENT_INDEX_TTL_MS) return contentIndex;
+	const index = new Map<string, Set<number>>();
+	for (let i = 0; i < metas.length; i++) {
+		let text: string;
+		try {
+			text = await loadText(metas[i]);
+		} catch {
+			continue;
+		}
+		if (text.length > CONTENT_SCAN_BYTES) text = text.slice(0, CONTENT_SCAN_BYTES);
+		const seen = new Set(contentTokens(text));
+		for (const token of seen) {
+			let bucket = index.get(token);
+			if (!bucket) {
+				bucket = new Set();
+				index.set(token, bucket);
+			}
+			bucket.add(i);
+		}
+	}
+	contentIndex = index;
+	contentIndexAt = Date.now();
+	return index;
+}
+
+export async function lexicalCandidates(query: string, limit = 7): Promise<BlockMeta[]> {
 	const terms = [
 		...new Set(
 			query
@@ -1022,20 +1110,59 @@ function lexicalCandidates(query: string, limit = 7): BlockMeta[] {
 			let score = 0;
 			for (const term of terms) {
 				if (name.includes(term)) score += 4;
-				if (desc.includes(term)) score += 2;
+				if (desc.includes(term)) score += 3;
 				if (kind.includes(term)) score += 1;
 			}
 			if (phrase.length >= 5 && (name.includes(phrase) || desc.includes(phrase))) score += 5;
 			return { meta, score };
 		})
 		.filter((item) => item.score > 0);
+
+	// Thin metadata match means the query is really about block content: scan
+	// the store (native zstd, ~8 ms for 200 blocks) instead of guessing.
+	if (scored.length < 3) {
+		try {
+			const index = await ensureContentIndex();
+			const contentScores = new Map<string, number>();
+			for (const term of terms) {
+				const bucket = index.get(term);
+				if (!bucket) continue;
+				for (const i of bucket) {
+					const meta = metas[i];
+					if (!meta || residentSet.has(meta.sha256)) continue;
+					contentScores.set(meta.sha256, (contentScores.get(meta.sha256) ?? 0) + 1.5);
+				}
+			}
+			for (const [sha, score] of contentScores) {
+				const existing = scored.find((item) => item.meta.sha256 === sha);
+				if (existing) existing.score += score;
+				else {
+					const meta = bySha.get(sha);
+					if (meta) scored.push({ meta, score });
+				}
+			}
+		} catch {
+			// content scan is best-effort
+		}
+	}
+
 	scored.sort((a, b) => b.score - a.score || (a.meta.created < b.meta.created ? 1 : -1));
 	return scored.slice(0, limit).map((item) => item.meta);
 }
 
-async function findBlocks(query: string): Promise<{ candidates: BlockMeta[]; pick: LayaPick | null }> {
+function candidateDetails(candidates: BlockMeta[]): CandidateDetail[] {
+	return candidates.map((meta) => ({
+		id: meta.id,
+		name: sanitizeLabel(meta.name, 80),
+		description: sanitizeLabel(meta.description, 160),
+		kind: meta.kind,
+		tokens_est: meta.tokens_est,
+	}));
+}
+
+export async function findBlocks(query: string): Promise<{ candidates: BlockMeta[]; pick: LayaPick | null }> {
 	await refreshMetas();
-	const candidates = lexicalCandidates(query);
+	const candidates = await lexicalCandidates(query);
 	if (candidates.length === 0) return { candidates, pick: null };
 	const criteria: Record<string, string> = {
 		other: "none of these blocks holds what the request needs",
@@ -1048,12 +1175,41 @@ async function findBlocks(query: string): Promise<{ candidates: BlockMeta[]; pic
 		"Which stored block is most likely to hold what this request needs? Choose 'other' when none fit.",
 		criteria,
 	);
+	// Telemetry: the candidate set + decision is the raw material for tuning and eval.
+	await logDecision({
+		kind: "find",
+		query: query.slice(0, 500),
+		candidates: candidateDetails(candidates),
+		pick: pick?.choice ?? null,
+		confidence: pick?.confidence ?? null,
+		latency_ms: pick?.latency_ms ?? null,
+		probabilities: pick?.probabilities ?? null,
+	});
+	pendingPick =
+		pick && pick.choice !== "other"
+			? {
+					query: query.slice(0, 500),
+					pick: pick.choice,
+					confidence: pick.confidence,
+					turn,
+					candidates: candidates.map((meta) => meta.id),
+				}
+			: null;
 	return { candidates, pick };
 }
 
 async function logDecision(entry: Record<string, unknown>): Promise<void> {
 	try {
 		await mkdir(path.dirname(DECISIONS_FILE), { recursive: true });
+		// Keep the log bounded: one rotated file at a time.
+		try {
+			const info = await stat(DECISIONS_FILE);
+			if (info.size > DECISIONS_MAX_BYTES) {
+				await rename(DECISIONS_FILE, `${DECISIONS_FILE}.1`);
+			}
+		} catch {
+			// no log yet
+		}
 		await writeFile(
 			DECISIONS_FILE,
 			`${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`,
@@ -1316,6 +1472,30 @@ export default function forsetiHashtext(pi: ExtensionAPI) {
 					const payload = await cliJson<{ gc: Record<string, unknown> }>(["gc", "--json"]);
 					ctx.ui.notify(`hashtext gc: ${JSON.stringify(payload.gc)}`, "info");
 					await refreshMetas(true);
+					return;
+				}
+				if (sub === "log") {
+					const count = Math.min(Math.max(Number(parts[1] ?? 10), 1), 50);
+					let raw = "";
+					try {
+						raw = await readFile(DECISIONS_FILE, "utf8");
+					} catch {
+						ctx.ui.notify("hashtext: no decisions logged yet", "info");
+						return;
+					}
+					const rows = raw.trim().split("\n").filter(Boolean).slice(-count);
+					const lines = rows.map((row) => {
+						try {
+							const parsed = JSON.parse(row) as Record<string, unknown>;
+							return `${String(parsed.ts ?? "").slice(11, 19)} ${String(parsed.kind ?? "?")}` +
+								`${parsed.action ? `:${parsed.action}` : ""} ${parsed.pick ?? parsed.ref ?? ""}` +
+								`${parsed.confidence !== undefined && parsed.confidence !== null ? ` conf=${Number(parsed.confidence).toFixed(2)}` : ""}` +
+								`${parsed.matched_pick !== undefined && parsed.matched_pick !== null ? ` matched=${parsed.matched_pick}` : ""}`;
+						} catch {
+							return row.slice(0, 120);
+						}
+					});
+					ctx.ui.notify(lines.join("\n") || "hashtext: no decisions", "info");
 					return;
 				}
 				if (sub === "archive") {
