@@ -1911,3 +1911,38 @@ The channel is a file the forseti pi extension writes, at
   `{"state":"idle"}`, exit 0. The probe also showed pi's sessions are keyed by
   cwd (`~/.pi/agent/sessions/--private-tmp-pi-cwd--/…`), so a ttt-hosted agent
   gets its own session store per run cwd.
+
+## S52 — the ttt crew host: the bridge protocol and the CR that submits (Phase 21, 2026-10-18) ✅ resolved (live)
+
+The ttt host composes three surfaces (C's `ttt.terminal`, `/exec`, the S51
+status channel). Live findings:
+
+- **pi submits on CR, not LF.** A prompt written as `text + "\n"` is TYPED into
+  pi's editor and never submitted: the pane shows the line, the status stays
+  `idle`, and a later `send("\r")` submits it (working → idle in 0.8 s). The
+  Rust backend therefore appends `\r`. (A lone `\r` on an empty editor is a
+  no-op, which is why the first attempt looked like it "sometimes worked".)
+- **A permission diff silently blocks the plugin.** Adding
+  `terminal.control`/`terminal.read` to the manifest while the registry's
+  granted set lacked two `system.exec` binaries (`open`, `xdg-open`) left a
+  pending-approval modal in the TUI with no command registered; `/exec`
+  answered `command "Forseti: Agent Bridge" not found` (HTTP 400 with that body,
+  which is a useful probe). Pre-seeding `plugins.ttt.json` with exactly the
+  manifest's permission set loads the plugin with no dialog — do that before a
+  headless test.
+- **The bridge round-trip is ~100–200 ms** (atomic request file → `/exec` →
+  20 ms poll on the response file). The `seq` correlation rejected a stale
+  response from the previous call; a missing response is reported as "is the
+  forseti plugin loaded?".
+- **`ttt.terminal.spawn` returns `terminal-N`** (the monotonic id), and the
+  spawned pi gets `FORSETI_AGENT_NAME` through the fork's `env` — so the status
+  channel is on with no cwd hand-off file.
+- **`read` returns raw ANSI** (S50's decision); the Rust backend strips CSI/OSC
+  and `\r`, then takes the last N lines, which is what the verdict parser and
+  the template binding expect.
+- **Live crew**: `--host ttt` spawned two pi tabs, ran planner→builder (12 s +
+  5 s), wrote `HELLO_CREW.md`, and exited 0. The run exposed one ordering bug —
+  `FORSETI_CREW_MODEL` was read after the host dispatch, so the ttt path ignored
+  the override — fixed by hoisting the read.
+- **Not built here**: closing a tab from the bridge (C has no close), a live
+  status stream for the run log (the file is the signal), and `blocked` (S51).

@@ -45,6 +45,7 @@ pub mod runner;
 pub mod scheduler;
 pub mod services;
 pub mod template;
+pub mod ttt;
 pub mod validate;
 
 pub use command::{Outcome, validate};

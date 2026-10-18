@@ -280,6 +280,8 @@ pub struct Options {
     pub worktree_branch: String,
     /// Stream every event as a JSON line on stdout (`--headless`).
     pub headless: bool,
+    /// Where agents run: "herdr" (default) or "ttt" (Phase 21).
+    pub host: String,
 }
 
 impl Default for Options {
@@ -296,6 +298,7 @@ impl Default for Options {
             session: String::new(),
             worktree_branch: String::new(),
             headless: false,
+            host: String::new(),
         }
     }
 }

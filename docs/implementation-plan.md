@@ -1272,3 +1272,58 @@ are the input to any real calibration fit (`--min 30`) or fine-tune.
 
 Next if pursued: judge 200+ rows and fit a logistic reranker over BM25 features
 before considering a head-only fine-tune.
+
+## Phase 21 — pi inside ttt: the ttt host for crew runs — ✅ **implemented + verified LIVE** (2026-10-18)
+
+Direction (user): pi runs **inside ttt**, not beside it. ttt stays the shell; a
+crew can run on it exactly as it runs on herdr. Delivered in four pieces:
+
+1. **The ttt fork** (`~/repos/ttt`, branch `forseti/terminal-argv`, base v1.6.0
+   — the tag the installed binary reports): A argv (`terminal.New(..., args...)`
+   + `TerminalSettings.Args`), B `SpawnTerminalSpec` + strip labels, C
+   `ttt.terminal.{spawn,send,read,focus,list}` behind `terminal.control` /
+   `terminal.read`, and `env` for spawned tabs. See `docs/ttt-terminal-api.md`
+   for the increment plan; commits `5fcaffc`, `414d130`, `82d88d3`, `97b2137`.
+2. **The status channel** (`pi-extension/index.ts`, S51): with
+   `FORSETI_AGENT_NAME` set, pi publishes `.forseti/agent-status/<name>.json`
+   on `session_start`/`agent_start`/`tool_call`/`agent_end` (atomic, pid-stamped).
+   That is what replaces herdr's native `pane_agent_status_changed`.
+3. **The plugin bridge** (`ttt-plugin/init.lua`): `Forseti: Agent Bridge` reads
+   `agent-req.json` from the plugin dir, acts through `ttt.terminal.*`, and
+   writes `agent-res.json` (`{seq, ok, id|tail|error}`). On upstream ttt the
+   command answers "ttt.terminal unavailable" instead of failing the caller;
+   the manifest requests `terminal.control`/`terminal.read` (ignored upstream).
+4. **The Rust host** (`host/src/crew/ttt.rs` + `--host ttt` /
+   `FORSETI_CREW_HOST`): `TttBridge` (request file → `POST /exec` → poll the
+   response; 10 s bounds) and `TttBackend` implementing `PaneBackend`
+   (`read` strips ANSI and takes the last N lines, `prompt` submits with CR,
+   `prompt_wait` gates on the status channel with a tail-growth fallback,
+   `focus`, `status`). `Run::run_ttt` stages one pi tab per node (model/route
+   args, `FORSETI_AGENT_NAME`), waits for readiness, drives the same scheduler,
+   writes the same run log + `crew-status.json`, and leaves the tabs open (they
+   are the human surface). The switchyard proxy is host-independent and works
+   for ttt runs too.
+
+**Live (2026-10-18, the fork running under `--listen` in a sandbox pane):**
+- spawn → `terminal-0`; the status file appeared (`idle`, pid); `send` with a
+  **CR** submitted (working → idle in 0.8 s) and the answer (`TTT_OK`) was in
+  the tail; `read` returned the raw ANSI tail.
+- `forseti-host crew run -f crew/examples/crew.yaml --host ttt --headless`:
+  two pi tabs (`terminal-1`, `terminal-2`), planner 12 s, builder 5 s,
+  `HELLO_CREW.md` written ("crew pipeline works"), `done=2`, exit 0.
+
+**Limitations (documented, not hidden):** tabs stay open (no close API yet);
+no live `node_status`/`watch:` events on the ttt host (the status file is the
+signal); `--worktree` and `--review` are herdr-only and error on ttt; the
+`blocked` state is not observable (S51).
+
+### Gates (Phase 21)
+- `cargo test` in `host/` — **131 unit tests + 1 oracle** (+1 ignored): 10 new
+  `ttt` tests against a fake ttt plugin (request/response round-trip, the
+  failure text, an unreachable exec server, `await_ready`, the
+  working→idle gate, ANSI stripping + tail lines, unknown node) + the Lua syntax
+  check.
+- **Live**: the bridge round-trip and the full 2-node crew above, both green;
+  `scripts/crew-smoke.sh`'s herdr legs unchanged and still PASS.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean; `gofmt`/`go vet`/
+  `go test` green; oracle `--check` 85 records.

@@ -58,8 +58,10 @@ upstream has since moved to v1.8.0, so a future rebase is expected).
   `FORSETI_AGENT_NAME` is set; the name arrives through the fork's
   `ttt.terminal.spawn{env=…}` (`82d88d3`).
 
-Still to do: the forseti `TttBackend` (the `PaneBackend` implementation that
-uses this channel for `prompt_wait`).
+- **`TttBackend` ✅ (S52, live)** — `host/src/crew/ttt.rs` implements
+  `PaneBackend` over the plugin's `Forseti: Agent Bridge` command
+  (`agent-req.json` → `POST /exec` → `agent-res.json`) plus this status channel;
+  `--host ttt` stages one pi tab per node. A 2-node crew ran end to end.
 
 ## The delta (three increments, smallest first)
 

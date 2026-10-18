@@ -120,10 +120,18 @@ impl Run {
     /// Stages and runs the crew. Blocking; returns the outcome even when nodes
     /// failed (the caller maps `blocked`/`checks_failed` to an exit code).
     pub fn run(&mut self) -> Result<RunOutcome, String> {
-        // Arc: the live streams and the watch waiters own their own handles
-        let client = std::sync::Arc::new(connect(&self.opts.session)?);
         let cwd = self.opts.cwd.clone();
-
+        if std::env::var("FORSETI_CREW_HOST")
+            .ok()
+            .is_some_and(|v| !v.is_empty())
+            && self.opts.host.is_empty()
+        {
+            self.opts.host = std::env::var("FORSETI_CREW_HOST").unwrap_or_default();
+        }
+        if self.opts.host.is_empty() {
+            self.opts.host = "herdr".to_string();
+        }
+        // the outage override applies to BOTH hosts, so read it before dispatch
         if std::env::var("FORSETI_CREW_MODEL")
             .ok()
             .as_deref()
@@ -132,24 +140,19 @@ impl Run {
         {
             self.opts.model_override = std::env::var("FORSETI_CREW_MODEL").unwrap_or_default();
         }
+        if self.opts.host == "ttt" {
+            return self.run_ttt(cwd);
+        }
+
+        // Arc: the live streams and the watch waiters own their own handles
+        let client = std::sync::Arc::new(connect(&self.opts.session)?);
 
         std::fs::create_dir_all(Path::new(&cwd).join(".forseti/bus"))
             .map_err(|e| format!("bus dir: {e}"))?;
         let runs = Path::new(&cwd).join(".forseti/runs");
         std::fs::create_dir_all(&runs).map_err(|e| format!("runs dir: {e}"))?;
 
-        // P14 memory hand-off: pi panes get no per-pane env through the herdr
-        // socket API (S26), so the crew namespace rides a file the pi tools read.
-        if self.crew.memory.is_some() {
-            let ns = self.crew.memory_ns();
-            let path = Path::new(&cwd).join(".forseti/memory-crew");
-            if let Err(e) = std::fs::write(&path, format!("{ns}\n")) {
-                self.emit(Event::info(
-                    "run_start",
-                    format!("memory-crew hand-off write failed: {e}"),
-                ));
-            }
-        }
+        self.write_memory_handoff(&cwd);
 
         // 1. run log (the Go name shape)
         let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
@@ -169,36 +172,7 @@ impl Run {
         sink.flush(&mut self.sched);
 
         // 1a. switchyard proxy (6D-1): one router per run, before any agent
-        if !self.crew.routes.is_empty() {
-            let routes = self.crew.routes.clone();
-            let routing_name = format!(
-                "{}.routing.jsonl",
-                log_path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("run")
-            );
-            let p = Proxy::start(&routes, &runs, &routing_name)
-                .map_err(|e| format!("switchyard proxy: {e}"))?;
-            let ids: Vec<String> = routes.iter().map(|r| r.id.clone()).collect();
-            let restore = p
-                .materialize_provider(&ids)
-                .map_err(|e| format!("pi provider materialization: {e}"))?;
-            self.emit(Event::info(
-                "route_decision",
-                format!(
-                    "proxy on :{} (routing log {})",
-                    p.port,
-                    p.routing_log.display()
-                ),
-            ));
-            self.restore_provider = Some(restore);
-            let tailer = RoutingTailer::spawn(p.routing_log.clone());
-            sink.tail = Some(tailer.events());
-            self.tailer = Some(tailer);
-            self.proxy = Some(p);
-            sink.flush(&mut self.sched);
-        }
+        self.start_proxy(&mut sink, &runs, &log_path)?;
 
         // 1b. worktree (6A-4): a disposable checkout; panes + checks run there
         if !self.opts.worktree_branch.is_empty() {
@@ -340,6 +314,200 @@ impl Run {
 
     fn emit(&mut self, ev: Event) {
         self.sched.emit(ev);
+    }
+
+    /// P14: pi panes get no per-pane env through the herdr socket API (S26), so
+    /// the crew namespace rides a file the pi tools read.
+    fn write_memory_handoff(&mut self, cwd: &str) {
+        if self.crew.memory.is_none() {
+            return;
+        }
+        let ns = self.crew.memory_ns();
+        let path = Path::new(cwd).join(".forseti/memory-crew");
+        if let Err(e) = std::fs::write(&path, format!("{ns}\n")) {
+            self.emit(Event::info(
+                "run_start",
+                format!("memory-crew hand-off write failed: {e}"),
+            ));
+        }
+    }
+
+    /// The per-run switchyard router (host-independent: it spawns forseti-host
+    /// itself). Sets the provider key, the routing-log tailer and the proxy.
+    fn start_proxy(
+        &mut self,
+        sink: &mut Sink<'_>,
+        runs: &Path,
+        log_path: &Path,
+    ) -> Result<(), String> {
+        if self.crew.routes.is_empty() {
+            return Ok(());
+        }
+        let routes = self.crew.routes.clone();
+        let routing_name = format!(
+            "{}.routing.jsonl",
+            log_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("run")
+        );
+        let p = Proxy::start(&routes, runs, &routing_name)
+            .map_err(|e| format!("switchyard proxy: {e}"))?;
+        let ids: Vec<String> = routes.iter().map(|r| r.id.clone()).collect();
+        let restore = p
+            .materialize_provider(&ids)
+            .map_err(|e| format!("pi provider materialization: {e}"))?;
+        self.emit(Event::info(
+            "route_decision",
+            format!(
+                "proxy on :{} (routing log {})",
+                p.port,
+                p.routing_log.display()
+            ),
+        ));
+        self.restore_provider = Some(restore);
+        let tailer = RoutingTailer::spawn(p.routing_log.clone());
+        sink.tail = Some(tailer.events());
+        self.tailer = Some(tailer);
+        self.proxy = Some(p);
+        sink.flush(&mut self.sched);
+        Ok(())
+    }
+
+    /// The pi argv for a node: the route (through switchyard) or the direct
+    /// model, plus the node's extra args. The herdr path appends `-a` itself.
+    fn pane_args(&self, agent: &super::model::Agent) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+        if !agent.route.is_empty() {
+            args.push("--model".to_string());
+            args.push(format!("switchyard/{}", agent.route));
+        } else if !agent.model.is_empty() {
+            let model = if !self.opts.model_override.is_empty() {
+                self.opts.model_override.clone()
+            } else {
+                agent.model.clone()
+            };
+            args.push("--model".to_string());
+            args.push(model);
+        }
+        args.extend_from_slice(&agent.args);
+        args
+    }
+
+    /// Phase 21: run the crew with pi inside ttt (one terminal tab per node)
+    /// through the forseti plugin bridge. No herdr, no live streams; the tabs
+    /// stay open at the end (they are the human surface).
+    fn run_ttt(&mut self, cwd: String) -> Result<RunOutcome, String> {
+        if !self.opts.worktree_branch.is_empty() {
+            return Err(
+                "--worktree needs the herdr host (ttt tabs have no worktree lifecycle)".to_string(),
+            );
+        }
+        if self.opts.review {
+            return Err("--review needs the herdr host".to_string());
+        }
+        std::fs::create_dir_all(Path::new(&cwd).join(".forseti/bus"))
+            .map_err(|e| format!("bus dir: {e}"))?;
+        let runs = Path::new(&cwd).join(".forseti/runs");
+        std::fs::create_dir_all(&runs).map_err(|e| format!("runs dir: {e}"))?;
+        self.write_memory_handoff(&cwd);
+
+        let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
+        let mut log = File::create(&log_path).map_err(|e| format!("run log: {e}"))?;
+        let mut sink = Sink::new(&cwd, &self.crew.name, &mut log, self.opts.headless);
+        self.emit(Event::info(
+            "run_start",
+            format!(
+                "crew={} agents={} edges={} host=ttt",
+                self.crew.name,
+                self.crew.agents.len(),
+                self.crew.edges.len()
+            ),
+        ));
+        sink.flush(&mut self.sched);
+        self.start_proxy(&mut sink, &runs, &log_path)?;
+
+        // one pi tab per node; the bridge passes FORSETI_AGENT_NAME so the
+        // status channel (S51) is on
+        let mut bridge = super::ttt::TttBridge::from_env(&self.effective_cwd);
+        let mut ids: Vec<(String, String)> = Vec::new();
+        for a in self.crew.agents.clone() {
+            let args = self.pane_args(&a);
+            match bridge.spawn(&a.name, &args, &self.effective_cwd) {
+                Ok(id) => ids.push((a.name.clone(), id)),
+                Err(e) => {
+                    self.fail(&a.name, &format!("ttt spawn: {e}"));
+                    self.emit(Event::info("run_end", "aborted: a ttt tab could not spawn"));
+                    sink.flush(&mut self.sched);
+                    self.stop_host_side();
+                    let events = std::mem::take(&mut sink.events);
+                    return Ok(self.outcome(&log_path, events));
+                }
+            }
+        }
+        let mut ready_failed = false;
+        for (name, _) in &ids {
+            if let Err(e) = bridge.await_ready(name, Duration::from_secs(90)) {
+                self.fail(name, &e);
+                ready_failed = true;
+            }
+        }
+        if ready_failed {
+            self.emit(Event::info("run_end", "aborted: an agent was not ready"));
+            sink.flush(&mut self.sched);
+            self.stop_host_side();
+            let events = std::mem::take(&mut sink.events);
+            return Ok(self.outcome(&log_path, events));
+        }
+        let mut backend = super::ttt::TttBackend::new(bridge);
+        for (name, id) in &ids {
+            backend.register(name, id);
+            if let Some(st) = self.sched.node_mut(name) {
+                st.pane_id = id.clone();
+            }
+        }
+
+        let mut memory: Box<dyn MemoryLink> = if self.crew.memory.is_some() {
+            Box::new(MemoryClient::new())
+        } else {
+            Box::new(NoMemory)
+        };
+        let mut laya = LayaClient::new();
+        drive(
+            &mut self.sched,
+            &self.roles,
+            &mut backend,
+            &mut *memory,
+            &mut laya,
+            None,
+            &mut |sched| sink.flush(sched),
+        );
+        let _ = self.sched.settle_unreachable();
+        self.sched.update_phase_progress();
+        if let Some(mut t) = self.tailer.take() {
+            t.stop();
+        }
+        sink.flush(&mut self.sched);
+        let info = summary(&self.sched);
+        self.emit(Event::info("run_end", info));
+        sink.flush(&mut self.sched);
+        self.stop_host_side();
+        sink.flush(&mut self.sched);
+        let events = std::mem::take(&mut sink.events);
+        Ok(self.outcome(&log_path, events))
+    }
+
+    /// Stops the host-independent run pieces (router, provider key, tailer).
+    fn stop_host_side(&mut self) {
+        if let Some(mut t) = self.tailer.take() {
+            t.stop();
+        }
+        if let Some(restore) = self.restore_provider.take() {
+            restore();
+        }
+        if let Some(mut p) = self.proxy.take() {
+            p.stop();
+        }
     }
 
     /// Creates the disposable worktree, sweeping a leftover husk once (a
@@ -496,21 +664,11 @@ impl Run {
             .node(name)
             .map(|st| st.pane_id.clone())
             .unwrap_or_default();
-        let mut args: Vec<String> = Vec::new();
-        if let Some(agent) = self.crew.agent(name) {
-            if !agent.route.is_empty() {
-                args.push("--model".to_string());
-                args.push(format!("switchyard/{}", agent.route));
-            } else if !agent.model.is_empty() {
-                let model = if !self.opts.model_override.is_empty() {
-                    self.opts.model_override.clone()
-                } else {
-                    agent.model.clone()
-                };
-                args.push("--model".to_string());
-                args.push(model);
-            }
-        }
+        let mut args: Vec<String> = self
+            .crew
+            .agent(name)
+            .map(|agent| self.pane_args(agent))
+            .unwrap_or_default();
         // a disposable worktree is a fresh dir every run: pi's trust prompt
         // would stall every prompt, so auto-trust (user args can override)
         if !self.opts.worktree_branch.is_empty() {

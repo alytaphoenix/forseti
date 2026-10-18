@@ -605,6 +605,56 @@ local function ask_diff()
 end
 
 
+-- --- agent bridge (the Rust crew engine's ttt host) ------------------------
+-- A runner writes agent-req.json into the plugin dir, POSTs
+-- `exec "Forseti: Agent Bridge"` to ttt's --listen server, then polls
+-- agent-res.json. The bridge needs the ttt fork's `ttt.terminal` module; on
+-- upstream ttt the command reports the capability as unavailable instead of
+-- failing the caller. Requests: {seq, op: spawn|send|read|focus, ...}.
+local AGENT_REQ = ttt.plugin_dir() .. "/agent-req.json"
+local AGENT_RES = ttt.plugin_dir() .. "/agent-res.json"
+
+local function agent_bridge()
+  local ok_r, content = pcall(fs.read, AGENT_REQ)
+  if not ok_r or not content then return end
+  local ok_j, req = pcall(json.decode, content)
+  if not ok_j or type(req) ~= "table" then return end
+  local res = { seq = req.seq, ok = false }
+  local ok_t, term = pcall(require, "ttt.terminal")
+  if not ok_t or type(term) ~= "table" or not term.spawn then
+    res.error = "ttt.terminal unavailable — install the forseti ttt fork (docs/ttt-terminal-api.md)"
+    pcall(fs.write, AGENT_RES, json.encode(res))
+    return
+  end
+  local op = req.op or ""
+  if op == "spawn" then
+    local id, err = term.spawn{
+      shell = req.shell or "",
+      args = req.args,
+      env = req.env,
+      cwd = req.cwd or "",
+      label = req.label or "",
+    }
+    if id then res.id = id; res.ok = true else res.error = err or "spawn failed" end
+  elseif op == "send" then
+    local done, err = term.send(req.id or "", req.text or "")
+    res.ok = done == true
+    if not res.ok then res.error = err or "send failed" end
+  elseif op == "read" then
+    local tail, err = term.read(req.id or "", req.n or 0)
+    if tail then res.tail = tail; res.ok = true else res.error = err or "read failed" end
+  elseif op == "focus" then
+    local done, err = term.focus(req.id or "")
+    res.ok = done == true
+    if not res.ok then res.error = err or "focus failed" end
+  else
+    res.error = "unknown op: " .. op
+  end
+  if not pcall(fs.write, AGENT_RES, json.encode(res)) then
+    log_err("agent bridge: cannot write agent-res.json")
+  end
+end
+
 ttt.register({
   sidebar = { title = "Forseti", render = render },
   commands = {
@@ -618,6 +668,7 @@ ttt.register({
     { id = "forseti.backlinks", title = "Forseti: Backlinks", handler = backlinks },
     { id = "forseti.wikilink", title = "Forseti: Follow Wikilink", handler = wikilink_jump },
     { id = "forseti.obsidian", title = "Forseti: Open in Obsidian", handler = open_obsidian },
+    { id = "forseti.agent", title = "Forseti: Agent Bridge", handler = agent_bridge },
     {
       id = "forseti.toggle_focus",
       title = "Forseti: Toggle focus pi on ask",

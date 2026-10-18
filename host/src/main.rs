@@ -119,6 +119,10 @@ enum CrewCmd {
         #[arg(long)]
         review: bool,
 
+        /// Where agents run: herdr (default) or ttt.
+        #[arg(long, default_value = "")]
+        host: String,
+
         /// Stream every run event as a JSON line on stdout.
         #[arg(long)]
         headless: bool,
@@ -151,6 +155,7 @@ fn main() -> anyhow::Result<()> {
                 worktree,
                 keep_worktree,
                 review,
+                host,
                 headless,
             } => {
                 if *timeout < 1 {
@@ -194,6 +199,7 @@ fn main() -> anyhow::Result<()> {
                     worktree_branch: worktree.clone(),
                     keep_worktree: *keep_worktree,
                     review: *review,
+                    host: host.clone(),
                 };
                 let mut run = forseti_host::crew::Run::new(crew, opts);
                 match run.run() {
