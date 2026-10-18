@@ -107,6 +107,18 @@ enum CrewCmd {
         #[arg(long, default_value = "")]
         cwd: String,
 
+        /// Run inside a disposable worktree on this branch.
+        #[arg(long, default_value = "")]
+        worktree: String,
+
+        /// Keep the worktree (and its branch) after the run.
+        #[arg(long)]
+        keep_worktree: bool,
+
+        /// End the run on a lazygit review pane of the worktree.
+        #[arg(long)]
+        review: bool,
+
         /// Stream every run event as a JSON line on stdout.
         #[arg(long)]
         headless: bool,
@@ -136,6 +148,9 @@ fn main() -> anyhow::Result<()> {
                 workspace,
                 model,
                 cwd,
+                worktree,
+                keep_worktree,
+                review,
                 headless,
             } => {
                 if *timeout < 1 {
@@ -176,7 +191,9 @@ fn main() -> anyhow::Result<()> {
                     workspace_id: workspace.clone(),
                     model_override: model.clone(),
                     headless: *headless,
-                    ..Default::default()
+                    worktree_branch: worktree.clone(),
+                    keep_worktree: *keep_worktree,
+                    review: *review,
                 };
                 let mut run = forseti_host::crew::Run::new(crew, opts);
                 match run.run() {

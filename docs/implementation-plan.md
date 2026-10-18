@@ -723,11 +723,30 @@ them exactly (stdout, stderr, exit code).
        the namespace, exit 0. `crew-laya.yaml` → judged `LAYA_TRIAGE.md`
        (`state from file`), `chosen=opsfix conf=0.511 latency=299ms` over a 0.4
        gate, `codefix` skipped (`not chosen`), exit 0. S42 records both.
-     - **18D-5c-2 (next)** — the switchyard proxy lifecycle (spawn this binary
+     - **18D-5c-2a ✅ done (2026-10-18)** — the worktree + review lifecycle.
+       - `--worktree BRANCH`: `worktree.create` (herdr's root is
+         `~/.herdr/worktrees/<repo>/<branch>`), the husk sweep on the
+         "already exists" failure (only paths under `.herdr/worktrees`),
+         panes/checks/bus switched to the checkout (`Scheduler::set_effective_cwd`),
+         `-a` auto-trust for the fresh dir, and teardown (`worktree.remove` →
+         husk sweep → `git worktree prune` → `git branch -D`, retried once).
+       - `--review`: implies keep-tab + keep-worktree; splits a lazygit pane
+         onto the crew tab (`pane.list` → `pane.split` → `send_text` + Enter →
+         `tab.focus`) and appends the review hint to `run_end`.
+       - **Found live and fixed**: the options existed twice (`Run.opts` and the
+         scheduler's copy), so `--review`'s keep flags and a blocked run's
+         keep flags never reached teardown — the first review run *deleted* the
+         worktree it was supposed to keep. Teardown now reads the scheduler's
+         policy (the single mutable owner). Recorded in S43.
+       - **Live**: `crew-worktree.yaml --worktree rust-wt` ran the agent in the
+         checkout, both git-state checks passed there, and teardown removed the
+         worktree + branch (no leftovers). With `--review` the worktree, branch
+         and a 2-pane tab were kept as designed; cleaned up by hand
+         (`herdr worktree remove --workspace …`, `git branch -D`, `tab close`).
+     - **18D-5c-2b (next)** — the switchyard proxy lifecycle (spawn this binary
        with a generated TOML, materialize the pi provider, tail the routing
-       log into `route_decision` events, restore at teardown) + the worktree
-       lifecycle (`worktree.create`, husk sweep, `-a` trust, teardown removal +
-       branch delete) + the lazygit review pane.
+       log into `route_decision` events, restore at teardown); `routes:` crews
+       fail loudly naming it.
 6. **18D-6** — the TUI and an `--engine go|rust` switch so a live run can be
    compared side by side; the Go engine retires only once the Rust engine passes
    the smoke gate unsupervised.
@@ -785,6 +804,17 @@ them exactly (stdout, stderr, exit code).
   the running herdr server on this box — `ping` + `agent.list` green (the wire
   is right, not just the fake).
 - `cargo fmt --check` and `cargo clippy --all-targets` clean.
+
+### Gates (18D-5c-2a)
+- `cargo test` in `host/` — **102 unit tests + 1 oracle** (+1 ignored): the new
+  `husk_to_sweep` test pins the path extraction (only `.herdr/worktrees`,
+  quotes required, char-boundary safe).
+- **Live** (2026-10-18, `sandbox`, `beam-free`): the worktree crew ran in
+  `~/.herdr/worktrees/forseti/rust-wt`, both checks passed, and teardown left
+  no worktree/branch/tab. `--review` kept the worktree + branch + the 2-pane
+  tab (author + lazygit) and put the review hint in `run_end`; the manual
+  cleanup path (`herdr worktree remove --workspace`) is recorded in S43.
+- `cargo fmt --check` / `cargo clippy --all-targets` clean.
 
 ### Gates (18D-5c-1)
 - `cargo test` in `host/` — **101 unit tests + 1 oracle** (+1 ignored): 11 new.

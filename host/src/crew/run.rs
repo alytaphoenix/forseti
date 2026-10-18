@@ -66,6 +66,10 @@ pub struct Run {
     roles: RolePack,
     crew: Crew,
     opts: Options,
+    /// Worktree workspace id ("" = the main checkout).
+    worktree_ws: String,
+    /// Where panes/checks/bus live (the worktree when one is created).
+    effective_cwd: String,
 }
 
 impl Run {
@@ -75,13 +79,23 @@ impl Run {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
         }
+        // --review implies keeping both (P7-3); normalize here as well as in
+        // the scheduler, because teardown reads the scheduler and create/start
+        // read this copy.
+        if opts.review {
+            opts.keep_tab = true;
+            opts.keep_worktree = true;
+        }
         let roles = RolePack::new(&crew.roles);
         let sched = Scheduler::new(crew.clone(), opts.clone());
+        let effective_cwd = opts.cwd.clone();
         Run {
             sched,
             roles,
             crew,
             opts,
+            worktree_ws: String::new(),
+            effective_cwd,
         }
     }
 
@@ -97,10 +111,7 @@ impl Run {
 
         // 0. deferred integrations must fail loudly, never silently
         if !self.crew.routes.is_empty() {
-            return Err("routes need the switchyard proxy (18D-5c)".to_string());
-        }
-        if !self.opts.worktree_branch.is_empty() {
-            return Err("--worktree needs the worktree lifecycle (18D-5c)".to_string());
+            return Err("routes need the switchyard proxy (18D-5c-2b)".to_string());
         }
         if std::env::var("FORSETI_CREW_MODEL")
             .ok()
@@ -146,6 +157,18 @@ impl Run {
         ));
         sink.flush(&mut self.sched);
 
+        // 1b. worktree (6A-4): a disposable checkout; panes + checks run there
+        if !self.opts.worktree_branch.is_empty() {
+            let (ws, path) = self.create_worktree(&client)?;
+            self.worktree_ws = ws;
+            self.effective_cwd = path.clone();
+            self.sched.set_effective_cwd(&path);
+            self.emit(Event::info("run_start", format!("worktree ready: {path}")));
+            std::fs::create_dir_all(Path::new(&path).join(".forseti/bus"))
+                .map_err(|e| format!("worktree bus dir: {e}"))?;
+            sink.flush(&mut self.sched);
+        }
+
         // 2. workspace + the crew tab (right-leaning BSP spine, S8)
         let ws = if self.opts.workspace_id.is_empty() {
             client
@@ -155,7 +178,9 @@ impl Run {
             self.opts.workspace_id.clone()
         };
         let n = self.crew.agents.len();
-        let (pane_ids, tab_id) = create_crew_tab(&client, &ws, &self.opts.tab_label, &cwd, n)?;
+        let effective_cwd = self.effective_cwd.clone();
+        let (pane_ids, tab_id) =
+            create_crew_tab(&client, &ws, &self.opts.tab_label, &effective_cwd, n)?;
         for (i, a) in self.crew.agents.iter().enumerate() {
             if let Some(st) = self.sched.node_mut(&a.name) {
                 st.pane_id = pane_ids[i].clone();
@@ -185,7 +210,8 @@ impl Run {
                 "aborted: an agent failed during startup",
             ));
             sink.flush(&mut self.sched);
-            teardown(&client, &source, &self.opts, tab_id.as_str());
+            self.teardown(&client, &source, &tab_id);
+            sink.flush(&mut self.sched);
             let events = std::mem::take(&mut sink.events);
             return Ok(self.outcome(&log_path, events));
         }
@@ -215,10 +241,23 @@ impl Run {
         // 6. summary + teardown (blocked keeps the tab, P13 BUG-09)
         let _ = self.sched.settle_unreachable();
         self.sched.update_phase_progress();
-        let summary = summary(&self.sched);
-        self.emit(Event::info("run_end", summary.clone()));
+        let mut info = summary(&self.sched);
+        // P7-3: end the run on a lazygit review pane of the worktree
+        if self.opts.review && !self.worktree_ws.is_empty() && self.effective_cwd != self.opts.cwd {
+            match open_review_pane(&client, &tab_id, &self.effective_cwd) {
+                Err(e) => info += &format!(" | review pane failed: {e}"),
+                Ok(()) => {
+                    info += &format!(
+                        " | review ready: lazygit on {} — attach the sandbox session (`herdr session attach {}`), commit, then merge from the main checkout",
+                        self.effective_cwd, self.opts.session
+                    )
+                }
+            }
+        }
+        self.emit(Event::info("run_end", info));
         sink.flush(&mut self.sched);
-        teardown(&client, &source, &self.opts, tab_id.as_str());
+        self.teardown(&client, &source, &tab_id);
+        sink.flush(&mut self.sched);
 
         let events = std::mem::take(&mut sink.events);
         Ok(self.outcome(&log_path, events))
@@ -226,6 +265,100 @@ impl Run {
 
     fn emit(&mut self, ev: Event) {
         self.sched.emit(ev);
+    }
+
+    /// Creates the disposable worktree, sweeping a leftover husk once (a
+    /// crashed earlier run can leave an unregistered dir under herdr's root).
+    fn create_worktree(&mut self, client: &herdr::Client) -> Result<(String, String), String> {
+        let cwd = self.opts.cwd.clone();
+        let branch = self.opts.worktree_branch.clone();
+        let create = |c: &herdr::Client| {
+            c.worktree_create(
+                &cwd,
+                &branch,
+                "",
+                "forseti-crew-wt",
+                Duration::from_secs(90),
+            )
+        };
+        let (ws, path) = match create(client) {
+            Ok(v) => v,
+            Err(first) => {
+                let msg = first.to_string();
+                let Some(swept) = husk_to_sweep(&msg) else {
+                    return Err(format!("worktree create: {msg}"));
+                };
+                self.emit(Event::info(
+                    "run_start",
+                    format!("sweeping leftover worktree husk: {swept}"),
+                ));
+                let _ = std::fs::remove_dir_all(&swept);
+                let _ = std::process::Command::new("git")
+                    .args(["-C", &cwd, "worktree", "prune"])
+                    .status();
+                create(client).map_err(|e| format!("worktree create: {e}"))?
+            }
+        };
+        if ws.is_empty() || path.is_empty() {
+            return Err("worktree create returned no workspace/checkout".to_string());
+        }
+        Ok((ws, path))
+    }
+
+    /// Clears the projection, removes the worktree unless kept (with the husk
+    /// sweep + branch delete), closes the tab unless kept, drops the bridge.
+    fn teardown(&mut self, client: &herdr::Client, source: &str, tab_id: &str) {
+        // the scheduler owns the mutable policy: settle_unreachable flips the
+        // keep flags for a blocked run, and --review set them at construction
+        let keep_worktree = self.sched.opts().keep_worktree;
+        let keep_tab = self.sched.opts().keep_tab;
+        let _ = client.agent_view_clear(source);
+        if !self.worktree_ws.is_empty() && !keep_worktree {
+            if let Err(e) = client.worktree_remove(&self.worktree_ws, true) {
+                // teardown's own failures are `teardown` events — a
+                // node_failed here would flip the watch/TUI exit codes
+                self.emit(Event::info("teardown", format!("worktree remove: {e}")));
+            }
+            let wt = self.effective_cwd.clone();
+            if wt != self.opts.cwd && wt.contains(".herdr/worktrees") && Path::new(&wt).exists() {
+                let _ = std::fs::remove_dir_all(&wt);
+                let _ = std::process::Command::new("git")
+                    .args(["-C", &self.opts.cwd, "worktree", "prune"])
+                    .status();
+            }
+            if !self.opts.worktree_branch.is_empty() {
+                let branch = self.opts.worktree_branch.clone();
+                let deleted = std::process::Command::new("git")
+                    .args(["-C", &self.opts.cwd, "branch", "-D", &branch])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !deleted {
+                    // the worktree may still be registered: prune, retry once
+                    let _ = std::process::Command::new("git")
+                        .args(["-C", &self.opts.cwd, "worktree", "prune"])
+                        .status();
+                    let _ = std::process::Command::new("git")
+                        .args(["-C", &self.opts.cwd, "branch", "-D", &branch])
+                        .status();
+                }
+            }
+            self.emit(Event::info("teardown", "worktree removed"));
+        }
+        if !keep_tab && !tab_id.is_empty() {
+            let _ = client.call(
+                "tab.close",
+                &json!({"tab_id": tab_id}),
+                Duration::from_secs(10),
+            );
+        }
+        if !self.opts.cwd.is_empty() {
+            let _ = std::fs::remove_file(
+                Path::new(&self.opts.cwd)
+                    .join(".forseti")
+                    .join("crew-status.json"),
+            );
+        }
     }
 
     fn fail(&mut self, node: &str, msg: &str) {
@@ -289,6 +422,11 @@ impl Run {
                 args.push("--model".to_string());
                 args.push(model);
             }
+        }
+        // a disposable worktree is a fresh dir every run: pi's trust prompt
+        // would stall every prompt, so auto-trust (user args can override)
+        if !self.opts.worktree_branch.is_empty() {
+            args.push("-a".to_string());
         }
         args.extend_from_slice(extra);
         let kind = if kind.is_empty() { "pi" } else { kind };
@@ -537,23 +675,75 @@ fn walk_panes(node: Option<&Value>, out: &mut Vec<String>) {
     }
 }
 
-/// Clears the projection, closes the tab unless kept, removes the status bridge.
-fn teardown(client: &herdr::Client, source: &str, opts: &Options, tab_id: &str) {
-    let _ = client.agent_view_clear(source);
-    if !opts.keep_tab && !tab_id.is_empty() {
-        let _ = client.call(
-            "tab.close",
-            &json!({"tab_id": tab_id}),
+/// Extracts a leftover worktree path from a create failure
+/// (`'/…/.herdr/worktrees/<repo>/<branch>' already exists`). Only paths under
+/// herdr's own worktrees root are sweepable.
+pub fn husk_to_sweep(msg: &str) -> Option<String> {
+    let i = msg.find(".herdr/worktrees")?;
+    let start = msg[..i].rfind('\'')? + 1;
+    let end = i + msg[i..].find('\'')?;
+    if !msg.is_char_boundary(start) || !msg.is_char_boundary(end) {
+        return None;
+    }
+    Some(msg[start..end].to_string())
+}
+
+/// Splits a lazygit review pane onto the crew tab (P7-3).
+fn open_review_pane(client: &herdr::Client, tab_id: &str, worktree: &str) -> Result<(), String> {
+    if tab_id.is_empty() {
+        return Err("no crew tab".to_string());
+    }
+    let res = client
+        .call("pane.list", &json!({}), Duration::from_secs(10))
+        .map_err(|e| e.to_string())?;
+    let panes = res
+        .get("panes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let first = panes
+        .iter()
+        .find(|p| p.get("tab_id").and_then(Value::as_str) == Some(tab_id))
+        .and_then(|p| p.get("pane_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .ok_or_else(|| "no panes in crew tab".to_string())?;
+    let split = client
+        .call(
+            "pane.split",
+            &json!({"target_pane_id": first, "direction": "right", "focus": false}),
+            Duration::from_secs(15),
+        )
+        .map_err(|e| e.to_string())?;
+    let pane = split
+        .pointer("/pane/pane_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if pane.is_empty() {
+        return Err("split returned no pane id".to_string());
+    }
+    // no socket pane.run surface (S8): type into the fresh shell + Enter,
+    // mirroring what `herdr pane run` does
+    client
+        .call(
+            "pane.send_text",
+            &json!({"pane_id": pane, "text": format!("lazygit -p {worktree}")}),
             Duration::from_secs(10),
-        );
-    }
-    if !opts.cwd.is_empty() {
-        let _ = std::fs::remove_file(
-            Path::new(&opts.cwd)
-                .join(".forseti")
-                .join("crew-status.json"),
-        );
-    }
+        )
+        .map_err(|e| e.to_string())?;
+    client
+        .call(
+            "pane.send_keys",
+            &json!({"pane_id": pane, "keys": ["enter"]}),
+            Duration::from_secs(10),
+        )
+        .map_err(|e| e.to_string())?;
+    let _ = client.call(
+        "tab.focus",
+        &json!({"tab_id": tab_id}),
+        Duration::from_secs(10),
+    );
+    Ok(())
 }
 
 // MARK: sinks
@@ -1143,6 +1333,19 @@ edges:
         sched.node_mut("a").unwrap().cost_usd = 0.002;
         sched.node_mut("b").unwrap().status = Status::Skipped;
         assert_eq!(summary(&sched), "done=1 skipped=1 cost=$0.0020");
+    }
+
+    #[test]
+    fn husk_to_sweep_extracts_only_herdr_worktree_paths() {
+        let msg = "worktree create: '/w/repo/.herdr/worktrees/forseti/wt-1' already exists";
+        assert_eq!(
+            husk_to_sweep(msg).as_deref(),
+            Some("/w/repo/.herdr/worktrees/forseti/wt-1")
+        );
+        assert_eq!(husk_to_sweep("some other failure"), None);
+        assert_eq!(husk_to_sweep("'/tmp/x' exists"), None);
+        // a path prefix with no closing quote is not sweepable
+        assert_eq!(husk_to_sweep("'/w/.herdr/worktrees/x"), None);
     }
 
     #[test]

@@ -389,6 +389,12 @@ impl Scheduler {
         &self.effective_cwd
     }
 
+    /// Switches panes/checks/bus to a worktree checkout (the bridge path stays
+    /// the main checkout).
+    pub fn set_effective_cwd(&mut self, path: impl Into<String>) {
+        self.effective_cwd = path.into();
+    }
+
     pub fn run_id(&self) -> &str {
         &self.run_id
     }

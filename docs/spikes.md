@@ -1542,3 +1542,34 @@ unit-only (`crew-memory.yaml`, `crew-laya.yaml`, sandbox session, beam-free).
   (which skips `laya:` edges), one grouped call per settled node — a failed
   endpoint skips every laya edge of that node with `laya gate failed-safe: …`,
   never hanging the graph.
+
+## S43 — worktree + review on the Rust runner, and the options that had two owners (Phase 18D-5c-2a, 2026-10-18) ✅ resolved (live)
+
+- **herdr's worktree root is `~/.herdr/worktrees/<repo>/<branch>`**, not under
+  the checkout (the S13 note said "under herdr's worktrees root" without the
+  path). The husk sweep keys on `.herdr/worktrees`, which holds for both the
+  create-failure message and the effective path.
+- **Cleanup from the CLI** (when a runner leaves something behind): `herdr
+  worktree remove --workspace <workspace_id> --force --trust-repository` (the
+  workspace id, not the path; `--force` skips the dirty check), then `git
+  branch -D <branch>`. The worktree-backed workspace appears in `herdr
+  workspace list` with `worktree.is_linked_worktree: true`, and its id is what
+  the runner gets back from `worktree.create`.
+- **Live pass**: `crew-worktree.yaml --worktree rust-wt` — the agent wrote into
+  the checkout, both git-state checks (`git status --porcelain | grep …`,
+  `grep … WORKTREE_REVIEW.md`) passed there, and teardown removed the worktree
+  and branch. `--review` kept the worktree, the branch and a 2-pane tab
+  (author + lazygit split) and appended the review hint to `run_end`.
+- **Bug caught only by the live review run**: `Run` and `Scheduler` each held a
+  copy of `Options`. `Scheduler::new` applies `review ⇒ keep_tab +
+  keep_worktree`, and `settle_unreachable` flips them for a blocked run — but
+  `Run::teardown` read its OWN copy, so the first `--review` run *deleted* the
+  worktree it had just promised to keep. Fix: normalize `--review` on both
+  copies at construction, and make teardown read the scheduler's policy (the
+  single mutable owner). This is the second orchestration bug the live runs
+  found that neither unit tests nor the oracle could (the first was the CLI
+  fall-through, S40): state duplicated across two owners is the recurring
+  failure mode of this stage.
+- **`git branch -D` prints to stdout** (`Deleted branch …`) because the child
+  inherits the terminal — the Go runner does the same, so `--headless` output is
+  not strictly pure JSON. Noted, not changed (parity first).
