@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.5.0** (see
+License: [MIT](LICENSE) · Current release: **v0.6.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -28,6 +28,32 @@ herdr plugin action invoke forseti.open
 # 4 · pi edits — follow lands on the exact changed line, or collects the turn
 # 5 · Forseti: Review — one tab lists every change it made, at exact lines
 ```
+
+## One command — `forseti`
+
+The umbrella CLI wraps bring-up, status, config editing, and crew runs so the
+three tools feel like one environment:
+
+```sh
+scripts/install-cli.sh            # build + install ~/.local/bin/forseti
+
+forseti                           # status: herdr, ttt, pi, services, assets, live crew
+forseti up                        # sync plugin/extension, start memory, open the tab
+forseti up --attach               # if herdr is not running, start it first
+forseti open README.md:13         # jump the running ttt to a file/line
+forseti run -f crew.yaml          # crew run (engine/host/model from config)
+forseti doctor                    # preflight checks, each with a fix
+forseti config list               # keys + every editable config file
+forseti config set ttt.port 4242
+forseti config edit pi-models     # $EDITOR on models.json (or pi-settings, ttt-settings, …)
+forseti config sync               # reinstall the ttt plugin + pi extension assets
+```
+
+`up` is idempotent (a live `coder` agent is reused), and accepts `--no-sync`,
+`--no-services`, `--no-open`, `--dry-run`, `--json`. Config lives at
+`~/.config/forseti/config.json` (`forseti config init`); provider keys and
+tool settings stay in their native files, which `config edit` opens directly.
+The CLI never edits plugin permission grants.
 
 ## Components (one per host — no always-on daemon of ours)
 
@@ -235,7 +261,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.5.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.6.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

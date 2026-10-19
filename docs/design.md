@@ -1192,6 +1192,18 @@ Downside, by design: the source is what is saved, so a hand-written edge that
 happens to duplicate a derived one is fine (the derivation skips existing
 edges), while a node that a pattern would have synthesized must come from the
 pattern — a declared node with the pattern's name is a load error.
+## Direction: one command (2026-10-19, user request)
+
+The environment should feel like one IDE, not three tools plus a pile of
+scripts. `cli/` (Phase 23) is the facade: `forseti up` syncs the plugin and
+extension, starts the configured services, verifies herdr, and runs the
+plugin's own bring-up (ttt + pi in a labelled tab); `forseti status` reports the
+whole stack including the live crew and the run lock; `forseti config` opens the
+native files (pi models/settings, ttt settings/registry, crew, tools) without
+forking their formats; `forseti run` delegates to the crew engine. The CLI never
+edits permission grants and never replaces the hosts — herdr stays the workspace
+manager and ttt stays the editor.
+
 ## Direction: pi inside ttt (2026-10-18, user decision)
 
 The shell question is settled: **ttt is the environment, pi is a program inside

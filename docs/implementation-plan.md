@@ -1441,3 +1441,42 @@ would still look `working` (documented).
 - **Live**: tab close/keep, worktree cleanup, review lazygit tab, live
   status/watch, routed provider restore, run-lock refusal, and
   `FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` PASS.
+
+## Phase 23 — the `forseti` umbrella CLI (v0.6.0) — ✅ **implemented + verified LIVE** (2026-10-19)
+
+One command for the whole environment: `cli/` (Go module `forseti/cli`, stdlib
+only), installed by `scripts/install-cli.sh` with the repo path stamped into the
+binary (`defaultRepo`), so it resolves the checkout from anywhere.
+
+**Commands**
+
+| command | behavior |
+|---|---|
+| `forseti` | status (herdr, ttt listener, pi, asset drift, services, live crew, run lock) |
+| `forseti up [dir]` | sync assets → start configured services → verify herdr (+ link the plugin) → run the bring-up script (opens ttt + pi; reuses a live agent) |
+| `forseti down` | stop the configured services |
+| `forseti doctor` | checks with fixes; exit 1 on a FAIL (warn ≠ fail) |
+| `forseti open <path[:line[:col]]>` | write `jump.json` + `exec "Forseti: Jump"` |
+| `forseti run/watch/validate` | the Go CLI with `crew.engine`/`crew.host`/`crew.model` defaults |
+| `forseti config list/get/set/path/edit/sync/init` | keys + every native config file |
+
+**Safety/behavior decisions**
+- Asset sync is content-compared and atomic (tmp+rename), `--dry-run` shows the
+  diff; the plugin permission registry is never touched (doctor reports missing
+  grants instead).
+- `up` shells `herdr-plugin/scripts/open.sh` (the plugin's own bring-up) and
+  parses its JSON, so the created/reused tab is reported; it is idempotent.
+- A missing herdr server is an error with a bootstrap hint (`--attach` execs
+  herdr); the CLI never starts a TUI in a non-TTY.
+- Services are opt-in per config (`services.memory` default on, `laya` off).
+- `ttt.bin` is used for probes; the bring-up script uses `ttt` from `PATH` (the
+  fork), and `doctor` warns when that binary has no `ttt.terminal`.
+
+**Gates (Phase 23)**
+- `cd cli && go vet ./... && go test ./...` — config round-trip/validation,
+  target parsing, repo discovery, asset inspect/sync/dry-run/drift.
+- `scripts/install-cli.sh` builds and installs; `forseti version/status/doctor`
+  run from the repo and from `/tmp` (stamped repo).
+- **Live**: `up --no-open` synced the manifest and verified herdr; a full `up`
+  opened `w1:t1H` (`agent coder`), a second `up` reported `reused`; `open
+  README.md:13` jumped the running ttt; the tab was closed after the test.
