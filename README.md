@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.6.0** (see
+License: [MIT](LICENSE) · Current release: **v0.7.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -264,7 +264,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.6.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.7.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .
