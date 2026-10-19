@@ -72,8 +72,8 @@ Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-
 ## pi inside ttt
 
 ttt is the shell; pi runs **inside** it. The ttt side is a small, additive fork
-(`~/repos/ttt`, branch `forseti/terminal-argv`, based on v1.6.0 — the version the
-installed binary reports) that adds argv for the terminal program, per-tab
+(`~/repos/ttt`, branch `forseti/terminal-argv`, rebased onto current upstream
+main — originally based on v1.6.0) that adds argv for the terminal program, per-tab
 labels, and a `ttt.terminal` Lua API (`spawn/send/read/screen/focus/close/list`, behind
 `terminal.control` / `terminal.read`). With that in place:
 
@@ -104,7 +104,7 @@ labels, and a `ttt.terminal` Lua API (`spawn/send/read/screen/focus/close/list`,
   sidebar badge) while a node runs; pi's `ui_prompt_start/end` events publish
   `blocked` for a user-facing prompt.
 
-The fork is the only ttt change; upstream v1.6.0 still has no terminal API.
+The fork is the only ttt change; upstream main (v1.8.0+) still has no terminal API.
 Details and the increment plan: [`docs/ttt-terminal-api.md`](docs/ttt-terminal-api.md).
 
 ## Git — lazygit in the loop

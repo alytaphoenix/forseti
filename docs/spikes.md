@@ -2033,3 +2033,26 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
   marked `written` so the regular flush does not duplicate them. Only `blocked`
   patches `crew-status.json` — `idle/working` are pi states, not scheduler
   states, and would break the sidebar glyphs.
+
+## S55 — publishing the ttt fork + the v1.8 permission-intersection bug (2026-10-19) ✅ resolved (live)
+
+- **Rebase**: the six-commit branch moved from v1.6.0 to current upstream `main`.
+  Conflicts were only in `permissions_test.go` (append both test sets) and the
+  plugin docs table (keep upstream's `network.http` row, add the two terminal
+  rows). `go build ./...` + `go test ./...` green afterwards.
+- **Public fork**: `alytaphoenix/ttt`, branch `forseti/terminal-argv`, PR #994
+  (+864/−36 over 20 files) against `eugenioenko/ttt:main`.
+- **The bug the rebase introduced**: after installing the fork, the bridge still
+  answered "ttt.terminal unavailable" and `plugins.ttt.json` lost
+  `terminal.control`/`terminal.read` on every ttt startup. Root cause: the v1.8
+  permission refactor's `IntersectPermissions` and `DisplayEntries` did not
+  include the terminal fields. `grant()` intersects the approved registry entry
+  with the manifest, so it saved `terminal.* = false` (the diff was empty —
+  `DiffPermissions`/`Check` did include them — so the plugin loaded with
+  reduced grants instead of asking for approval). Fix `91a6401` adds both
+  fields to the intersection + display entries and pins them in the test.
+- **Live**: after the fix the registry keeps both grants across startup, and a
+  2-node ttt crew (`forseti run --host ttt`) ran `done=2`.
+- **Operational note**: an *upstream* ttt binary that predates these permission
+  keys can rewrite the registry and drop them; install the fork before
+  `forseti up` (or re-add the grants — `forseti doctor` reports them).

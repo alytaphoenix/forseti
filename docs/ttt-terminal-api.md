@@ -42,9 +42,10 @@ cleaned, so AGENTS.md's "only local source" claim needed restoring).
 
 ## Status: A, B and C are implemented in the fork
 
-The fork lives at **`~/repos/ttt`**, branch **`forseti/terminal-argv`**, based on
-the **v1.6.0** tag (the version the installed `~/go/bin/ttt` binary reports;
-upstream has since moved to v1.8.0, so a future rebase is expected).
+The fork lives at **`~/repos/ttt`**, branch **`forseti/terminal-argv`**, now
+**rebased onto current upstream `main`** (originally started from v1.6.0) and
+published as **PR #994** from the public fork `alytaphoenix/ttt`. The installed
+`~/go/bin/ttt` is built from this branch.
 
 - **A ✅ `5fcaffc`** — `terminal.New(..., args ...string)` + `TerminalSettings.Args`.
 - **B ✅ `5fcaffc`** — `App.SpawnTerminalSpec({Shell, Args, Cwd, Label})` +

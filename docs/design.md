@@ -4,7 +4,7 @@ Forseti ties together three locally installed terminal tools:
 
 - **herdr** 0.9.3 — terminal workspace manager (workspaces/tabs/panes, agent lifecycle)
 - **pi** (`@earendil-works/pi-coding-agent` 1.0.3) — coding agent CLI
-- **ttt** (`github.com/eugenioenko/ttt` v1.6.0) — terminal IDE
+- **ttt** (`github.com/eugenioenko/ttt`, forseti fork rebased on main) — terminal IDE
 
 Decisions (2026-09-30, user-confirmed):
 

@@ -1278,8 +1278,8 @@ before considering a head-only fine-tune.
 Direction (user): pi runs **inside ttt**, not beside it. ttt stays the shell; a
 crew can run on it exactly as it runs on herdr. Delivered in four pieces:
 
-1. **The ttt fork** (`~/repos/ttt`, branch `forseti/terminal-argv`, base v1.6.0
-   — the tag the installed binary reports): A argv (`terminal.New(..., args...)`
+1. **The ttt fork** (`~/repos/ttt`, branch `forseti/terminal-argv`, originally
+   based on v1.6.0, now rebased onto upstream main and published as PR #994): A argv (`terminal.New(..., args...)`
    + `TerminalSettings.Args`), B `SpawnTerminalSpec` + strip labels, C
    `ttt.terminal.{spawn,send,read,focus,list}` behind `terminal.control` /
    `terminal.read`, and `env` for spawned tabs. See `docs/ttt-terminal-api.md`
