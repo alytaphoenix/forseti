@@ -14,7 +14,7 @@ import (
 )
 
 // Version is the CLI version (kept in step with the repo release).
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 // defaultRepo is stamped at build time:
 //

@@ -2056,3 +2056,23 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
 - **Operational note**: an *upstream* ttt binary that predates these permission
   keys can rewrite the registry and drop them; install the fork before
   `forseti up` (or re-add the grants — `forseti doctor` reports them).
+
+## S56 — default crews and the DeepSeek/valhalla split (2026-10-19) ✅ resolved
+
+- **Exact ids**: OpenRouter's `deepseek/deepseek-v4.1-flash-1017` (pi:
+  `openrouter/deepseek/deepseek-v4.1-flash-1017`). Valhalla at
+  `http://192.168.0.142:8731/v1` accepts **both** `valhalla-flash-next` and the
+  id its `/models` lists, `gufo-flash-next`; a live `Say OK` returned
+  `content: "OK"` for both. With `max_tokens: 8` the reasoning budget consumed
+  the whole answer and `content` was empty — the reason the runner carries the
+  empty-settle retry for valhalla.
+- **Crew vs route**: `crew-default.yaml` pins models per agent rather than
+  routing. A switchyard route is for a single seat with tiers/fallback and only
+  exists during a routed run; the pi default is `~/.pi/agent/settings.json`
+  `defaultModel` (no proxy outside crews).
+- **Default-crew ergonomics**: `crew.default` accepts a path or a bare name
+  (`~/.config/forseti/crews/<name>.yaml`); `forseti run` injects `-f`, while an
+  explicit file, `--help`, and `validate`/`watch` are untouched.
+- **Graph**: advisor gates the executor (`verdict:accept`; `revise` loops the
+  planner, max 2); reviewer loops the executor on `lbtm` (max 2). The prompts
+  force the verdict lines; without one the gate skips the executor by design.

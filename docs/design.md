@@ -1204,6 +1204,13 @@ forking their formats; `forseti run` delegates to the crew engine. The CLI never
 edits permission grants and never replaces the hosts — herdr stays the workspace
 manager and ttt stays the editor.
 
+Default crews (v0.7.0): `crew.default` makes `forseti run` a one-command crew,
+and `crew/examples/crew-default.yaml` shows the intended model policy —
+reasoning on OpenRouter DeepSeek, execution on the LAN valhalla. Per-role
+`model:` is the right layer for that split (deterministic, no proxy); a route
+is reserved for one seat that needs tiers or fallback, and a standalone pi
+default is a settings value (`defaultModel`), not a route.
+
 ## Direction: pi inside ttt (2026-10-18, user decision)
 
 The shell question is settled: **ttt is the environment, pi is a program inside

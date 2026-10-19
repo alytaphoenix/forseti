@@ -1480,3 +1480,36 @@ binary (`defaultRepo`), so it resolves the checkout from anywhere.
 - **Live**: `up --no-open` synced the manifest and verified herdr; a full `up`
   opened `w1:t1H` (`agent coder`), a second `up` reported `reused`; `open
   README.md:13` jumped the running ttt; the tab was closed after the test.
+
+## Phase 24 — default crews + mixed-model policy (v0.7.0, on main) — ✅ implemented
+
+**`crew.default`** (CLI config): `forseti run` with no `-f/--file` uses the
+configured crew. A bare name resolves under `~/.config/forseti/crews/<name>.yaml`
+(and `.yml`); `~/…` expands; an explicit `-f/--file` always wins; `--help` is
+never hijacked. `forseti config set crew.default default` is the one-liner.
+
+**`crew/examples/crew-default.yaml`** is the reference default crew:
+
+- planner, advisor, reviewer → `openrouter/deepseek/deepseek-v4.1-flash-1017`
+- executor → `valhalla/valhalla-flash-next`
+- graph: planner → advisor (**gate**: `verdict:accept` proceeds, `verdict:revise`
+  loops the planner, max_visits 2) → executor → reviewer (`verdict:lbtm` loops
+  the executor, max_visits 2). The task is `TASK.md` at the repo root, falling
+  back to the uncommitted diff.
+- The advisor is a crew-declared role (`profile/goal/constraints/instruction`);
+  the reviewer is the built-in archetype. Models are pinned per agent, so no
+  tiers/routes are needed.
+
+**Why not a route**: the assignment is per-role and deterministic; a route is
+for one logical seat with tiers/fallback/picker and only exists during a routed
+crew run (proxy + per-run provider). The pi *default* is a settings value
+(`~/.pi/agent/settings.json` `defaultModel`), not a route — a standalone pi
+session has no switchyard proxy. Make the executor a route later only if you
+want valhalla → DeepSeek fallback.
+
+**Gates**: `forseti validate -f crew/examples/crew-default.yaml` (and
+`-explain`) passes; CLI tests cover default injection, explicit-`-f` override,
+`--help`, bare-name resolution and the not-found error; both model ids were
+probed live (`valhalla-flash-next` and the box's `gufo-flash-next` alias return
+a completion; the reasoning models return empty `content` when `max_tokens` is
+tiny, which the crew's empty-settle guard handles).
