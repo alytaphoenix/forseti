@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -255,6 +256,16 @@ func (r *Run) ChecksFailed() bool {
 // ctx-aware — kill the process to abandon a run (teardown then leaks; that
 // is the documented tradeoff).
 func (r *Run) Run(ctx context.Context) error {
+	// 22E: one run per checkout. A --worktree run gets its own checkout, so
+	// only same-tree runs take the lock (bus/, runs/ and the projection are
+	// per-checkout).
+	if r.Opts.WorktreeBranch == "" {
+		lock, err := acquireRunLock(r.Opts.Cwd)
+		if err != nil {
+			return err
+		}
+		defer lock.release()
+	}
 	c, err := r.connect()
 	if err != nil {
 		return err
@@ -1662,6 +1673,47 @@ func (r *Run) autoWrite(node, text string) {
 		}
 		r.emit(Event{Type: "memory_write", Node: node, Info: fmt.Sprintf("#%d -> crew-%s", id, r.MemoryNS())})
 	}()
+}
+
+// runLock is the per-checkout lock (.forseti/run.lock); release removes it.
+type runLock struct{ path string }
+
+func (l *runLock) release() { _ = os.Remove(l.path) }
+
+func acquireRunLock(cwd string) (*runLock, error) {
+	dir := filepath.Join(cwd, ".forseti")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "run.lock")
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+			_ = f.Close()
+			return &runLock{path: path}, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("run lock: %w", err)
+		}
+		data, _ := os.ReadFile(path)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+		if pid > 0 && !processAlive(pid) {
+			// a crashed run left the lock: sweep and retry once
+			_ = os.Remove(path)
+			continue
+		}
+		return nil, fmt.Errorf("another crew is running in this checkout (pid %d); use --worktree or wait for it to finish", pid)
+	}
+	return nil, fmt.Errorf("run lock: could not acquire")
+}
+
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // writePrivate writes an artifact owner-only (0600). Existing files keep their

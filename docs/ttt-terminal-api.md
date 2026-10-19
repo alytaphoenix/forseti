@@ -52,6 +52,17 @@ upstream has since moved to v1.8.0, so a future rebase is expected).
 - **C ✅ `414d130`** — the `ttt.terminal` Lua module
   (`spawn`/`send`/`read`/`focus`/`list`) behind `terminal.control` and
   `terminal.read`.
+- **D ✅ `a461f05`** — `close(id)` (kill PTY + remove tab), `terminal.control`.
+- **E ✅ `6c15819`** — `screen(id)` (visible rows, active/alt buffer),
+  `terminal.read`. Used by the live `watch:` monitor.
+
+Build the fork and run it (the installed `~/go/bin/ttt` stays upstream until you
+choose to replace it):
+
+```sh
+cd ~/repos/ttt && go build -o ~/go/bin/ttt ./cmd/ttt   # or a scratch path
+ttt --listen
+```
 
 - **pi status channel ✅ (S51)** — `pi-extension/index.ts` writes
   `.forseti/agent-status/<name>.json` on the pi lifecycle when
@@ -60,13 +71,21 @@ upstream has since moved to v1.8.0, so a future rebase is expected).
   directory; the crew host gives each run `.forseti/agent-status/<run>/`, and
   writes are serialized (a later state can never lose to an earlier one).
 
-- **`TttBackend` ✅ (S52, live; hardened v0.4.1)** — `host/src/crew/ttt.rs`
-  implements `PaneBackend` over the plugin's `Forseti: Agent Bridge` command
-  (`agent-req-<tag>.json` → `POST /exec` → `agent-res-<tag>.json`, both deleted
-  after use) plus this status channel; `--host ttt` stages one pi tab per node.
-  Readiness requires the status record, a 750 ms grace, AND a drawn pane (the
-  TUI input reader does not exist at `session_start`). A 2-node crew ran end to
-  end.
+- **`TttBackend` ✅ (S52, live; hardened v0.4.1; Phase 22 v0.5.0)** —
+  `host/src/crew/ttt.rs` implements `PaneBackend` over the plugin's
+  `Forseti: Agent Bridge` command (`agent-req-<tag>.json` → `POST /exec` →
+  `agent-res-<tag>.json`, both deleted after use) plus this status channel;
+  `--host ttt` stages one pi tab per node. Readiness requires the status
+  record, a 750 ms grace, AND a drawn pane (the TUI input reader does not exist
+  at `session_start`). A 2-node crew ran end to end.
+
+- **D/E ✅ (Phase 22, fork `a461f05` + `6c15819`)** —
+  `ttt.terminal.close(id)` (kills the PTY, removes the tab) and
+  `ttt.terminal.screen(id)` (visible rows, **active buffer**: a TUI renders in
+  the alternate screen, so `NormalBuffer` is empty; alt-buffer aware). Close
+  lets the ttt host obey `--keep-tab`; screen gives `watch:` real lines (a raw
+  PTY tail is one escape-laden blob). Both are under the existing
+  `terminal.control` / `terminal.read` grants — no new permission.
 
 ## The delta (three increments, smallest first)
 

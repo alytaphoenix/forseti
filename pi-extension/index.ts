@@ -47,7 +47,7 @@ const AGENT_STATUS_DIR = (process.env.FORSETI_STATUS_DIR || "").trim();
 let statusChain: Promise<void> = Promise.resolve();
 let statusSeq = 0;
 
-function writeAgentStatus(state: "idle" | "working", tool?: string): void {
+function writeAgentStatus(state: "idle" | "working" | "blocked", tool?: string): void {
 	if (!AGENT_NAME) return;
 	const dir = AGENT_STATUS_DIR || path.join(process.cwd(), ".forseti", "agent-status");
 	const body = JSON.stringify({
@@ -448,6 +448,15 @@ export default function forseti(pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async () => {
 		void writeAgentStatus("idle");
+	});
+	// pi 1.0.3 blocks the turn on a user-facing UI prompt (confirm/select/input/
+	// editor/custom, including a permission extension's dialog). That is the
+	// observable `blocked` state the ttt backend needs (herdr has it natively).
+	pi.on("ui_prompt_start", async (event) => {
+		void writeAgentStatus("blocked", (event as { title?: string }).title);
+	});
+	pi.on("ui_prompt_end", async () => {
+		void writeAgentStatus("working");
 	});
 
 	// ---- Phase 2d-2: review mode --------------------------------------------

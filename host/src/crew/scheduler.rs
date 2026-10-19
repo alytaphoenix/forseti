@@ -158,6 +158,11 @@ pub struct Event {
     pub ctx_pct: f64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub line: String,
+    /// Set when a live monitor already wrote this line to the run log (so the
+    /// regular flush appends it to the outcome without duplicating it).
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub written: bool,
 }
 
 fn is_zero(v: &f64) -> bool {

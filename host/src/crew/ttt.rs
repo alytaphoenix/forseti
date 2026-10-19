@@ -19,14 +19,17 @@
 //! ttt-terminal-api.md`). On upstream ttt the command answers with a clear
 //! "unavailable" error instead of hanging.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::model::Crew;
 use super::runner::PaneBackend;
 
 pub const DEFAULT_EXEC_URL: &str = "http://127.0.0.1:4242/exec";
@@ -61,6 +64,8 @@ pub struct TttBridge {
     /// Per-instance request/response namespace, so concurrent crews (or a
     /// manual bridge call) never share a file.
     tag: String,
+    /// Extra env for every spawned tab (memory namespace, run id, …).
+    extra_env: BTreeMap<String, String>,
     seq: u64,
     http: reqwest::blocking::Client,
 }
@@ -76,6 +81,7 @@ impl TttBridge {
                 std::process::id(),
                 BRIDGE_TAG.fetch_add(1, Ordering::SeqCst)
             ),
+            extra_env: BTreeMap::new(),
             seq: 0,
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(15))
@@ -88,6 +94,22 @@ impl TttBridge {
     pub fn with_status_dir(mut self, dir: PathBuf) -> Self {
         self.status_dir = dir;
         self
+    }
+
+    /// Adds an env var for every spawned tab (e.g. `FORSETI_MEMORY_CREW`).
+    pub fn with_env(mut self, key: &str, value: &str) -> Self {
+        self.extra_env.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// A second bridge with its own request namespace, for the live monitor
+    /// (the backend keeps polling the status while the monitor reads panes).
+    pub fn fork(&self) -> TttBridge {
+        TttBridge::new(
+            &self.exec_url,
+            self.plugin_dir.clone(),
+            self.status_dir.clone(),
+        )
     }
 
     /// `FORSETI_TTT_EXEC_URL`, `FORSETI_TTT_PLUGIN_DIR`,
@@ -173,16 +195,42 @@ impl TttBridge {
     /// Opens a pi tab for one node; `FORSETI_AGENT_NAME` turns on the status
     /// channel (S51).
     pub fn spawn(&mut self, name: &str, args: &[String], cwd: &str) -> Result<String, String> {
+        let mut env = self.extra_env.clone();
+        env.insert("FORSETI_AGENT_NAME".to_string(), name.to_string());
+        env.insert(
+            "FORSETI_STATUS_DIR".to_string(),
+            self.status_dir.to_string_lossy().into_owned(),
+        );
+        self.spawn_with_env("pi", args, cwd, name, &env)
+    }
+
+    /// Spawns any program in a tab (no crew env); used by `--review` for
+    /// lazygit.
+    pub fn spawn_shell(
+        &mut self,
+        shell: &str,
+        args: &[String],
+        cwd: &str,
+        label: &str,
+    ) -> Result<String, String> {
+        self.spawn_with_env(shell, args, cwd, label, &BTreeMap::new())
+    }
+
+    fn spawn_with_env(
+        &mut self,
+        shell: &str,
+        args: &[String],
+        cwd: &str,
+        label: &str,
+        env: &BTreeMap<String, String>,
+    ) -> Result<String, String> {
         let res = self.call(json!({
             "op": "spawn",
-            "shell": "pi",
+            "shell": shell,
             "args": args,
-            "env": {
-                "FORSETI_AGENT_NAME": name,
-                "FORSETI_STATUS_DIR": self.status_dir.to_string_lossy(),
-            },
+            "env": env,
             "cwd": cwd,
-            "label": name,
+            "label": label,
         }))?;
         res.get("id")
             .and_then(Value::as_str)
@@ -205,8 +253,26 @@ impl TttBridge {
             .to_string())
     }
 
+    /// The visible screen as plain lines (the fork's `ttt.terminal.screen`) —
+    /// real rows for `watch:` matching, unlike the raw PTY tail.
+    pub fn screen(&mut self, id: &str) -> Result<String, String> {
+        let res = self.call(json!({"op": "screen", "id": id}))?;
+        Ok(res
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
     pub fn focus(&mut self, id: &str) -> Result<(), String> {
         self.call(json!({"op": "focus", "id": id}))?;
+        Ok(())
+    }
+
+    /// Kills the terminal's PTY and removes its tab (the ttt fork's
+    /// `ttt.terminal.close`, `terminal.control`).
+    pub fn close(&mut self, id: &str) -> Result<(), String> {
+        self.call(json!({"op": "close", "id": id}))?;
         Ok(())
     }
 
@@ -434,6 +500,201 @@ pub fn tail_lines(text: &str, lines: usize) -> String {
     all[all.len() - lines..].concat()
 }
 
+// MARK: the live monitor (Phase 22B)
+
+/// The writer a live monitor shares with the run: the JSONL log (written
+/// immediately, marked `written` so the regular flush does not duplicate it),
+/// the queue the flush drains into `outcome.events`, and the bridge projector.
+pub struct LiveReporter {
+    log: Arc<Mutex<std::fs::File>>,
+    headless: bool,
+    queued: Arc<Mutex<Vec<super::scheduler::Event>>>,
+    bridge_lock: Arc<Mutex<()>>,
+    cwd: String,
+    total: usize,
+}
+
+impl LiveReporter {
+    pub fn new(
+        log: Arc<Mutex<std::fs::File>>,
+        headless: bool,
+        queued: Arc<Mutex<Vec<super::scheduler::Event>>>,
+        bridge_lock: Arc<Mutex<()>>,
+        cwd: &str,
+        total: usize,
+    ) -> Self {
+        LiveReporter {
+            log,
+            headless,
+            queued,
+            bridge_lock,
+            cwd: cwd.to_string(),
+            total,
+        }
+    }
+
+    fn emit(&self, mut ev: super::scheduler::Event) {
+        if ev.ts.is_empty() {
+            ev.ts = super::scheduler::rfc3339_now();
+        }
+        if let Ok(mut log) = self.log.lock() {
+            if let Ok(line) = serde_json::to_string(&ev) {
+                if self.headless {
+                    println!("{line}");
+                }
+                let _ = std::io::Write::write_all(&mut *log, format!("{line}\n").as_bytes());
+                let _ = std::io::Write::flush(&mut *log);
+            }
+            ev.written = true;
+        }
+        if let Ok(mut q) = self.queued.lock() {
+            q.push(ev);
+        }
+    }
+
+    /// Updates the node rows + counts of the existing crew-status.json. The
+    /// run's own flush owns the full projection; this only keeps the badge
+    /// live between flushes (serialized by the shared bridge lock).
+    fn patch_bridge(&self, statuses: &BTreeMap<String, String>) {
+        if self.cwd.is_empty() || statuses.is_empty() {
+            return;
+        }
+        let _guard = self.bridge_lock.lock();
+        let path = Path::new(&self.cwd)
+            .join(".forseti")
+            .join("crew-status.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(mut v) = serde_json::from_str::<Value>(&text) else {
+            return;
+        };
+        let Some(nodes) = v.get_mut("nodes").and_then(Value::as_array_mut) else {
+            return;
+        };
+        let mut changed = false;
+        for row in nodes.iter_mut() {
+            let Some(name) = row.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            // only `blocked` changes the projection: `idle/working` are pi's
+            // live states, while the node is still RUNNING in the scheduler
+            // until the runner settles it. Overwriting with them would break
+            // the sidebar's status glyphs.
+            if statuses.get(name).map(String::as_str) == Some("blocked")
+                && row.get("status").and_then(Value::as_str) != Some("blocked")
+            {
+                row["status"] = json!("blocked");
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for row in nodes.iter() {
+            if let Some(s) = row.get("status").and_then(Value::as_str) {
+                *counts.entry(s.to_string()).or_insert(0) += 1;
+            }
+        }
+        for (key, status) in [
+            ("done", "done"),
+            ("running", "running"),
+            ("blocked", "blocked"),
+            ("failed", "failed"),
+        ] {
+            v[key] = json!(counts.get(status).copied().unwrap_or(0));
+        }
+        v["total"] = json!(self.total);
+        v["ts"] = json!(super::scheduler::rfc3339_now());
+        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        if super::fsx::write_private(&tmp, v.to_string().as_bytes()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+/// Polls the status channel + watched screens for the ttt host (ttt has no
+/// subscription surface; the files and the visible terminal are the signals).
+pub struct TttLive {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl TttLive {
+    pub fn start(
+        mut bridge: TttBridge,
+        crew: &Crew,
+        ids: &BTreeMap<String, String>,
+        reporter: LiveReporter,
+    ) -> TttLive {
+        let stop = Arc::new(AtomicBool::new(false));
+        let crews_stop = Arc::clone(&stop);
+        let nodes: Vec<(String, String)> =
+            ids.iter().map(|(n, i)| (n.clone(), i.clone())).collect();
+        let watches: Vec<(String, regex::Regex, String)> = crew
+            .watch
+            .iter()
+            .filter_map(|w| {
+                regex::Regex::new(&w.match_)
+                    .ok()
+                    .map(|re| (w.node.clone(), re, w.match_.clone()))
+            })
+            .collect();
+        let handle = std::thread::spawn(move || {
+            let mut last: BTreeMap<String, String> = BTreeMap::new();
+            let mut seen: HashSet<(String, String)> = HashSet::new();
+            while !crews_stop.load(Ordering::SeqCst) {
+                let mut statuses = BTreeMap::new();
+                for (node, _id) in &nodes {
+                    let state = bridge.status(node).map(|r| r.state).unwrap_or_default();
+                    if state.is_empty() {
+                        continue;
+                    }
+                    statuses.insert(node.clone(), state.clone());
+                    if last.get(node) != Some(&state) {
+                        let mut ev = super::scheduler::Event::on_node("node_status", node);
+                        ev.info = state.clone();
+                        ev.ts = super::scheduler::rfc3339_now();
+                        reporter.emit(ev);
+                        last.insert(node.clone(), state);
+                    }
+                }
+                for (node, re, pattern) in &watches {
+                    let Some((_, id)) = nodes.iter().find(|(n, _)| n == node) else {
+                        continue;
+                    };
+                    let Ok(text) = bridge.screen(id) else {
+                        continue;
+                    };
+                    for line in text.lines() {
+                        let line = line.trim();
+                        if !line.is_empty()
+                            && re.is_match(line)
+                            && seen.insert((node.clone(), line.to_string()))
+                        {
+                            reporter.emit(super::live::watch_event(node, pattern, line));
+                        }
+                    }
+                }
+                reporter.patch_bridge(&statuses);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        TttLive {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 // MARK: tests
 
 #[cfg(test)]
@@ -581,17 +842,20 @@ mod tests {
         responses.insert("send", json!({"ok": true}));
         responses.insert("read", json!({"ok": true, "tail": "pane text"}));
         responses.insert("focus", json!({"ok": true}));
+        responses.insert("close", json!({"ok": true}));
         let fake = FakeTtt::new(dir.clone(), responses);
         let mut b = bridge(&dir, &fake);
         b.send("terminal-1", "hello\n").expect("send");
         assert_eq!(b.read("terminal-1", 4000).expect("read"), "pane text");
         b.focus("terminal-1").expect("focus");
+        b.close("terminal-1").expect("close");
         let reqs = fake.requests();
         assert_eq!(reqs[0]["op"], "send");
         assert_eq!(reqs[0]["text"], "hello\n");
         assert_eq!(reqs[1]["op"], "read");
         assert_eq!(reqs[1]["n"], 4000);
         assert_eq!(reqs[2]["op"], "focus");
+        assert_eq!(reqs[3]["op"], "close");
     }
 
     #[test]
@@ -696,6 +960,17 @@ mod tests {
     }
 
     #[test]
+    fn screen_returns_the_visible_rows() {
+        let dir = temp_dir();
+        let mut responses = BTreeMap::new();
+        responses.insert("screen", json!({"ok": true, "text": "line one\nDONE\n"}));
+        let fake = FakeTtt::new(dir.clone(), responses);
+        let mut b = bridge(&dir, &fake);
+        assert_eq!(b.screen("terminal-1").expect("screen"), "line one\nDONE\n");
+        assert_eq!(fake.requests()[0]["op"], "screen");
+    }
+
+    #[test]
     fn read_strips_ansi_and_keeps_the_last_lines() {
         let dir = temp_dir();
         let mut responses = BTreeMap::new();
@@ -723,6 +998,68 @@ mod tests {
         assert_eq!(tail_lines("a\nb\n", 0), "a\nb\n");
         assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc\n");
         assert_eq!(tail_lines("a\n", 5), "a\n");
+    }
+
+    #[test]
+    fn spawn_shell_launches_a_review_program() {
+        let dir = temp_dir();
+        let mut responses = BTreeMap::new();
+        responses.insert("spawn", json!({"ok": true, "id": "terminal-9"}));
+        let fake = FakeTtt::new(dir.clone(), responses);
+        let mut b = bridge(&dir, &fake);
+        let id = b
+            .spawn_shell(
+                "lazygit",
+                &["-p".to_string(), "/wt".to_string()],
+                "/wt",
+                "lg",
+            )
+            .expect("spawn lazygit");
+        assert_eq!(id, "terminal-9");
+        let req = &fake.requests()[0];
+        assert_eq!(req["shell"], "lazygit");
+        assert_eq!(req["args"], json!(["-p", "/wt"]));
+        assert_eq!(req["label"], "lg");
+        assert!(
+            req["env"]
+                .as_object()
+                .map(|m| m.is_empty())
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn the_bridge_only_flags_blocked_in_the_live_bridge() {
+        let dir = temp_dir();
+        let path = dir.join(".forseti/crew-status.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"crew":"c","total":2,"done":0,"running":2,"blocked":0,"failed":0,"nodes":[{"name":"a","status":"running"},{"name":"b","status":"running"}]}"#,
+        )
+        .unwrap();
+        let reporter = LiveReporter::new(
+            std::sync::Arc::new(std::sync::Mutex::new(
+                std::fs::File::create(dir.join("run.jsonl")).unwrap(),
+            )),
+            false,
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            std::sync::Arc::new(std::sync::Mutex::new(())),
+            &dir.to_string_lossy(),
+            2,
+        );
+        let mut statuses = BTreeMap::new();
+        statuses.insert("a".to_string(), "blocked".to_string());
+        statuses.insert("b".to_string(), "idle".to_string());
+        reporter.patch_bridge(&statuses);
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(after["nodes"][0]["status"], "blocked");
+        assert_eq!(
+            after["nodes"][1]["status"], "running",
+            "idle must not overwrite"
+        );
+        assert_eq!(after["blocked"], 1);
+        assert_eq!(after["running"], 1);
     }
 
     #[test]

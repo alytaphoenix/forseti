@@ -486,13 +486,18 @@ impl Proxy {
         let providers = pi_providers()?;
         let (toml, env) = build_config(routes, &providers, &mut api_key_value)?;
         let port = free_port()?;
+        // per-run names: two routed runs share `.forseti/runs`, so a fixed
+        // switchyard.toml/router.log would be clobbered
+        let stem = routing_log_name
+            .strip_suffix(".routing.jsonl")
+            .unwrap_or("switchyard");
         let proxy = Proxy {
             kind: router.kind,
             port,
             provider: format!("switchyard-{port}"),
-            config_path: run_dir.join("switchyard.toml"),
+            config_path: run_dir.join(format!("{stem}.switchyard.toml")),
             routing_log: run_dir.join(routing_log_name),
-            server_log: run_dir.join("router.log"),
+            server_log: run_dir.join(format!("{stem}.router.log")),
             env,
             child: None,
         };

@@ -614,7 +614,7 @@ end
 -- exists (a POST from another caller must not replay it). The bridge needs the
 -- ttt fork's `ttt.terminal` module; on upstream ttt the command reports the
 -- capability as unavailable instead of failing the caller.
--- Requests: {seq, op: spawn|send|read|focus, ...}.
+-- Requests: {seq, op: spawn|send|read|screen|focus|close, ...}.
 local function agent_bridge()
   local ok_l, entries = pcall(fs.list, ttt.plugin_dir())
   if not ok_l or type(entries) ~= "table" then return end
@@ -653,10 +653,17 @@ local function agent_bridge()
             elseif op == "read" then
               local tail, err = term.read(req.id or "", req.n or 0)
               if tail then res.tail = tail; res.ok = true else res.error = err or "read failed" end
+            elseif op == "screen" then
+              local text, err = term.screen(req.id or "")
+              if text then res.text = text; res.ok = true else res.error = err or "screen failed" end
             elseif op == "focus" then
               local done, err = term.focus(req.id or "")
               res.ok = done == true
               if not res.ok then res.error = err or "focus failed" end
+            elseif op == "close" then
+              local done, err = term.close(req.id or "")
+              res.ok = done == true
+              if not res.ok then res.error = err or "close failed" end
             else
               res.error = "unknown op: " .. op
             end

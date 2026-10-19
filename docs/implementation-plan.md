@@ -1375,3 +1375,69 @@ fixed here (details + evidence: S53).
   routed ttt crew (`switchyard-54672/auto-pool`, provider restored at teardown);
   and `FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` PASSES (checked +
   phased herdr crews).
+
+## Phase 22 — ttt host parity + concurrency guardrails (v0.5.0) — ✅ **implemented + verified LIVE** (2026-10-19)
+
+Closes the five limitations documented after Phase 21.
+
+### 22A — tab close (fork + bridge + teardown)
+The fork already had `App.CloseTerminal` (PTY kill + tab removal); the missing
+piece was the plugin surface. Added `ttt.terminal.close(id)` under
+`terminal.control` (fork `a461f05`), a bridge `op: close`, `TttBridge::close`,
+and teardown now closes every spawned tab unless `--keep-tab` (review implies
+keep). **Live**: a ttt run leaves 0 tabs; `--keep-tab` leaves the two pi tabs.
+
+### 22B — live `node_status` / `watch:` events
+ttt has no subscription surface, so `TttLive` (300 ms monitor) polls the status
+channel and each watched tab's **visible screen** and writes events through a
+shared log handle immediately (marked `written` so the regular flush only adds
+them to the outcome). The bridge projection is patched live for `blocked` only
+(`idle/working` would break the sidebar's scheduler glyphs). The monitor uses a
+second `TttBridge` (own tag) so it never serializes behind `prompt_wait`.
+**Finding**: raw PTY tails have no logical newlines (a TUI redraws with cursor
+escapes), so line-based watches matched one giant blob. The fork's new
+`ttt.terminal.screen(id)` (fork `6c15819`) returns the visible rows, alt-buffer
+aware; watches use it. **Live**: crew-checks produced 6 `node_status` + 3 clean
+`pattern_matched` events (`DONE.` / `File created. Reply DONE.` / `DONE`).
+
+### 22C — `--worktree` / `--review` on ttt
+Plain `git worktree add -b <branch> ~/.forseti/worktrees/<repo>/<branch>`
+(registered-worktree check, husk sweep), `-a` trust, bus + memory hand-off
+inside the worktree, `worktree remove --force` + `branch -D` at teardown
+(unless kept). `--review` spawns lazygit in a tab on the kept worktree and adds
+the merge recipe to `run_end`. **Live**: `wt-22c` created, used, removed, branch
+deleted, tabs closed; `wt-review` kept with planner/builder/`lg` tabs.
+
+### 22D — `blocked`
+pi 1.0.3 fires `ui_prompt_start` / `ui_prompt_end` around blocking extension UI
+dialogs (`dist/core/extensions/types.d.ts:771-783`; `runner.js` `withUIPrompt`).
+The extension now publishes `blocked` (title as `tool`) and returns to `working`
+on end; the scheduler's existing blocked path holds the phase and exits nonzero.
+**Live**: a temporary extension calling `ctx.ui.confirm` in a ttt-hosted pi drove
+the status file to `blocked` while the dialog was up (verified 2026-10-19, temp
+extension removed). Caveat: a built-in approval outside the extension UI surface
+would still look `working` (documented).
+
+### 22E — same-checkout concurrency (step 1)
+- Per-run router names (`<run-stem>.switchyard.toml` / `.router.log`) in Rust
+  and Go (the routing JSONL already was per-run).
+- `.forseti/run.lock` in both engines: a second same-tree run fails fast with
+  the owner pid; a dead pid is swept. `--worktree` skips the lock (own checkout).
+- ttt panes get `FORSETI_MEMORY_CREW`, so concurrent checkouts cannot share a
+  namespace.
+- Still deferred (step 2): run-scoped `.forseti/runs/<id>/` bus + status
+  files and a multi-run sidebar. The lock makes same-tree runs safe (refused),
+  not concurrent.
+
+### Gates (Phase 22)
+- `cargo test` — **137 unit + 1 oracle** (+1 ignored): close/screen ops, the
+  spawn_shell review call, the blocked-only bridge patch, the run-lock
+  acquire/refuse/stale-sweep.
+- Fork: `go test ./internal/terminal/ ./internal/plugin/` green (the app suite's
+  pre-existing macOS `TestPluginFilesystemAPI_*` failure is unchanged); the
+  installed `/tmp/ttt-fork` is built from the branch for every live run.
+- `cargo fmt --check`, `cargo clippy --all-targets` clean; `gofmt`/`go vet`/
+  `go test ./...` green; oracle `--check` 85 records.
+- **Live**: tab close/keep, worktree cleanup, review lazygit tab, live
+  status/watch, routed provider restore, run-lock refusal, and
+  `FORSETI_CREW_ENGINE=rust bash scripts/crew-smoke.sh` PASS.

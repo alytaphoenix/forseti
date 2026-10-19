@@ -500,14 +500,19 @@ func Start(routes []schema.Route, runDir, routingLog string) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	// per-run names: two routed runs share `.forseti/runs`
+	stem := strings.TrimSuffix(routingLog, ".routing.jsonl")
+	if stem == routingLog {
+		stem = "switchyard"
+	}
 	p := &Proxy{
 		Bin:        router.Bin,
 		Kind:       router.Kind,
 		Port:       port,
 		Provider:   fmt.Sprintf("switchyard-%d", port),
-		ConfigPath: filepath.Join(runDir, "switchyard.toml"),
+		ConfigPath: filepath.Join(runDir, stem+".switchyard.toml"),
 		RoutingLog: filepath.Join(runDir, routingLog),
-		ServerLog:  filepath.Join(runDir, "router.log"),
+		ServerLog:  filepath.Join(runDir, stem+".router.log"),
 		Env:        env,
 	}
 	if err := os.WriteFile(p.ConfigPath, []byte(toml), 0o600); err != nil {

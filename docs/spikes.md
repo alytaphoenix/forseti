@@ -1995,3 +1995,41 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
 `--check` 85 records, a live 2-node ttt crew, a live routed ttt crew
 (`switchyard-<port>` served and restored), and the Rust herdr smoke gate
 (checked + phased crews) — plan Phase 21A.
+
+## S54 — Phase 22: tab close, live status, worktree, blocked, and one run/checkout (2026-10-19) ✅ resolved (live)
+
+- **`App.CloseTerminal` already existed** (the terminal strip's exit path):
+  `Terminal.Close` sets `closed`, closes the PTY, kills the child, waits for
+  both loops; `OnExit` is skipped on an explicit close. Only the Lua surface was
+  missing — `ttt.terminal.close(id)` is a thin addition (fork `a461f05`).
+- **Raw PTY tails are not lines.** A TUI (pi) redraws with cursor escapes; after
+  stripping ANSI the 64 KB tail is one giant "line", so a line-deduped watch
+  emitted a blob per poll (19 events in one run). The fix is a screen read:
+  `t.term.NormalBuffer()` is EMPTY while a TUI runs — the content is in the
+  **alternate buffer**. `ttt.terminal.screen(id)` (fork `6c15819`) picks the
+  active buffer and returns `TranslateToString(trimRight)` rows. Watches now
+  match real rows (3 clean events with the same crew).
+- **`ui_prompt_start` / `ui_prompt_end` exist in pi 1.0.3** (extension
+  `types.d.ts`; emitted by `ExtensionRunner.withUIPrompt`). They wrap extension
+  UI dialogs (confirm/select/input/editor/custom), which covers a permission
+  extension's confirmation; that is the observable `blocked` state. **Live**: a
+  temporary extension calling `ctx.ui.confirm` in a ttt-hosted pi held the status
+  at `blocked` for as long as the dialog was up (print mode is not a valid probe:
+  the no-op UI resolves instantly, so only TUI mode shows the state). A built-in
+  approval outside that surface remains invisible.
+- **Plain-git worktrees work for the ttt host**: `git worktree add -b` under
+  `~/.forseti/worktrees/<repo>/<branch>`, bus + memory hand-off inside it, and
+  `worktree remove --force` + `branch -D` at teardown. A registered worktree is
+  never swept as a husk. `--review` spawns lazygit with `-p <worktree>`.
+- **Run-scoped router files**: two routed runs share `.forseti/runs`; the fixed
+  `switchyard.toml`/`router.log` names were clobbered. `<run-stem>.…` fixes it
+  in both engines (live: `.forseti/runs/202610-…-demo-routed-pool.switchyard.toml`).
+- **One run per checkout** is the honest interim concurrency contract:
+  `.forseti/run.lock` (pid; dead pids swept) refuses a second same-tree run
+  with a clear message; `--worktree` sidesteps it. Full run-scoped state is
+  still the step-2 work.
+- **Live monitor semantics**: a second bridge instance (own tag) polls status +
+  screens every 300 ms; events are written to the shared log immediately and
+  marked `written` so the regular flush does not duplicate them. Only `blocked`
+  patches `crew-status.json` — `idle/working` are pi states, not scheduler
+  states, and would break the sidebar glyphs.

@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.4.1** (see
+License: [MIT](LICENSE) · Current release: **v0.5.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -48,26 +48,35 @@ Docs: [`design`](docs/design.md) · [`implementation plan`](docs/implementation-
 ttt is the shell; pi runs **inside** it. The ttt side is a small, additive fork
 (`~/repos/ttt`, branch `forseti/terminal-argv`, based on v1.6.0 — the version the
 installed binary reports) that adds argv for the terminal program, per-tab
-labels, and a `ttt.terminal` Lua API (`spawn/send/read/focus/list`, behind
+labels, and a `ttt.terminal` Lua API (`spawn/send/read/screen/focus/close/list`, behind
 `terminal.control` / `terminal.read`). With that in place:
 
 - **Manual**: set `terminal.shell` / `terminal.args` in ttt's settings and every
   terminal tab runs pi; `file:line` in pi's output stays click-to-open.
 - **Status**: with `FORSETI_AGENT_NAME` set, the pi extension publishes
-  `.forseti/agent-status/<name>.json` (`idle|working`, atomic, pid-stamped) —
+  `.forseti/agent-status/<name>.json` (`idle|working|blocked`, atomic, pid-stamped) —
   the replacement for herdr's native agent status stream.
 - **Crews**: `forseti-host crew run --host ttt -f crew.yaml` spawns one pi tab
   per node and drives the same graph/scheduler used on herdr.
 - **Isolation (v0.4.1)**: each run gets its own route provider
-  (`switchyard-<port>`, guarded by a `models.json` lock) and its own
-  `.forseti/agent-status/<run>/` directory; the bridge namespaces its
-  request/response files per client and deletes both after use. Readiness
-  requires the status record, a grace period, AND a drawn pane: pi's status
-  hook fires before its input reader exists, and a prompt sent into that window
-  is dropped. Run logs, bus files and status projections are owner-only (0600).
-- **Still missing on ttt**: closing tabs from the bridge, live
-  `node_status`/`watch:` events, `--worktree`/`--review`, and an observable
-  `blocked` state.
+  (`switchyard-<port>`, guarded by a `models.json` lock), its own
+  `.forseti/agent-status/<run>/` directory, and per-run router config/log files;
+  the bridge namespaces its request/response files per client and deletes both
+  after use. Readiness requires the status record, a grace period, AND a drawn
+  pane: pi's status hook fires before its input reader exists, and a prompt sent
+  into that window is dropped. Run logs, bus files and status projections are
+  owner-only (0600).
+- **One run per checkout (v0.5.0)**: `.forseti/run.lock` (stale pids swept)
+  refuses a second same-tree run with a clear message; `--worktree` gets its own
+  checkout and sidesteps it.
+- **Tabs close on teardown (v0.5.0)**: `--keep-tab` keeps them; `--review`
+  implies it. `--worktree`/`--review` now work on ttt too — a plain
+  `git worktree add` under `~/.forseti/worktrees/<repo>/<branch>`, and a lazygit
+  tab on the kept worktree.
+- **Live + blocked (v0.5.0)**: a monitor polls the status files and the visible
+  screen rows, so `node_status` / `pattern_matched` land in the run log (and the
+  sidebar badge) while a node runs; pi's `ui_prompt_start/end` events publish
+  `blocked` for a user-facing prompt.
 
 The fork is the only ttt change; upstream v1.6.0 still has no terminal API.
 Details and the increment plan: [`docs/ttt-terminal-api.md`](docs/ttt-terminal-api.md).
@@ -226,7 +235,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.4.1
+# or: pi install git:github.com/alytaphoenix/forseti@v0.5.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

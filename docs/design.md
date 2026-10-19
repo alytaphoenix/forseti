@@ -1208,6 +1208,14 @@ directory and its own route provider (`switchyard-<port>`, with a models.json
 lock), so concurrent runs no longer collide; artifacts are 0600; a finished run
 removes its `crew-status.json` projection.
 
+Phase 22 (v0.5.0, S54) closes the remaining host gaps: tabs close on teardown
+(`--keep-tab` keeps them; `ttt.terminal.close`), `--worktree`/`--review` use
+plain git worktrees + a lazygit tab, a 300 ms monitor publishes live
+`node_status`/`pattern_matched` from the status files and the visible screen
+(`ttt.terminal.screen`), `blocked` comes from pi's `ui_prompt_start`, and
+`.forseti/run.lock` + per-run router files make same-tree runs fail fast
+instead of corrupting each other.
+
 - **Not a fork of pi.** pi's extension surface is a UI *overlay* on the
   transcript (S36), not a buffer/keymap owner; re-authoring ttt's editor inside a
   fast-moving 1.0.x extension is the expensive path.

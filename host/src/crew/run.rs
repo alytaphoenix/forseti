@@ -140,6 +140,14 @@ impl Run {
         {
             self.opts.model_override = std::env::var("FORSETI_CREW_MODEL").unwrap_or_default();
         }
+        // 22E: one run per checkout. `--worktree` gets its own checkout (and a
+        // unique path), so it needs no lock; two crews in the same tree would
+        // share bus/, runs/ and the status projection.
+        let _run_lock = if self.opts.worktree_branch.is_empty() {
+            Some(acquire_run_lock(&cwd)?)
+        } else {
+            None
+        };
         if self.opts.host == "ttt" {
             return self.run_ttt(cwd);
         }
@@ -156,8 +164,8 @@ impl Run {
 
         // 1. run log (the Go name shape)
         let log_path = runs.join(format!("{}-{}.jsonl", log_stamp(), self.crew.name));
-        let mut log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
-        let mut sink = Sink::new(&cwd, &self.crew.name, &mut log, self.opts.headless);
+        let log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
+        let mut sink = Sink::new(&cwd, &self.crew.name, log, self.opts.headless);
         self.emit(Event::info(
             "run_start",
             format!(
@@ -334,12 +342,7 @@ impl Run {
 
     /// The per-run switchyard router (host-independent: it spawns forseti-host
     /// itself). Sets the provider key, the routing-log tailer and the proxy.
-    fn start_proxy(
-        &mut self,
-        sink: &mut Sink<'_>,
-        runs: &Path,
-        log_path: &Path,
-    ) -> Result<(), String> {
+    fn start_proxy(&mut self, sink: &mut Sink, runs: &Path, log_path: &Path) -> Result<(), String> {
         if self.crew.routes.is_empty() {
             return Ok(());
         }
@@ -396,18 +399,11 @@ impl Run {
         args
     }
 
-    /// Phase 21: run the crew with pi inside ttt (one terminal tab per node)
-    /// through the forseti plugin bridge. No herdr, no live streams; the tabs
-    /// stay open at the end (they are the human surface).
+    /// Phase 21/22: run the crew with pi inside ttt (one terminal tab per node)
+    /// through the forseti plugin bridge. No herdr; a 300 ms monitor publishes
+    /// live status/watch events, and the tabs close at teardown unless
+    /// `--keep-tab` (review keeps them and adds a lazygit tab).
     fn run_ttt(&mut self, cwd: String) -> Result<RunOutcome, String> {
-        if !self.opts.worktree_branch.is_empty() {
-            return Err(
-                "--worktree needs the herdr host (ttt tabs have no worktree lifecycle)".to_string(),
-            );
-        }
-        if self.opts.review {
-            return Err("--review needs the herdr host".to_string());
-        }
         std::fs::create_dir_all(Path::new(&cwd).join(".forseti/bus"))
             .map_err(|e| format!("bus dir: {e}"))?;
         let runs = Path::new(&cwd).join(".forseti/runs");
@@ -426,8 +422,8 @@ impl Run {
             .join("agent-status")
             .join(&run_stem);
         std::fs::create_dir_all(&status_dir).map_err(|e| format!("status dir: {e}"))?;
-        let mut log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
-        let mut sink = Sink::new(&cwd, &self.crew.name, &mut log, self.opts.headless);
+        let log = super::fsx::create_private(&log_path).map_err(|e| format!("run log: {e}"))?;
+        let mut sink = Sink::new(&cwd, &self.crew.name, log, self.opts.headless);
         self.emit(Event::info(
             "run_start",
             format!(
@@ -438,15 +434,35 @@ impl Run {
             ),
         ));
         sink.flush(&mut self.sched);
+        // 1b. disposable worktree (Phase 22C): plain git, no herdr
+        if !self.opts.worktree_branch.is_empty() {
+            let path = self.create_worktree_ttt()?;
+            self.effective_cwd = path.clone();
+            self.sched.set_effective_cwd(&path);
+            self.emit(Event::info("run_start", format!("worktree ready: {path}")));
+            std::fs::create_dir_all(Path::new(&path).join(".forseti/bus"))
+                .map_err(|e| format!("worktree bus dir: {e}"))?;
+            // the panes run in the worktree: the memory hand-off must live there
+            self.write_memory_handoff(&path);
+            sink.flush(&mut self.sched);
+        }
         self.start_proxy(&mut sink, &runs, &log_path)?;
 
         // one pi tab per node; the bridge passes FORSETI_AGENT_NAME +
         // FORSETI_STATUS_DIR so the status channel (S51) is on and per-run
         let mut bridge =
             super::ttt::TttBridge::from_env(&self.effective_cwd).with_status_dir(status_dir);
+        // same namespace the memory block uses; the pi tools read the env first
+        if self.crew.memory.is_some() {
+            bridge = bridge.with_env("FORSETI_MEMORY_CREW", self.crew.memory_ns().as_str());
+        }
         let mut ids: Vec<(String, String)> = Vec::new();
         for a in self.crew.agents.clone() {
-            let args = self.pane_args(&a);
+            let mut args = self.pane_args(&a);
+            // a disposable worktree is a fresh dir every run: auto-trust pi
+            if !self.opts.worktree_branch.is_empty() {
+                args.push("-a".to_string());
+            }
             match bridge.spawn(&a.name, &args, &self.effective_cwd) {
                 Ok(id) => ids.push((a.name.clone(), id)),
                 Err(e) => {
@@ -454,6 +470,9 @@ impl Run {
                     self.emit(Event::info("run_end", "aborted: a ttt tab could not spawn"));
                     sink.flush(&mut self.sched);
                     self.stop_host_side();
+                    self.close_ttt_tabs(&mut bridge, &ids);
+                    self.remove_worktree_ttt();
+                    sink.flush(&mut self.sched);
                     self.remove_bridge(&cwd);
                     let events = std::mem::take(&mut sink.events);
                     return Ok(self.outcome(&log_path, events));
@@ -471,6 +490,9 @@ impl Run {
             self.emit(Event::info("run_end", "aborted: an agent was not ready"));
             sink.flush(&mut self.sched);
             self.stop_host_side();
+            self.close_ttt_tabs(&mut bridge, &ids);
+            self.remove_worktree_ttt();
+            sink.flush(&mut self.sched);
             self.remove_bridge(&cwd);
             let events = std::mem::take(&mut sink.events);
             return Ok(self.outcome(&log_path, events));
@@ -482,6 +504,26 @@ impl Run {
                 st.pane_id = id.clone();
             }
         }
+
+        // 22B: ttt has no subscription surface, so a monitor polls the status
+        // files + watched pane tails and writes the events immediately.
+        let queued: std::sync::Arc<std::sync::Mutex<Vec<Event>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sink.extra = Some(std::sync::Arc::clone(&queued));
+        let reporter = super::ttt::LiveReporter::new(
+            sink.log_handle(),
+            self.opts.headless,
+            queued,
+            sink.bridge_lock(),
+            &cwd,
+            self.crew.agents.len(),
+        );
+        let mut ttt_live = Some(super::ttt::TttLive::start(
+            backend.bridge.fork(),
+            &self.crew,
+            &backend.nodes,
+            reporter,
+        ));
 
         let mut memory: Box<dyn MemoryLink> = if self.crew.memory.is_some() {
             Box::new(MemoryClient::new())
@@ -498,22 +540,59 @@ impl Run {
             None,
             &mut |sched| sink.flush(sched),
         );
+        if let Some(mut l) = ttt_live.take() {
+            l.stop();
+        }
         let _ = self.sched.settle_unreachable();
         self.sched.update_phase_progress();
         if let Some(mut t) = self.tailer.take() {
             t.stop();
         }
         sink.flush(&mut self.sched);
-        let info = summary(&self.sched);
+        let mut info = summary(&self.sched);
+        // 22C: end a worktree run on a lazygit tab (the human surface)
+        if self.opts.review && self.effective_cwd != self.opts.cwd {
+            let wt = self.effective_cwd.clone();
+            match backend
+                .bridge
+                .spawn_shell("lazygit", &["-p".to_string(), wt.clone()], &wt, "lg")
+            {
+                Ok(_) => {
+                    info += &format!(
+                        " | review ready: lazygit on {wt} — commit, then merge from the main checkout"
+                    )
+                }
+                Err(e) => info += &format!(" | review pane failed: {e}"),
+            }
+        }
         self.emit(Event::info("run_end", info));
         sink.flush(&mut self.sched);
         self.stop_host_side();
+        sink.flush(&mut self.sched);
+        self.close_ttt_tabs(&mut backend.bridge, &ids);
+        self.remove_worktree_ttt();
         sink.flush(&mut self.sched);
         // the bridge is a projection: a finished ttt run must not leave the
         // sidebar showing stale state (the herdr teardown removes it too)
         self.remove_bridge(&cwd);
         let events = std::mem::take(&mut sink.events);
         Ok(self.outcome(&log_path, events))
+    }
+
+    /// Closes the pi tabs a ttt run opened unless `--keep-tab` (or `--review`,
+    /// which normalizes keep-tab on). Teardown failures are advisory events.
+    fn close_ttt_tabs(&mut self, bridge: &mut super::ttt::TttBridge, ids: &[(String, String)]) {
+        if self.sched.opts().keep_tab {
+            return;
+        }
+        for (name, id) in ids {
+            if let Err(e) = bridge.close(id) {
+                self.emit(Event::info(
+                    "teardown",
+                    format!("close ttt tab for {name}: {e}"),
+                ));
+            }
+        }
     }
 
     /// Drops the crew-status projection after a ttt run.
@@ -532,6 +611,103 @@ impl Run {
         if let Some(mut p) = self.proxy.take() {
             p.stop();
         }
+    }
+
+    /// The ttt host's disposable worktree (Phase 22C): plain `git worktree`,
+    /// rooted at `~/.forseti/worktrees/<repo>/<branch>`. Returns the checkout
+    /// path. A leftover dir under our root is swept once; an existing branch is
+    /// an error (never force-delete a user's branch).
+    fn create_worktree_ttt(&mut self) -> Result<String, String> {
+        let branch = self.opts.worktree_branch.clone();
+        let repo = self.opts.cwd.clone();
+        let root = git_output(&repo, &["rev-parse", "--show-toplevel"])?;
+        let root = root.trim().to_string();
+        if root.is_empty() {
+            return Err("worktree: not a git repository".to_string());
+        }
+        let repo_name = Path::new(&root)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        let path = PathBuf::from(home)
+            .join(".forseti")
+            .join("worktrees")
+            .join(&repo_name)
+            .join(&branch);
+        let path_s = path.to_string_lossy().into_owned();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("worktree dir: {e}"))?;
+        }
+        let create = || git_output(&root, &["worktree", "add", "-b", &branch, &path_s]);
+        match create() {
+            Ok(_) => Ok(path_s),
+            Err(first) => {
+                // a crashed run can leave the dir behind; sweep only OUR root
+                let ours = path.starts_with(
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                        .join(".forseti")
+                        .join("worktrees"),
+                );
+                let registered = git_output(&root, &["worktree", "list", "--porcelain"])
+                    .unwrap_or_default()
+                    .lines()
+                    .any(|l| l == format!("worktree {path_s}"));
+                if ours && path.exists() && !registered {
+                    // only an UNREGISTERED husk may be swept; a registered
+                    // worktree belongs to a live checkout (another run/user)
+                    let _ = std::fs::remove_dir_all(&path);
+                    let _ = std::process::Command::new("git")
+                        .args(["-C", &root, "worktree", "prune"])
+                        .status();
+                    if create().is_ok() {
+                        return Ok(path_s);
+                    }
+                }
+                Err(format!("worktree add: {first}"))
+            }
+        }
+    }
+
+    /// Removes a ttt worktree + its branch unless kept (blocked runs and
+    /// `--review` keep both; the scheduler owns the policy).
+    fn remove_worktree_ttt(&mut self) {
+        if self.opts.worktree_branch.is_empty()
+            || self.sched.opts().keep_worktree
+            || self.effective_cwd == self.opts.cwd
+        {
+            return;
+        }
+        let root = self.opts.cwd.clone();
+        let wt = self.effective_cwd.clone();
+        if let Err(e) = git_output(&root, &["worktree", "remove", "--force", &wt]) {
+            self.emit(Event::info("teardown", format!("worktree remove: {e}")));
+        }
+        let ours = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join(".forseti")
+            .join("worktrees");
+        if wt != root && Path::new(&wt).starts_with(&ours) && Path::new(&wt).exists() {
+            let _ = std::fs::remove_dir_all(&wt);
+        }
+        let _ = std::process::Command::new("git")
+            .args(["-C", &root, "worktree", "prune"])
+            .status();
+        let branch = self.opts.worktree_branch.clone();
+        let deleted = std::process::Command::new("git")
+            .args(["-C", &root, "branch", "-D", &branch])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !deleted {
+            let _ = std::process::Command::new("git")
+                .args(["-C", &root, "worktree", "prune"])
+                .status();
+            let _ = std::process::Command::new("git")
+                .args(["-C", &root, "branch", "-D", &branch])
+                .status();
+        }
+        self.emit(Event::info("teardown", "worktree removed"));
     }
 
     /// Creates the disposable worktree, sweeping a leftover husk once (a
@@ -969,6 +1145,88 @@ pub fn husk_to_sweep(msg: &str) -> Option<String> {
     Some(msg[start..end].to_string())
 }
 
+/// A per-checkout run lock (`.forseti/run.lock`); removed on drop.
+#[derive(Debug)]
+struct RunLock(PathBuf);
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn acquire_run_lock(cwd: &str) -> Result<RunLock, String> {
+    let dir = Path::new(cwd).join(".forseti");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("run lock dir: {e}"))?;
+    let path = dir.join("run.lock");
+    for attempt in 0..2 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                let _ = writeln!(f, "{}", std::process::id());
+                return Ok(RunLock(path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let pid = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .unwrap_or(0);
+                if pid > 0 && !process_alive(pid) {
+                    // a crashed run left the lock: sweep and retry once
+                    let _ = std::fs::remove_file(&path);
+                    if attempt == 0 {
+                        continue;
+                    }
+                }
+                return Err(format!(
+                    "another crew is running in this checkout (pid {pid}); use --worktree or wait for it to finish"
+                ));
+            }
+            Err(e) => return Err(format!("run lock: {e}")),
+        }
+    }
+    Err("run lock: could not acquire".to_string())
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+/// Runs git and returns stdout, with stderr folded into the error.
+fn git_output(repo: &str, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("git {} exited {}", args.join(" "), out.status)
+        } else {
+            err
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Splits a lazygit review pane onto the crew tab (P7-3).
 fn open_review_pane(client: &herdr::Client, tab_id: &str, worktree: &str) -> Result<(), String> {
     if tab_id.is_empty() {
@@ -1032,10 +1290,11 @@ fn open_review_pane(client: &herdr::Client, tab_id: &str, worktree: &str) -> Res
 /// The run-log writer + status-bridge writer. The bridge path is always the
 /// main checkout (`opts.cwd`), never an effective worktree path — a badge in a
 /// disposable checkout would go stale in the stable one.
-struct Sink<'a> {
+struct Sink {
     cwd: String,
     crew: String,
-    log: &'a mut File,
+    /// Shared with the ttt live monitor, which writes its events immediately.
+    log: std::sync::Arc<std::sync::Mutex<File>>,
     /// `--headless`: echo every event on stdout as the Go CLI does.
     headless: bool,
     /// Every event written so far (the outcome's stream).
@@ -1046,20 +1305,33 @@ struct Sink<'a> {
     extra: Option<std::sync::Arc<std::sync::Mutex<Vec<Event>>>>,
     /// herdr's live statuses to merge into the node states before draining.
     live: Option<std::sync::Arc<std::sync::Mutex<LiveMaps>>>,
+    /// Serializes crew-status.json rewrites with the ttt live monitor.
+    bridge_lock: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
-impl<'a> Sink<'a> {
-    fn new(cwd: &str, crew: &str, log: &'a mut File, headless: bool) -> Self {
+impl Sink {
+    fn new(cwd: &str, crew: &str, log: File, headless: bool) -> Self {
         Sink {
             cwd: cwd.to_string(),
             crew: crew.to_string(),
-            log,
+            log: std::sync::Arc::new(std::sync::Mutex::new(log)),
             headless,
             events: Vec::new(),
             tail: None,
             extra: None,
             live: None,
+            bridge_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
         }
+    }
+
+    /// The shared run-log handle for a live monitor.
+    fn log_handle(&self) -> std::sync::Arc<std::sync::Mutex<File>> {
+        std::sync::Arc::clone(&self.log)
+    }
+
+    /// The shared bridge lock for a live monitor.
+    fn bridge_lock(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        std::sync::Arc::clone(&self.bridge_lock)
     }
 
     fn flush(&mut self, sched: &mut Scheduler) {
@@ -1079,16 +1351,24 @@ impl<'a> Sink<'a> {
         {
             batch.append(&mut queued);
         }
-        for ev in batch {
-            if let Ok(line) = serde_json::to_string(&ev) {
-                if self.headless {
-                    println!("{line}");
+        if let Ok(mut log) = self.log.lock() {
+            for mut ev in batch {
+                // a live monitor may have written this line already
+                if !ev.written {
+                    if let Ok(line) = serde_json::to_string(&ev) {
+                        if self.headless {
+                            println!("{line}");
+                        }
+                        let _ = writeln!(log, "{line}");
+                    }
+                    ev.written = true;
                 }
-                let _ = writeln!(self.log, "{line}");
+                self.events.push(ev);
             }
-            self.events.push(ev);
+            let _ = log.flush();
+        } else {
+            self.events.extend(batch);
         }
-        let _ = self.log.flush();
         self.write_bridge(sched);
     }
 
@@ -1096,6 +1376,7 @@ impl<'a> Sink<'a> {
         if self.cwd.is_empty() {
             return;
         }
+        let _guard = self.bridge_lock.lock();
         let mut counts = std::collections::BTreeMap::new();
         let mut nodes = Vec::with_capacity(sched.crew().agents.len());
         for st in sched.snapshot() {
@@ -1390,9 +1671,9 @@ agents:
         let path = dir.join("routing.jsonl");
         let tailer = RoutingTailer::spawn(path.clone());
         let log_path = dir.join("run.jsonl");
-        let mut log = File::create(&log_path).unwrap();
+        let log = File::create(&log_path).unwrap();
         {
-            let mut sink = Sink::new(&dir.to_string_lossy(), "tail-sink", &mut log, false);
+            let mut sink = Sink::new(&dir.to_string_lossy(), "tail-sink", log, false);
             sink.tail = Some(tailer.events());
             std::fs::write(
                 &path,
@@ -1426,9 +1707,9 @@ agents:
         sched.node_mut("a").unwrap().status = Status::Done;
         sched.emit(Event::info("run_start", "hello"));
         let path = dir.join("run.jsonl");
-        let mut log = File::create(&path).unwrap();
+        let log = File::create(&path).unwrap();
         {
-            let mut sink = Sink::new(&dir.to_string_lossy(), "sink", &mut log, false);
+            let mut sink = Sink::new(&dir.to_string_lossy(), "sink", log, false);
             sink.flush(&mut sched);
         }
         assert!(sched.events().is_empty(), "flush drains the queue");
@@ -1461,9 +1742,9 @@ phases:
         sched.node_mut("b").unwrap().status = Status::Blocked;
         // a wave's progress pass is what closes p1 (blocked holds p2 open)
         sched.update_phase_progress();
-        let mut log = File::create(dir.join("run.jsonl")).unwrap();
+        let log = File::create(dir.join("run.jsonl")).unwrap();
         {
-            let sink = Sink::new(&dir.to_string_lossy(), "bridge", &mut log, false);
+            let sink = Sink::new(&dir.to_string_lossy(), "bridge", log, false);
             sink.write_bridge(&sched);
         }
         let body =
@@ -1688,6 +1969,24 @@ edges:
         assert_eq!(husk_to_sweep("'/tmp/x' exists"), None);
         // a path prefix with no closing quote is not sweepable
         assert_eq!(husk_to_sweep("'/w/.herdr/worktrees/x"), None);
+    }
+
+    #[test]
+    fn a_second_run_in_the_same_checkout_is_refused_and_a_stale_lock_is_swept() {
+        let dir = std::env::temp_dir().join(format!("forseti-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_string_lossy().to_string();
+        let first = acquire_run_lock(&cwd).expect("first lock");
+        let err = acquire_run_lock(&cwd).unwrap_err();
+        assert!(err.contains("another crew is running"), "{err}");
+        drop(first);
+        let second = acquire_run_lock(&cwd).expect("after release");
+        drop(second);
+        // a pid that is certainly not alive is a crashed run's lock
+        std::fs::write(dir.join(".forseti/run.lock"), "999999\n").unwrap();
+        let third = acquire_run_lock(&cwd).expect("stale lock swept");
+        drop(third);
     }
 
     #[test]
