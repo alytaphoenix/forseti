@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "validate",
+    "-f",
+    "crew/examples/crew-default.yaml",
+    "--explain"
+  ],
+  "exit": 0,
+  "file": "crew/examples/crew-default.yaml",
+  "prompts": {
+    "argv": [
+      "prompts",
+      "-f",
+      "crew/examples/crew-default.yaml"
+    ],
+    "exit": 0,
+    "stderr": "",
+    "stdout": "{\"agents\":[{\"name\":\"planner\",\"prompt\":\"Read TASK.md at the repository root. If it does not exist, use the\\nuncommitted changes (`git diff`) as the task.\\nProduce a numbered plan (at most 7 steps): the files to touch and the\\ncommand or check that proves each step. Do not edit any files.\\nEnd with PLAN_READY.\"},{\"name\":\"advisor\",\"prompt\":\"Review this plan against the task. Call out at most 5 concrete risks or\\ncorrections; say what is over-scoped or unverifiable.\\nIf the plan is safe to execute, end with exactly `VERDICT: accept`.\\nOtherwise end with exactly `VERDICT: revise`.\\n\\nPlan:\\n{{ node \\\"planner\\\" }}\"},{\"name\":\"executor\",\"prompt\":\"Implement the accepted plan. Work in the repository, run the checks the\\nplan names, and fix failures. Do not stop at a sketch: the change must be\\non disk and verified.\\nEnd with exactly `DONE` when it is complete and verified.\\n\\nPlan:\\n{{ node \\\"planner\\\" }}\\n\\nAdvice:\\n{{ node \\\"advisor\\\" }}\"},{\"name\":\"reviewer\",\"prompt\":\"Review the implementation against the plan and the task. Re-run the\\nchecks. Only correctness, scope, and verification count.\\nEnd with exactly `VERDICT: lgtm` if it is done, or\\n`VERDICT: lbtm` plus one sentence naming what must change.\\n\\nPlan:\\n{{ node \\\"planner\\\" }}\\n\\nImplementation:\\n{{ node \\\"executor\\\" }}\"}]}\n"
+  },
+  "stderr": "",
+  "stdout": "crew default\nroles (crew-declared): advisor profile=Advisor\nnodes:\n  planner                  role=planner(Planner) model=openrouter/deepseek/deepseek-v4.1-flash-1017 writes=plan\n                             \u2190 advisor [verdict:revise] loop max_visits=2\n  advisor                  role=advisor(Advisor) model=openrouter/deepseek/deepseek-v4.1-flash-1017 writes=advice\n                             \u2190 planner [idle]\n  executor                 role=engineer(Engineer) model=valhalla/valhalla-flash-next writes=implementation\n                             \u2190 advisor [verdict:accept]\n                             \u2190 reviewer [verdict:lbtm] loop max_visits=2\n  reviewer                 role=reviewer(Reviewer) model=openrouter/deepseek/deepseek-v4.1-flash-1017 writes=review\n                             \u2190 executor [idle]\ncrew/examples/crew-default.yaml valid\n"
+}

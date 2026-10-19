@@ -49,6 +49,9 @@ agents:
   - name: executor
     role: engineer
     model: valhalla/valhalla-flash-next
+    # the LAN box has 2 slots; a 429/timeout/connection failure re-runs this
+    # node on DeepSeek instead of failing the run (ttt host)
+    fallback_model: openrouter/deepseek/deepseek-v4.1-flash-1017
     prompt: |-
       Implement the accepted plan. Work in the repository, run the checks the
       plan names, and fix failures. Do not stop at a sketch: the change must be

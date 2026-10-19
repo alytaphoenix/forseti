@@ -332,6 +332,9 @@ fn env_nonempty(key: &str) -> Option<String> {
 pub struct TttBackend {
     pub bridge: TttBridge,
     pub nodes: BTreeMap<String, String>,
+    /// The base pi argv per node (so a fallback can swap only `--model`).
+    pub args: BTreeMap<String, Vec<String>>,
+    pub cwd: String,
 }
 
 impl TttBackend {
@@ -339,11 +342,68 @@ impl TttBackend {
         TttBackend {
             bridge,
             nodes: BTreeMap::new(),
+            args: BTreeMap::new(),
+            cwd: String::new(),
         }
     }
 
     pub fn register(&mut self, name: &str, id: &str) {
         self.nodes.insert(name.to_string(), id.to_string());
+    }
+
+    /// Registers a node together with the argv/cwd it was spawned with, so a
+    /// fallback respawn can reuse everything but the model.
+    pub fn register_with_spec(&mut self, name: &str, id: &str, args: &[String], cwd: &str) {
+        self.nodes.insert(name.to_string(), id.to_string());
+        self.args.insert(name.to_string(), args.to_vec());
+        self.cwd = cwd.to_string();
+    }
+
+    /// Replaces (or adds) the `--model` value in a pi argv.
+    fn replace_model_arg(args: &[String], model: &str) -> Vec<String> {
+        let mut out = Vec::with_capacity(args.len() + 2);
+        let mut found = false;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--model" {
+                out.push(args[i].clone());
+                if i + 1 < args.len() {
+                    out.push(model.to_string());
+                    i += 2;
+                } else {
+                    out.push(model.to_string());
+                    i += 1;
+                }
+                found = true;
+            } else if args[i].starts_with("--model=") {
+                out.push(format!("--model={model}"));
+                i += 1;
+                found = true;
+            } else {
+                out.push(args[i].clone());
+                i += 1;
+            }
+        }
+        if !found {
+            out.insert(0, model.to_string());
+            out.insert(0, "--model".to_string());
+        }
+        out
+    }
+
+    /// Spawns a replacement tab on `model`, closes the old one, and waits for
+    /// the new agent's status channel (the old idle record is removed first).
+    fn respawn_agent(&mut self, target: &str, model: &str) -> Result<(), String> {
+        let old = self.id(target)?;
+        let args = self.args.get(target).cloned().unwrap_or_default();
+        let new_args = Self::replace_model_arg(&args, model);
+        let status_file = self.bridge.status_dir().join(format!("{target}.json"));
+        let _ = std::fs::remove_file(&status_file);
+        let id = self.bridge.spawn(target, &new_args, &self.cwd)?;
+        let _ = self.bridge.close(&old);
+        self.nodes.insert(target.to_string(), id.clone());
+        self.bridge
+            .await_ready(target, &id, Duration::from_secs(90))
     }
 
     fn id(&self, name: &str) -> Result<String, String> {
@@ -448,6 +508,14 @@ impl PaneBackend for TttBackend {
             .status(target)
             .map(|r| r.state)
             .unwrap_or_default())
+    }
+
+    fn respawn(&mut self, target: &str, model: &str) -> Result<(), String> {
+        self.respawn_agent(target, model)
+    }
+
+    fn pane_id(&self, target: &str) -> Option<String> {
+        self.nodes.get(target).cloned()
     }
 }
 
@@ -756,6 +824,21 @@ mod tests {
                             v.push(req.clone());
                         }
                         let op = req.get("op").and_then(Value::as_str).unwrap_or("");
+                        if op == "spawn"
+                            && let (Some(dir), Some(name)) = (
+                                req.pointer("/env/FORSETI_STATUS_DIR")
+                                    .and_then(Value::as_str),
+                                req.pointer("/env/FORSETI_AGENT_NAME")
+                                    .and_then(Value::as_str),
+                            )
+                        {
+                            // simulate pi's session_start status write
+                            let _ = std::fs::create_dir_all(dir);
+                            let _ = std::fs::write(
+                                Path::new(dir).join(format!("{name}.json")),
+                                format!(r#"{{"name":"{name}","state":"idle","pid":1}}"#),
+                            );
+                        }
                         let mut res = responses.get(op).cloned().unwrap_or_else(|| json!({"ok": false, "error": format!("no canned response for {op}")}));
                         res["seq"] = req.get("seq").cloned().unwrap_or(json!(0));
                         let _ = std::fs::write(res_path, serde_json::to_vec(&res).unwrap());
@@ -1069,5 +1152,47 @@ mod tests {
         let mut backend = TttBackend::new(bridge(&dir, &fake));
         let err = backend.read("ghost", "recent", 10).unwrap_err();
         assert!(err.contains("no terminal registered"), "{err}");
+    }
+    #[test]
+    fn a_fallback_respawn_swaps_the_model_and_closes_the_old_tab() {
+        let dir = temp_dir();
+        let mut responses = BTreeMap::new();
+        responses.insert("spawn", json!({"ok": true, "id": "terminal-2"}));
+        responses.insert("close", json!({"ok": true}));
+        responses.insert("read", json!({"ok": true, "tail": "pi ready"}));
+        let fake = FakeTtt::new(dir.clone(), responses);
+        let mut backend = TttBackend::new(bridge(&dir, &fake));
+        backend.register_with_spec(
+            "a",
+            "terminal-1",
+            &[
+                "--model".to_string(),
+                "valhalla/valhalla-flash-next".to_string(),
+                "-a".to_string(),
+            ],
+            "/w",
+        );
+        backend
+            .respawn("a", "openrouter/deepseek/deepseek-v4.1-flash-1017")
+            .expect("respawn");
+        assert_eq!(
+            backend.nodes.get("a").map(String::as_str),
+            Some("terminal-2")
+        );
+        let reqs = fake.requests();
+        let spawn = reqs.iter().find(|r| r["op"] == "spawn").expect("spawn");
+        assert_eq!(
+            spawn["args"],
+            json!([
+                "--model",
+                "openrouter/deepseek/deepseek-v4.1-flash-1017",
+                "-a"
+            ])
+        );
+        assert!(
+            reqs.iter()
+                .any(|r| r["op"] == "close" && r["id"] == "terminal-1"),
+            "old tab must close"
+        );
     }
 }

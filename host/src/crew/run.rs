@@ -457,6 +457,8 @@ impl Run {
             bridge = bridge.with_env("FORSETI_MEMORY_CREW", self.crew.memory_ns().as_str());
         }
         let mut ids: Vec<(String, String)> = Vec::new();
+        let mut specs: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for a in self.crew.agents.clone() {
             let mut args = self.pane_args(&a);
             // a disposable worktree is a fresh dir every run: auto-trust pi
@@ -464,7 +466,10 @@ impl Run {
                 args.push("-a".to_string());
             }
             match bridge.spawn(&a.name, &args, &self.effective_cwd) {
-                Ok(id) => ids.push((a.name.clone(), id)),
+                Ok(id) => {
+                    ids.push((a.name.clone(), id));
+                    specs.insert(a.name.clone(), args);
+                }
                 Err(e) => {
                     self.fail(&a.name, &format!("ttt spawn: {e}"));
                     self.emit(Event::info("run_end", "aborted: a ttt tab could not spawn"));
@@ -499,7 +504,8 @@ impl Run {
         }
         let mut backend = super::ttt::TttBackend::new(bridge);
         for (name, id) in &ids {
-            backend.register(name, id);
+            let spec = specs.get(name).map(Vec::as_slice).unwrap_or(&[]);
+            backend.register_with_spec(name, id, spec, &self.effective_cwd);
             if let Some(st) = self.sched.node_mut(name) {
                 st.pane_id = id.clone();
             }
@@ -569,7 +575,12 @@ impl Run {
         sink.flush(&mut self.sched);
         self.stop_host_side();
         sink.flush(&mut self.sched);
-        self.close_ttt_tabs(&mut backend.bridge, &ids);
+        let current: Vec<(String, String)> = backend
+            .nodes
+            .iter()
+            .map(|(n, i)| (n.clone(), i.clone()))
+            .collect();
+        self.close_ttt_tabs(&mut backend.bridge, &current);
         self.remove_worktree_ttt();
         sink.flush(&mut self.sched);
         // the bridge is a projection: a finished ttt run must not leave the

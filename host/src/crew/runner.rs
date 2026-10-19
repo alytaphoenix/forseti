@@ -60,6 +60,18 @@ pub trait PaneBackend {
 
     /// The agent's live status (`idle|working|blocked|done|unknown`).
     fn status(&mut self, target: &str) -> Result<String, String>;
+
+    /// Restarts the node's agent on `model` (the `fallback_model` path). Hosts
+    /// that cannot replace a live agent return an error; the runner then
+    /// reports the original failure.
+    fn respawn(&mut self, _target: &str, _model: &str) -> Result<(), String> {
+        Err("fallback_model is not supported by this host".to_string())
+    }
+
+    /// The node's current pane/terminal id after a respawn (optional).
+    fn pane_id(&self, _target: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The herdr implementation (18D-3), borrowed: the orchestrator owns the client
@@ -216,6 +228,32 @@ pub fn empty_settle_prone(resolved: &str) -> bool {
         .any(|m| resolved.contains(m))
 }
 
+/// Provider/slot failures worth re-running on the fallback model. Deliberately
+/// specific: a normal answer mentioning a number must not trigger a respawn.
+pub fn looks_like_provider_error(text: &str) -> bool {
+    let s = text.to_ascii_lowercase();
+    [
+        "http 429",
+        "status 429",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "overloaded",
+        "no capacity",
+        "econnrefused",
+        "connection refused",
+        "upstream error",
+        "no router for requested model",
+        "invalid_request_error",
+        "model not found",
+        "502 bad gateway",
+        "503 service",
+        "504 gateway",
+    ]
+    .iter()
+    .any(|m| s.contains(m))
+}
+
 /// Cuts `s` to at most `n` BYTES without splitting a rune (Go `truncateUTF8`).
 pub fn truncate_utf8(s: &str, n: i64) -> String {
     if n <= 0 || s.len() <= n as usize {
@@ -269,7 +307,7 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
                 .emit(Event::info("node_failed", format!("unknown node {node:?}")));
             return;
         };
-        let resolved = self.resolved_model(&agent);
+        let mut resolved = self.resolved_model(&agent);
         let phase_idx = self.sched.node(node).map(|st| st.phase_idx).unwrap_or(-1);
 
         {
@@ -355,27 +393,60 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
             .read(node, "recent_unwrapped", 400)
             .unwrap_or_default();
         let until = ["idle", "done", "blocked"].map(String::from);
-        let status = match self
-            .backend
-            .prompt_wait(node, &prompt, &until, self.timeout)
-        {
-            Ok(s) => s,
-            Err(e) => {
-                self.fail(node, &format!("agent.prompt+wait: {e}"));
+        let mut fell_back = false;
+        let mut text;
+        loop {
+            let status = match self
+                .backend
+                .prompt_wait(node, &prompt, &until, self.timeout)
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    if !fell_back
+                        && self.try_fallback(
+                            node,
+                            &agent,
+                            &mut resolved,
+                            &mut fell_back,
+                            &format!("agent.prompt+wait: {e}"),
+                        )
+                    {
+                        continue;
+                    }
+                    self.fail(node, &format!("agent.prompt+wait: {e}"));
+                    return;
+                }
+            };
+            if status == "blocked" {
+                self.block(node);
                 return;
             }
-        };
-        if status == "blocked" {
-            self.block(node);
-            return;
+            text = match self.backend.read(node, "recent_unwrapped", 400) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.fail(node, &format!("agent.read: {e}"));
+                    return;
+                }
+            };
+            if looks_like_provider_error(&text) {
+                if !fell_back
+                    && self.try_fallback(
+                        node,
+                        &agent,
+                        &mut resolved,
+                        &mut fell_back,
+                        "provider error in the pane",
+                    )
+                {
+                    continue;
+                }
+                if fell_back {
+                    self.fail(node, "provider error persisted on the fallback model");
+                    return;
+                }
+            }
+            break;
         }
-        let mut text = match self.backend.read(node, "recent_unwrapped", 400) {
-            Ok(t) => t,
-            Err(e) => {
-                self.fail(node, &format!("agent.read: {e}"));
-                return;
-            }
-        };
         if empty_settle_prone(&resolved) && pane_delta(&baseline, &text) < 150 && retries == 0 {
             let delta = pane_delta(&baseline, &text);
             self.sched.node_mut(node).expect("node exists").retries += 1;
@@ -389,8 +460,27 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
             {
                 Ok(s) => s,
                 Err(e) => {
-                    self.fail(node, &format!("agent.prompt+wait (retry): {e}"));
-                    return;
+                    if self.try_fallback(
+                        node,
+                        &agent,
+                        &mut resolved,
+                        &mut fell_back,
+                        &format!("agent.prompt+wait (retry): {e}"),
+                    ) {
+                        match self
+                            .backend
+                            .prompt_wait(node, &prompt, &until, self.timeout)
+                        {
+                            Ok(s) => s,
+                            Err(e2) => {
+                                self.fail(node, &format!("agent.prompt+wait (fallback): {e2}"));
+                                return;
+                            }
+                        }
+                    } else {
+                        self.fail(node, &format!("agent.prompt+wait (retry): {e}"));
+                        return;
+                    }
                 }
             };
             if status == "blocked" {
@@ -620,6 +710,49 @@ impl<B: PaneBackend> NodeExecutor<'_, '_, B> {
             .emit(Event::on_node("memory_write", &node).with_info(format!("queued -> {target}")));
     }
 
+    /// Respawns the node on its configured fallback model, once. Returns true
+    /// when the new agent is up and the caller should re-prompt.
+    fn try_fallback(
+        &mut self,
+        node: &str,
+        agent: &Agent,
+        resolved: &mut String,
+        used: &mut bool,
+        reason: &str,
+    ) -> bool {
+        if *used {
+            return false;
+        }
+        let fb = agent.fallback_model.trim();
+        if fb.is_empty() || resolved.as_str() == fb {
+            return false;
+        }
+        match self.backend.respawn(node, fb) {
+            Ok(()) => {
+                *used = true;
+                *resolved = fb.to_string();
+                if let Some(id) = self.backend.pane_id(node)
+                    && let Some(st) = self.sched.node_mut(node)
+                {
+                    st.pane_id = id;
+                }
+                self.sched.emit(
+                    Event::on_node("node_retry", node)
+                        .with_info(format!("{reason} — retrying on {fb}"))
+                        .with_model(fb),
+                );
+                true
+            }
+            Err(e) => {
+                self.sched.emit(
+                    Event::on_node("node_retry", node)
+                        .with_info(format!("{reason}; fallback {fb} failed: {e}")),
+                );
+                false
+            }
+        }
+    }
+
     fn fail(&mut self, node: &str, msg: &str) {
         if let Some(st) = self.sched.node_mut(node) {
             st.status = Status::Failed;
@@ -714,6 +847,7 @@ mod tests {
         prompts: Vec<String>,
         read_calls: usize,
         wait_calls: usize,
+        respawns: Vec<String>,
     }
 
     impl FakeBackend {
@@ -724,6 +858,7 @@ mod tests {
                 prompts: Vec::new(),
                 read_calls: 0,
                 wait_calls: 0,
+                respawns: Vec::new(),
             }
         }
     }
@@ -747,6 +882,10 @@ mod tests {
             self.wait_calls += 1;
             self.prompts.push(text.to_string());
             self.waits.pop_front().unwrap_or(Ok("done".to_string()))
+        }
+        fn respawn(&mut self, _t: &str, model: &str) -> Result<(), String> {
+            self.respawns.push(model.to_string());
+            Ok(())
         }
         fn focus(&mut self, _t: &str) -> Result<(), String> {
             Ok(())
@@ -1157,5 +1296,91 @@ agents:
             .find(|e| e.kind == "memory_write")
             .unwrap();
         assert_eq!(ev.info, "queued -> crew-memtest");
+    }
+    #[test]
+    fn a_failed_primary_model_reruns_the_node_on_its_fallback() {
+        let (mut sched, roles, _dir) = setup(
+            r#"
+name: fb
+agents:
+  - name: a
+    model: valhalla/valhalla-flash-next
+    fallback_model: openrouter/deepseek/deepseek-v4.1-flash-1017
+    prompt: x
+"#,
+        );
+        let mut backend = FakeBackend::new(
+            vec![Ok(String::new()), Ok("fallback answer".into())],
+            vec![Err("429 rate limited".into()), Ok("idle".into())],
+        );
+        let mut ex = NodeExecutor {
+            sched: &mut sched,
+            roles: &roles,
+            backend: &mut backend,
+            memory: &mut NoMemory,
+            timeout: Duration::from_secs(5),
+        };
+        ex.run("a");
+        assert_eq!(
+            backend.respawns,
+            vec!["openrouter/deepseek/deepseek-v4.1-flash-1017"]
+        );
+        assert_eq!(sched.node("a").unwrap().status, Status::Done);
+        let retry = sched
+            .events()
+            .iter()
+            .find(|e| e.kind == "node_retry")
+            .expect("node_retry event");
+        assert!(retry.info.contains("openrouter/deepseek"), "{}", retry.info);
+        let done = sched
+            .events()
+            .iter()
+            .find(|e| e.kind == "node_done")
+            .expect("node_done");
+        assert_eq!(
+            done.model, "openrouter/deepseek/deepseek-v4.1-flash-1017",
+            "node_done must report the fallback model"
+        );
+    }
+
+    #[test]
+    fn a_provider_error_in_the_pane_triggers_the_fallback() {
+        let (mut sched, roles, _dir) = setup(
+            r#"
+name: fb2
+agents:
+  - name: a
+    model: valhalla/valhalla-flash-next
+    fallback_model: openrouter/deepseek/deepseek-v4.1-flash-1017
+    prompt: x
+"#,
+        );
+        let mut backend = FakeBackend::new(
+            vec![
+                Ok(String::new()),
+                Ok("Error: 429 Too Many Requests".into()),
+                Ok("fallback answer".into()),
+            ],
+            vec![Ok("idle".into()), Ok("idle".into())],
+        );
+        let mut ex = NodeExecutor {
+            sched: &mut sched,
+            roles: &roles,
+            backend: &mut backend,
+            memory: &mut NoMemory,
+            timeout: Duration::from_secs(5),
+        };
+        ex.run("a");
+        assert_eq!(backend.respawns.len(), 1);
+        assert_eq!(sched.node("a").unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn provider_error_markers_are_specific() {
+        assert!(looks_like_provider_error("Error: 429 Too Many Requests"));
+        assert!(looks_like_provider_error("upstream error: 503"));
+        assert!(looks_like_provider_error("connection refused"));
+        assert!(!looks_like_provider_error("the answer is 429 tokens long"));
+        assert!(!looks_like_provider_error("DONE"));
     }
 }

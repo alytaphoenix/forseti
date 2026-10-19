@@ -1513,3 +1513,32 @@ want valhalla → DeepSeek fallback.
 probed live (`valhalla-flash-next` and the box's `gufo-flash-next` alias return
 a completion; the reasoning models return empty `content` when `max_tokens` is
 tiny, which the crew's empty-settle guard handles).
+
+## Phase 25 — provider fallback (v0.7.1) — ✅ implemented + verified LIVE
+
+`fallback_model` on an agent: if the primary provider fails, re-run the node
+once on another model. Implemented in the Rust runner + ttt host.
+
+- **Detection**: a `prompt_wait` error, or provider-error markers in the pane
+  (`http/status 429`, `rate limit`, `too many requests`, `overloaded`,
+  `no capacity`, `econnrefused`, `connection refused`, `upstream error`,
+  `no router for requested model`, `invalid_request_error`, `model not found`,
+  `502/503/504` gateway strings). Deliberately specific: a normal answer
+  mentioning a number is not a failure.
+- **Respawn**: `PaneBackend::respawn` (default = unsupported). The ttt backend
+  swaps only `--model` in the node's argv, spawns the replacement tab, closes
+  the old one, clears the old status record, and waits for the new agent's
+  status/tail. `node_retry` carries the reason + fallback model; `node_done`
+  reports the fallback. Teardown closes the *current* terminal ids (the
+  fallback tab included).
+- **Herdr**: returns "not supported by this host"; the original failure is
+  reported. (The fallback path is ttt-first by design.)
+- **Limits**: a failed shell `check` does not trigger the fallback (only
+  provider/prompt failures); the live monitor's pane-id snapshot is taken at
+  start, so a respawned node's live badge may lag until the run ends.
+
+**Live**: a one-node crew with `model: valhalla/does-not-exist` and
+`fallback_model: openrouter/deepseek/deepseek-v4.1-flash-1017` hit the box's
+`404 no router for requested model`, emitted
+`node_retry "provider error in the pane — retrying on …"`, completed on DeepSeek
+(`done=1`, exit 0), and the tab count returned to the IDE baseline.

@@ -50,6 +50,10 @@ forseti config set crew.default default
 forseti run                       # planner/advisor/reviewer on DeepSeek, executor on valhalla
 ```
 
+The executor in that example carries `fallback_model: openrouter/deepseek/…`;
+a provider failure (429/5xx/timeout/connection) re-runs the node once on it
+(ttt host).
+
 `forseti config edit <target>` opens the real tool file with `$EDITOR`:
 `forseti`, `pi-models`, `pi-settings`, `pi-mcp`, `ttt-settings`, `ttt-plugins`,
 `ttt-registry`, `crew`, `tools`.

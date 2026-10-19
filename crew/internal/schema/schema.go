@@ -85,12 +85,16 @@ type Phase struct {
 }
 
 type Agent struct {
-	Name  string   `yaml:"name"`
-	Kind  string   `yaml:"kind,omitempty"`  // currently only "pi"
-	Role  string   `yaml:"role,omitempty"`  // archetype from the role library (P19A)
-	Model string   `yaml:"model,omitempty"` // e.g. opencode-go/beam-free
-	Route string   `yaml:"route,omitempty"` // switchyard route id (mutually exclusive with Model)
-	Args  []string `yaml:"args,omitempty"`  // extra pi argv (appended after --model)
+	Name  string `yaml:"name"`
+	Kind  string `yaml:"kind,omitempty"`  // currently only "pi"
+	Role  string `yaml:"role,omitempty"`  // archetype from the role library (P19A)
+	Model string `yaml:"model,omitempty"` // e.g. opencode-go/beam-free
+	// FallbackModel re-runs the node on this model if the primary provider
+	// fails. Implemented by the Rust ttt host (v0.8); the Go engine parses and
+	// preserves it but does not execute the fallback.
+	FallbackModel string   `yaml:"fallback_model,omitempty"`
+	Route         string   `yaml:"route,omitempty"` // switchyard route id (mutually exclusive with Model)
+	Args          []string `yaml:"args,omitempty"`  // extra pi argv (appended after --model)
 	// Watch lists artifact types this node reacts to; Writes names the type its
 	// output publishes (defaults: the role's, else the node name). Declaring a
 	// watch derives the incoming edges — the typed pub/sub of MetaGPT's

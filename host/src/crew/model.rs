@@ -100,6 +100,11 @@ pub struct Agent {
     /// e.g. opencode-go/beam-free.
     #[serde(default)]
     pub model: String,
+    /// Re-run this node on this model if the primary provider fails
+    /// (429/5xx/timeout/connection errors). The ttt host implements the
+    /// respawn; other hosts report it as unsupported. Empty = no fallback.
+    #[serde(default)]
+    pub fallback_model: String,
     /// switchyard route id (mutually exclusive with model).
     #[serde(default)]
     pub route: String,

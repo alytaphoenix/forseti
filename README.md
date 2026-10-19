@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.7.0** (see
+License: [MIT](LICENSE) · Current release: **v0.7.1** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -56,7 +56,10 @@ tool settings stay in their native files, which `config edit` opens directly.
 Set a default crew with `forseti config set crew.default default` (a bare name
 resolves under `~/.config/forseti/crews/`); see
 `crew/examples/crew-default.yaml` for the DeepSeek-reasoning / valhalla-executor
-split. The CLI never edits plugin permission grants.
+split. The executor also carries `fallback_model`: a provider error
+(429/5xx/timeout/connection, or a provider-side "no router"/invalid-request)
+respawns that node once on DeepSeek instead of failing the run (ttt host; herdr
+reports it as unsupported). The CLI never edits plugin permission grants.
 
 ## Components (one per host — no always-on daemon of ours)
 
@@ -264,7 +267,7 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 
 # pi extension (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.7.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.7.1
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

@@ -2076,3 +2076,28 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
 - **Graph**: advisor gates the executor (`verdict:accept`; `revise` loops the
   planner, max 2); reviewer loops the executor on `lbtm` (max 2). The prompts
   force the verdict lines; without one the gate skips the executor by design.
+
+## S57 — provider fallback for the executor (2026-10-19) ✅ live
+
+- **Valhalla failure shape**: an unknown/saturated model can answer
+  `404 {"src":"llama-swap","error":{"message":"no router for requested model",
+  "type":"invalid_request_error","code":"not_found"}}`; pi renders it in the
+  pane and settles. The runner therefore treats both `prompt_wait` errors and a
+  small marker set in the pane text as "provider failed" (429/rate-limit/
+  overloaded/no-capacity/connection/5xx/no-router/invalid-request/model-not-
+  found). Bare "429" was rejected as a marker — a normal answer mentioning the
+  number must not respawn.
+- **Respawn on ttt**: the node's argv is stored at registration; `respawn`
+  replaces only `--model`, removes the old status record (so `await_ready`
+  waits for the NEW agent, not the old idle file), spawns a replacement tab,
+  closes the old one, and waits for the new status/tail. The backend updates
+  its id map, so teardown closes the current tab (the original `ids` list would
+  leak the replacement).
+- **Live**: one node, `valhalla/does-not-exist` → `openrouter/deepseek/
+  deepseek-v4.1-flash-1017`; log shows `node_retry` with the fallback and
+  `node_done` on DeepSeek, `done=1`, exit 0, cost $0.011.
+- **Known lag**: the 22B live monitor snapshots the pane ids at start; after a
+  respawn its `node_status`/`watch:` poll the old tab until the run ends. The
+  scheduling path (prompt/read) uses the backend's live map and is correct.
+- Herdr has no respawn implementation; a `fallback_model` there reports
+  "not supported by this host" and the original node failure stands.
