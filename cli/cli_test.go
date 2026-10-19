@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,5 +155,85 @@ func TestAssetsInspectAndSync(t *testing.T) {
 	}
 	if !assetDrift(repo) {
 		t.Fatal("changed source was not detected")
+	}
+}
+
+func TestCrewArgvInjectsTheDefaultCrew(t *testing.T) {
+	dir := t.TempDir()
+	crewFile := filepath.Join(dir, "default.yaml")
+	if err := os.WriteFile(crewFile, []byte("name: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig()
+	cfg.Crew.Default = crewFile
+	cfg.Crew.Engine = "rust"
+	cfg.Crew.Host = "ttt"
+
+	argv, err := crewArgv(cfg, "run", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "-f "+crewFile) {
+		t.Fatalf("default crew not injected: %v", argv)
+	}
+	if !strings.Contains(joined, "--engine rust") || !strings.Contains(joined, "--host ttt") {
+		t.Fatalf("engine/host defaults missing: %v", argv)
+	}
+
+	// an explicit file wins
+	argv, err = crewArgv(cfg, "run", []string{"-f", "other.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(argv, " "), crewFile) {
+		t.Fatalf("default injected despite -f: %v", argv)
+	}
+
+	// validate/watch never take the default
+	if argv, _ := crewArgv(cfg, "validate", nil); strings.Contains(strings.Join(argv, " "), "-f") {
+		t.Fatalf("validate got a default: %v", argv)
+	}
+
+	// --help is not hijacked by a missing default
+	cfg.Crew.Default = filepath.Join(dir, "nope.yaml")
+	if _, err := crewArgv(cfg, "run", []string{"--help"}); err != nil {
+		t.Fatalf("--help must not resolve the default: %v", err)
+	}
+}
+
+func TestResolveCrewDefaultBareNameUsesTheUserDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "forseti", "crews")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "default.yaml")
+	if err := os.WriteFile(want, []byte("name: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveCrewDefault("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("resolved %q, want %q", got, want)
+	}
+	if _, err := resolveCrewDefault("missing"); err == nil {
+		t.Fatal("missing default must error")
+	}
+}
+
+func TestHasFileArg(t *testing.T) {
+	for _, a := range [][]string{{"-f", "x"}, {"-f=x"}, {"--file", "x"}, {"--file=x"}, {"--f", "x"}} {
+		if !hasFileArg(a) {
+			t.Errorf("%v not detected", a)
+		}
+	}
+	for _, a := range [][]string{{}, {"--model", "x"}, {"-x", "y"}} {
+		if hasFileArg(a) {
+			t.Errorf("%v false positive", a)
+		}
 	}
 }

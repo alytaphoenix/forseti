@@ -1,0 +1,86 @@
+# Default crew: DeepSeek reasons, valhalla executes.
+#
+# Task input: TASK.md at the repository root (or, when it is missing, the
+# uncommitted diff). The planner reads it; every later stage works from the
+# plan/advice artifacts, so the request lives in one place.
+#
+# Model policy is explicit per agent (no tiers): the reasoning seats go to
+# OpenRouter DeepSeek V4.1 Flash 1017, the executor to the LAN
+# valhalla-flash-next. A route is only worth adding if you want the executor to
+# fall back to another model when valhalla is down; direct `model:` is
+# deterministic and needs no proxy.
+#
+# Run:   forseti run                      # uses crew.default from config
+#        forseti run -f this-file.yaml    # explicit override
+#        forseti run --keep-tab           # inspect the panes afterwards
+name: default
+
+roles:
+  - name: advisor
+    profile: Advisor
+    goal: protect the executor from a bad, oversized, or unverifiable plan
+    constraints: no code and no restating the plan; at most 5 short bullets; end with the verdict line
+    writes: advice
+    instruction: Review the plan for correctness, scope, and verifiability.
+
+agents:
+  - name: planner
+    role: planner
+    model: openrouter/deepseek/deepseek-v4.1-flash-1017
+    prompt: |-
+      Read TASK.md at the repository root. If it does not exist, use the
+      uncommitted changes (`git diff`) as the task.
+      Produce a numbered plan (at most 7 steps): the files to touch and the
+      command or check that proves each step. Do not edit any files.
+      End with PLAN_READY.
+
+  - name: advisor
+    role: advisor
+    model: openrouter/deepseek/deepseek-v4.1-flash-1017
+    prompt: |-
+      Review this plan against the task. Call out at most 5 concrete risks or
+      corrections; say what is over-scoped or unverifiable.
+      If the plan is safe to execute, end with exactly `VERDICT: accept`.
+      Otherwise end with exactly `VERDICT: revise`.
+
+      Plan:
+      {{ node "planner" }}
+
+  - name: executor
+    role: engineer
+    model: valhalla/valhalla-flash-next
+    prompt: |-
+      Implement the accepted plan. Work in the repository, run the checks the
+      plan names, and fix failures. Do not stop at a sketch: the change must be
+      on disk and verified.
+      End with exactly `DONE` when it is complete and verified.
+
+      Plan:
+      {{ node "planner" }}
+
+      Advice:
+      {{ node "advisor" }}
+
+  - name: reviewer
+    role: reviewer
+    model: openrouter/deepseek/deepseek-v4.1-flash-1017
+    prompt: |-
+      Review the implementation against the plan and the task. Re-run the
+      checks. Only correctness, scope, and verification count.
+      End with exactly `VERDICT: lgtm` if it is done, or
+      `VERDICT: lbtm` plus one sentence naming what must change.
+
+      Plan:
+      {{ node "planner" }}
+
+      Implementation:
+      {{ node "executor" }}
+
+edges:
+  - { from: planner, to: advisor }
+  # the advisor gates the executor; a revise loops the planner (bounded)
+  - { from: advisor, to: executor, when: "verdict:accept" }
+  - { from: advisor, to: planner, when: "verdict:revise", max_visits: 2, loop: true }
+  - { from: executor, to: reviewer }
+  # a failed review re-runs the executor (bounded)
+  - { from: reviewer, to: executor, when: "verdict:lbtm", max_visits: 2, loop: true }

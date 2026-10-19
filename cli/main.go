@@ -85,7 +85,7 @@ up flags:
 config keys:
   repo  herdr.bin  herdr.agent  herdr.editor_label  ttt.bin  ttt.port
   pi.bin  services.memory  services.laya
-  crew.engine  crew.host  crew.model
+  crew.engine  crew.host  crew.model  crew.default
 
 config edit targets:
   forseti  pi-models  pi-settings  pi-mcp  ttt-settings  ttt-plugins

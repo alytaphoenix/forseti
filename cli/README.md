@@ -38,7 +38,16 @@ forseti version
 repo  herdr.bin  herdr.agent  herdr.editor_label
 ttt.bin  ttt.port  pi.bin
 services.memory  services.laya
-crew.engine  crew.host  crew.model
+crew.engine  crew.host  crew.model  crew.default
+```
+
+`crew.default` is used by `forseti run` when no `-f/--file` is given (a bare
+name resolves under `~/.config/forseti/crews/<name>.yaml`). Example:
+
+```sh
+cp crew/examples/crew-default.yaml ~/.config/forseti/crews/default.yaml
+forseti config set crew.default default
+forseti run                       # planner/advisor/reviewer on DeepSeek, executor on valhalla
 ```
 
 `forseti config edit <target>` opens the real tool file with `$EDITOR`:

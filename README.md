@@ -41,7 +41,7 @@ forseti                           # status: herdr, ttt, pi, services, assets, li
 forseti up                        # sync plugin/extension, start memory, open the tab
 forseti up --attach               # if herdr is not running, start it first
 forseti open README.md:13         # jump the running ttt to a file/line
-forseti run -f crew.yaml          # crew run (engine/host/model from config)
+forseti run                       # crew run (uses crew.default; -f overrides)
 forseti doctor                    # preflight checks, each with a fix
 forseti config list               # keys + every editable config file
 forseti config set ttt.port 4242
@@ -53,7 +53,10 @@ forseti config sync               # reinstall the ttt plugin + pi extension asse
 `--no-services`, `--no-open`, `--dry-run`, `--json`. Config lives at
 `~/.config/forseti/config.json` (`forseti config init`); provider keys and
 tool settings stay in their native files, which `config edit` opens directly.
-The CLI never edits plugin permission grants.
+Set a default crew with `forseti config set crew.default default` (a bare name
+resolves under `~/.config/forseti/crews/`); see
+`crew/examples/crew-default.yaml` for the DeepSeek-reasoning / valhalla-executor
+split. The CLI never edits plugin permission grants.
 
 ## Components (one per host — no always-on daemon of ours)
 

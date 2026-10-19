@@ -36,9 +36,10 @@ type Config struct {
 	} `json:"services"`
 
 	Crew struct {
-		Engine string `json:"engine"`
-		Host   string `json:"host"`
-		Model  string `json:"model"`
+		Engine  string `json:"engine"`
+		Host    string `json:"host"`
+		Model   string `json:"model"`
+		Default string `json:"default,omitempty"`
 	} `json:"crew"`
 }
 
@@ -151,6 +152,8 @@ func getKey(c Config, key string) (string, bool) {
 		return c.Crew.Host, true
 	case "crew.model":
 		return c.Crew.Model, true
+	case "crew.default":
+		return c.Crew.Default, true
 	}
 	return "", false
 }
@@ -161,7 +164,7 @@ var configKeys = []string{
 	"ttt.bin", "ttt.port",
 	"pi.bin",
 	"services.memory", "services.laya",
-	"crew.engine", "crew.host", "crew.model",
+	"crew.engine", "crew.host", "crew.model", "crew.default",
 }
 
 // setKey writes one flattened config key with validation.
@@ -209,6 +212,8 @@ func setKey(c *Config, key, value string) error {
 		c.Crew.Host = value
 	case "crew.model":
 		c.Crew.Model = value
+	case "crew.default":
+		c.Crew.Default = expandHome(value)
 	default:
 		return fmt.Errorf("unknown key %q (try: %s)", key, strings.Join(configKeys, ", "))
 	}
