@@ -20,3 +20,7 @@ LAYA_TRIAGE.md
 host/target/
 .forseti/
 __pycache__/
+
+# built CLI binaries
+/cli/cli
+/cli/forseti
