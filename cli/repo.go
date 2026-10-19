@@ -86,6 +86,18 @@ func crewBin(repo string) (string, error) {
 	return "", fmt.Errorf("forseti-crew not built (cd crew && go build -o bin/forseti-crew ./cmd/forseti-crew)")
 }
 
+// flowBin locates forseti-flow: the repo build first, then $PATH.
+func flowBin(repo string) (string, error) {
+	local := filepath.Join(repo, "crew", "bin", "forseti-flow")
+	if st, err := os.Stat(local); err == nil && !st.IsDir() {
+		return local, nil
+	}
+	if p, err := lookPath("forseti-flow"); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("forseti-flow not built (cd crew && go build -o bin/forseti-flow ./cmd/forseti-flow)")
+}
+
 // hostBin locates forseti-host: release, then debug, then $PATH.
 func hostBin(repo string) (string, error) {
 	for _, rel := range []string{"release", "debug"} {

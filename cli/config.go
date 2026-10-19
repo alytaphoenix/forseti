@@ -272,3 +272,10 @@ func piExtensionPath() string {
 	}
 	return filepath.Join(homeDir(), ".pi", "agent", "extensions", "forseti.ts")
 }
+
+func piFlowExtensionPath() string {
+	if v := os.Getenv("FORSETI_PI_FLOW_EXTENSION"); v != "" {
+		return expandHome(v)
+	}
+	return filepath.Join(homeDir(), ".pi", "agent", "extensions", "forseti-flow.ts")
+}

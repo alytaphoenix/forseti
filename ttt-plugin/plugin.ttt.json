@@ -2,7 +2,7 @@
   "name": "forseti",
   "displayName": "Forseti",
   "description": "Tie ttt into herdr + pi: ask the pi agent about your selection, watch its status, jump to code pi changed",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "author": "alytaphoenix",
   "entry": "init.lua",
   "api": 1,

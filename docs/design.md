@@ -1334,3 +1334,131 @@ that works.
 - Gate: `bun run scripts/hashtext-smoke.ts` — real store + real CLI, stubbed pi
   API, covering index → expand → reconstruct → evict → budget withhold →
   dedup → `/hash evict`, plus the missing-CLI phase.
+
+## Phase 26 — flow language: declarative per-project workflows (F0 landed 2026-10-19)
+
+### Why a language, not more prose
+
+Skills and `AGENTS.md` are advisory: the model may invoke or ignore them. A
+process that must hold needs observable evidence and an enforcement point. Flow
+v1 therefore has one rule: **a gate may require evidence, never intent**.
+
+### Two modes, one algebra
+
+Both reduce to `step → gate(evidence) → action(block|continue|waive)`:
+
+- **repo mode** — deterministic lifecycle gates (`pre_edit`, `pre_tool`,
+  `post_edit`, `post_turn`, `pre_commit`, `commit_msg`, `pre_push`, `pre_pr`)
+  over shell/diff/artifact evidence. No model calls.
+- **agentic mode** — an ordered phase graph (agent, reviewer, shell, human) with
+  verdict edges and bounded loops; compiles to the crew graph (F4).
+- **hybrid** — the agentic graph plus repo boundary gates (the default).
+
+### Evidence kinds
+
+`shell`, `diff`, `artifact`, `review`, `human`, and `all`/`any` composition.
+`review` is always a **fresh `pi -p` process** with mandatory `criteria:` and
+verdict labels — never an in-session self-review. Every result carries
+`{status, at, source, detail, input_hash}`; `within` bounds a cached pass.
+
+### Enforcement ladder (pi 1.0.3 surface)
+
+| Level | Surface |
+|---|---|
+| prose | `AGENTS.md`/skills — no guarantee |
+| context | `before_agent_start`/`input`/`context` — keeps rules visible |
+| action | `tool_call` → `{block, reason, terminate}` |
+| completion | `turn_end`/`agent_before_settle` → `{continue: true}` |
+| orchestration | crew phases/edges/checks/verdicts |
+| repo floor | git hooks + CI required checks |
+| capability | permissions/sandbox |
+
+The repo floor is host-agnostic (other agents and humans); the pi runtime is the
+fast lane. Shell pattern matching is best-effort — hooks and CI are
+authoritative. Every block has a waiver path (`/flow waive`, ledger, TTL,
+`never:` list).
+
+### F0–F5 surface (implemented)
+
+`.forseti/flow.yaml`, strict YAML, flat or `flows:` list (mixing is rejected).
+`crew/internal/flow` validates, explains and evaluates;
+`forseti-flow validate|explain|check|waive|install-hooks|init`; `forseti flow`
+wraps it. `from:` only references earlier phases; a verdict is the only back edge and requires
+`max_visits`; review evidence and reviewer phases require `criteria:` (the S33c
+lesson). Defaults: severity `warn`, `max_continues` 2, `max_cycles` 3,
+`timeout` 10m, waiver ledger `.forseti/waivers.jsonl`, TTL `24h`.
+
+**Evidence engine (F1)**: shell runs under a timeout and captures a tail; diff
+compares the working tree (including untracked files) against `base` with `**`
+glob support; artifact checks existence and an optional `VERDICT:` label;
+`all`/`any` compose. Results are cached in `.forseti/flow/state.json` keyed by
+an input hash (HEAD + status + diff + untracked contents, excluding
+`.forseti/flow/`), and `within:` bounds reuse. State writes are atomic under a
+lock and merge rather than clobber. `review` evidence is deliberately a
+`skip` until the fresh `pi -p` reviewer lands (F3).
+
+**Hooks (F1)**: `install-hooks` writes marker-guarded `pre-commit`, `pre-push`
+and `commit-msg` hooks (absolute binary + `--dir`, so worktrees work); existing
+hooks without the marker are refused unless `--force`. `check` exits 0/1/2 and
+`--json` is the machine surface.
+
+**Waivers (F1)**: `waive` appends a 0600 NDJSON row with reason, stage, evidence
+and expiry; `never:` evidence and disabled waivers are refused; `check` applies
+the latest unexpired row and reports `WAIVED`.
+
+**Builder seed (F1)**: `init` scans the checkout (root or `cli/`+`crew/` Go
+modules, package.json, pyproject, Cargo), drafts docs/generated globs and offers
+the `repo`, `review-loop`, `docs-required`, `release` presets. All drafts pass
+the validator.
+
+Examples: `crew/examples/flow-{repo,agentic,hybrid}.yaml`.
+
+**In-session runtime (F2/F3, live)**: `pi-extension/flow.ts` loads the flow at
+`session_start` and shells out to `forseti-flow` for evidence/state/waivers.
+`tool_call` blocks `pre_tool` deny patterns and `pre_edit` gates (13 write
+attempts blocked in the live probe); `turn_end`/`agent_before_settle` continue
+with a remediation message (bounded by `max_continues`) when a `post_turn` gate
+or the active phase gate fails. `before_agent_start` injects the phase and
+evidence checklist; `input` prepends the active phase. Agentic phases are driven
+by `flow_next` / `flow_complete`; `flow_review` spawns a **fresh `pi -p`**
+(`FORSETI_FLOW_DISABLE=1`, so it cannot recurse), writes the verdict artifact
+and returns the label. Transitions are serialized (models batch tool calls).
+`/flow status|next|review|waive|init|explain|abort` is the human surface.
+`human` evidence is end-to-end: the runtime asks via `ctx.ui.confirm` and passes
+`--assume <id>` to `check`/`eval`; a decline stays `skip` (blocking). `pre_tool`
+denies support substrings and `bash-re:`/`edit-re:`/`write-re:`/`tool-re:`
+regexes, with `git -C`/`sudo` normalization. `review` evidence is verifiable
+outside the session: `eval` parses the artifact's last `VERDICT:` line. The
+runtime publishes `.forseti/flow-status.json`; the ttt plugin renders a
+`flow <id> [phase]` badge when no crew run is live.
+
+**Compile/run (F4)**: `forseti-flow run --flow <id>` compiles agent/reviewer
+phases to ordinary `schema.Crew` nodes/edges (verdict edges, bounded loops,
+shell checks from shell evidence), writes
+`.forseti/flow/generated/<flow>.crew.yaml`, delegates to `forseti-crew`, then
+runs terminal shell phases and evaluates their gates. Human phases are
+in-session only. Roles must be crew built-ins; tiers are pinned to the flow's
+reviewer model (`FORSETI_FLOW_MODEL` wins). Bare `{{ plan }}` prompts become
+`{{ node "plan" }}`. Output is deterministic (golden-tested).
+
+**Builder (F5)**: `init` scans and drafts (four presets), `simulate --diff REF`
+evaluates every evidence and stage without an agent, and `edit` opens a
+structured Bubble Tea builder — overview, evidence, stage, phase and waiver
+forms with a raw-YAML mode, validate-on-save and `$EDITOR` fallback on a
+non-TTY (`--raw` forces the textarea; `--editor` the external editor). Form
+saves re-emit the YAML and do not preserve comments; raw mode does. `/flow init`
+selects a preset interactively. `scripts/flow-tui-drive.py` drives the real TUI
+in a herdr pane.
+
+### Gates
+
+`go test ./...` in `crew/` and `cli/`; all three examples validate with
+`--explain`; `scripts/flow-smoke.sh` exercises validate → hook block → waiver →
+cache → eval → simulate → ci → commit-msg → post_turn warning → all init drafts;
+`compile_test.go` re-loads every generated crew. Live extension probes (S58):
+pre_edit block, post_turn continuation, the plan→review→done loop with a fresh
+reviewer, and a compiled 4-node crew run (`node_done` ×4, `check_pass`,
+`verdict lgtm`, `run_end done=4`), plus the TUI drive
+(`scripts/flow-tui-drive.py`) and the human `--assume` path. Remaining: live
+exercising of the human-confirm UI and the ttt badge (both wired; the CLI path
+and the status file are tested).

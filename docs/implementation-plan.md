@@ -1542,3 +1542,74 @@ once on another model. Implemented in the Rust runner + ttt host.
 `404 no router for requested model`, emitted
 `node_retry "provider error in the pane — retrying on …"`, completed on DeepSeek
 (`done=1`, exit 0), and the tab count returned to the IDE baseline.
+
+## Phase 26 — flow language: declarative per-project workflows — 🚧 **F0–F5 implemented** (v0.8.0, 2026-10-19)
+
+One committed `.forseti/flow.yaml` per project. Repo mode = deterministic
+lifecycle gates over evidence; agentic mode = an ordered phase graph with
+verdicts and bounded loops; hybrid = both. See `docs/design.md` Phase 26.
+
+| Task | Status |
+|---|---|
+| F0-1 `crew/internal/flow/{model,validate,explain}.go`, strict YAML | ✅ |
+| F0-2 evidence/phase/stage/composition validation | ✅ |
+| F0-3 `forseti-flow validate\|explain [--json]` + `forseti flow` wrapper | ✅ |
+| F0-4 examples `flow-{repo,agentic,hybrid}.yaml` | ✅ |
+| F0-5 unit tests + explain assertions | ✅ |
+| F1-1 evidence engine (shell/diff/artifact/all/any), input hash, `within` cache | ✅ |
+| F1-2 state (`state.json`, lock, merge-save) + waiver ledger (ttl, `never`) | ✅ |
+| F1-3 `check --stage` (json; exit 0/1/2) + `waive` | ✅ |
+| F1-4 `install-hooks` (pre-commit/pre-push/commit-msg, marker-guarded) | ✅ |
+| F1-5 `init` scanner + presets (`repo`, `review-loop`, `docs-required`, `release`) | ✅ |
+| F1-6 `scripts/flow-smoke.sh` end-to-end gate | ✅ |
+| F1-7 CI snippet (`forseti-flow ci`) | ✅ |
+| F2 pi runtime: `tool_call`/settle gates, status, `/flow` commands | ✅ live |
+| F3 agentic in-session phases + fresh `pi -p` reviewer | ✅ live |
+| F4 compile to `schema.Crew` + `forseti flow run` + goldens | ✅ |
+| F5 builder: `init`, `simulate --diff`, `/flow init` preset | ✅ |
+| F5 Bubble Tea builder: structured forms + raw mode + validate-on-save | ✅ |
+| F5 PTY drive test (`scripts/flow-tui-drive.py`) | ✅ PASS |
+| Human evidence (`--assume` + extension confirm) | ✅ |
+| `pre_tool` regex denies (`bash-re:` etc.) + command normalization | ✅ |
+| ttt flow badge (`.forseti/flow-status.json` fallback) | ✅ (not live-tested) |
+| F6 hardening/docs (session serialization, stale lock, spike/docs/gate) | ✅ |
+
+**F0 verification**: `go test ./...` green in `crew/` and `cli/`; all three
+examples pass `forseti-flow validate --explain`; an unknown evidence ref prints
+`INVALID: flow "t": on.pre_commit: unknown evidence "ghost"` and exits 1.
+
+**F1 verification**: `scripts/flow-smoke.sh` PASS — validate/explain/install-hooks;
+a commit without evidence is blocked; a `never:` waiver is refused; a normal
+waiver unblocks the hook; the second check is served from cache; a bad commit
+message is blocked; `post_turn` warns without failing; all four `init` drafts
+validate. Go suite green (`internal/flow`, `cmd/forseti-flow`, `cli`). The
+evidence hash excludes `.forseti/flow/` (state must not invalidate itself) and
+includes untracked file contents (capped) so `git add -A` does not poison the
+cache.
+
+**F2/F3 live verification (S58)**: a `pre_edit` gate blocked 13 write attempts
+and the target file was never created; a `post_turn` gate continued a turn and
+the model created the required docs; an agentic flow ran plan → review → done
+with a fresh `pi -p` reviewer writing `.forseti/out/review.md`
+(`VERDICT: LGTM`), and `HELLO.txt` = `hello`. Transitions are serialized (the
+un-serialized run exposed tool-batch interleaving); the reviewer runs with
+`FORSETI_FLOW_DISABLE=1`.
+
+**F4/F5 verification**: `compile_test.go` compiles the examples, re-loads the
+generated crew from YAML, asserts the bounded lbtm loop, skips the terminal
+shell phase's edge, pins every node to a model, and proves byte-stable output;
+`simulate --diff` and `ci` are in the smoke gate. **Live crew run**: a 4-phase
+flow (`plan → implement → review → done`) ran `--headless --session sandbox`:
+`node_done` ×4, `check_pass flow-implement-tests`, `verdict lgtm`,
+`edge_skip review>implement (lbtm)`, `run_end done=4 cost=$0.0000`; the reviewer
+wrote `.forseti/out/review.md` (`VERDICT: lgtm`) and `GREETING.txt` = `hi`.
+The TUI is a structured builder (overview/evidence/stages/phases/waivers forms)
+with a raw-YAML mode and validate-on-save; `scripts/flow-tui-drive.py` navigates,
+validates, saves and quits a real herdr pane (PASS). Human evidence is
+end-to-end via `--assume` (check/eval/simulate) and `ctx.ui.confirm` in the pi
+runtime; `pre_tool` supports `bash-re:`/`edit-re:`/`write-re:`/`tool-re:` and
+normalizes `git -C`/`sudo`. The extension publishes
+`.forseti/flow-status.json`; the ttt plugin renders a `flow <id> [phase]` badge
+when no crew run is live (crew wins). The human-confirm UI path and the badge
+were not exercised live (the CLI `--assume` path and the status file are
+tested).

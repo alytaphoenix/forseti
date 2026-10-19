@@ -14,7 +14,7 @@ import (
 )
 
 // Version is the CLI version (kept in step with the repo release).
-const Version = "0.7.1"
+const Version = "0.8.0"
 
 // defaultRepo is stamped at build time:
 //
@@ -45,6 +45,12 @@ func main() {
 		cmdCrew("watch", os.Args[2:])
 	case "validate", "check":
 		cmdCrew("validate", os.Args[2:])
+	case "flow", "fl":
+		if len(os.Args) < 3 {
+			cmdFlow("help", nil)
+			return
+		}
+		cmdFlow(os.Args[2], os.Args[3:])
 	case "version", "-v", "--version":
 		cfg := loadConfig()
 		fmt.Printf("forseti %s\nrepo: %s\nconfig: %s\n", Version, repoOrUnknown(cfg), configPath())
@@ -70,6 +76,7 @@ usage:
   forseti run [crew args...]      crew run (engine/host from config)
   forseti watch [args...]         tail a crew run log
   forseti validate [args...]      validate a crew file
+  forseti flow <sub>              validate|explain a per-project workflow
   forseti config <sub>            list|get|set|path|edit|sync|init
   forseti version                 version, repo, config path
 

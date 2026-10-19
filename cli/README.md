@@ -14,6 +14,7 @@ forseti open <path[:line[:col]]>  jump the running ttt
 forseti run [args...]           crew run (engine/host/model from config)
 forseti watch [args...]         tail a crew run log
 forseti validate [args...]      validate a crew file
+forseti flow <sub>              validate|explain|check|eval|ci|run|simulate|edit|waive|install-hooks|init
 forseti config <sub>            list|get|set|path|edit|sync|init
 forseti version
 ```
@@ -29,6 +30,23 @@ forseti version
    dedicated tab with ttt + a pi agent (idempotent: a live agent is reused).
 
 `--no-sync`, `--no-services`, `--no-open`, `--attach`, `--dry-run`, `--json`.
+
+## `flow`
+
+`forseti flow` wraps `forseti-flow` against the repo's `.forseti/flow.yaml`
+(a committed, declarative per-project workflow):
+
+```sh
+forseti flow init --preset review-loop     # draft a hybrid flow
+forseti flow validate --explain            # resolved stages/evidence/phases
+forseti flow check --stage pre_commit      # evaluate the gates (exit 1 = blocked)
+forseti flow waive --stage pre_commit --evidence tests --reason "…"
+forseti flow install-hooks                 # pre-commit/pre-push/commit-msg
+```
+
+Repo mode is deterministic (shell/diff/artifact/human evidence); agentic phases
+drive `flow_next`/`flow_review` with a fresh `pi -p` reviewer, and `run`
+compiles the graph to a crew. `scripts/flow-smoke.sh` is the end-to-end gate.
 
 ## Config
 

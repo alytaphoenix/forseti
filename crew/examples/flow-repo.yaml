@@ -1,0 +1,47 @@
+# Repo mode: deterministic lifecycle gates, no agent graph.
+#
+# Use this when the process is "always do X before commit/push" and the checks
+# are observable without a model. Every gate names evidence; none names prose.
+#
+#   forseti-flow validate -f crew/examples/flow-repo.yaml --explain
+#
+version: 1
+name: flow-repo
+
+defaults:
+  severity: warn
+
+evidence:
+  tests:
+    kind: shell
+    run: "go test ./..."
+    timeout: 5m
+    within: 30m
+
+  docs_touched:
+    kind: diff
+    base: HEAD
+    changed: ["docs/**", "README.md", "AGENTS.md"]
+
+  no_generated:
+    kind: diff
+    unchanged: ["**/*.gen.go", "**/dist/**"]
+    severity: block
+
+on:
+  post_turn:
+    require: [docs_touched]
+    severity: warn
+  pre_commit:
+    require: [tests, no_generated]
+    severity: block
+  commit_msg:
+    pattern: '^(feat|fix|docs|test|refactor|chore)(\(.+\))?: .+'
+  pre_push:
+    require: [tests]
+    severity: block
+
+waivers:
+  ledger: .forseti/waivers.jsonl
+  ttl: 24h
+  never: [no_generated]

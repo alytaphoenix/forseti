@@ -2101,3 +2101,63 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
   scheduling path (prompt/read) uses the backend's live map and is correct.
 - Herdr has no respawn implementation; a `fallback_model` there reports
   "not supported by this host" and the original node failure stands.
+
+## S58 — flow language F0–F3: repo gates and the agentic loop (2026-10-19) ✅ resolved (live)
+
+- **CLI surface (F0/F1)**: `validate --json` emits the full normalized flows
+  (JSON tags mirror the YAML fields), which the extension uses as its contract.
+  `check --stage` returns `{ok, blocked, messages, warnings, evidence}` with
+  exit 0/1/2; `eval --evidence` evaluates one gate id; `simulate` runs every
+  evidence and stage without an agent; `ci` prints a GitHub Actions snippet.
+  `run` compiles to `.forseti/flow/generated/<flow>.crew.yaml` and delegates to
+  `forseti-crew`.
+- **Evidence hash trap (fixed)**: hashing the working tree must exclude
+  `.forseti/flow/` or the state file invalidates its own cache; and untracked
+  file *contents* must be included (capped) so `git add -A` of the state dir
+  does not poison the cache. The smoke test now proves both (`(cache)` on the
+  second run).
+- **pre_edit is a hard in-session gate (live)**: a flow requiring `PLAN.md`
+  before edits blocked **13** `write` calls; `BLOCKED.txt` was never created.
+  The block reason is the flow's evidence detail. `pre_tool` deny matches
+  `bash:<substring>` / `edit|write:<substring>` / `tool:<name>`.
+- **post_turn can force work (live)**: a `post_turn` gate with
+  `max_continues: 1` continued a "reply OK only" turn; the model then created
+  `docs/README.md` to satisfy the diff evidence and finished. The continuation
+  carries a `custom_message` entry with the missing evidence and remediation
+  (the model sees it); the bound stops the loop and notifies the user.
+- **Agentic loop (live)**: plan → `flow_next` → review → `flow_review` (a fresh
+  `pi -p` process with `FORSETI_FLOW_DISABLE=1`) → `.forseti/out/review.md`
+  containing `VERDICT: LGTM` → `flow_next` → done → `HELLO.txt` = `hello`.
+  Tool batching produced 21 `flow_next`, 7 `flow_review` and 14 `write` calls;
+  the state remained consistent, and transitions are now serialized through one
+  promise chain (the un-serialized run exposed interleaving). The reviewer is
+  never the in-session agent.
+- **Review evidence is verifiable outside the session**: `eval --evidence
+  review_lgtm` parses the artifact's last `VERDICT:` line and checks the allowed
+  labels, so a hook/CI can trust a review the extension wrote. A missing
+  artifact is `skip` (blocking gates treat it as fail).
+- **Compile limits (F4)**: agent/reviewer phases become crew nodes; `from:`
+  becomes idle edges; reviewer verdicts become `when: verdict:<label>` edges
+  (back edges loop + `max_visits`); verdict/`from` edges to a terminal shell
+  phase are skipped (the shell phase runs after the crew, with its gate
+  evaluated); human phases are rejected; roles must be crew built-ins and tiers
+  are pinned to the flow's reviewer model (env `FORSETI_FLOW_MODEL` wins).
+  Bare `{{ plan }}` prompts are rewritten to `{{ node "plan" }}`.
+- **Cost/latency**: the live agentic check used the free `opencode-go/beam-free`
+  model for both the session and the fresh reviewer; the reviewer artifact is
+  ~840 bytes. Repeated tool calls are the model's behavior, not a scheduler
+  loop; serialization prevents state corruption but not duplicate requests.
+- **Commands are user-side**: telling the model "Commands: /flow ..." made it
+  try `/flow` in bash. The system section now says "The user can run ..." and
+  only advertises `flow_next`/`flow_review` when an agentic phase is active.
+- **Final gap fill**: `human` evidence is end-to-end (`--assume <id>` on
+  check/eval/simulate; the runtime asks with `ctx.ui.confirm` and passes the
+  assumption). `pre_tool` denies accept `bash-re:`/`edit-re:`/`write-re:`/
+  `tool-re:` regexes and normalize `git -C <dir>` / `sudo` before substring
+  matching. The builder TUI now has structured forms (overview/evidence/stage/
+  phase/waiver) plus a raw-YAML mode; `scripts/flow-tui-drive.py` drives a real
+  herdr pane (overview → stages → back → validate → save → quit) PASS. The
+  extension writes `.forseti/flow-status.json` (observed live: flow/mode/phase/
+  status/session, removed on shutdown) and the ttt plugin polls it as a badge
+  fallback (`flow <id> [phase]`); the ttt badge itself was not observed live
+  (needs a plugin reload/restart). `luac -p ttt-plugin/init.lua` is clean.

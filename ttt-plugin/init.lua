@@ -28,6 +28,7 @@ local last_error = ""
 local auto_focus = true    -- after ask, focus the pi pane to watch the answer
 local last_ctx_write = 0
 local crew_st = nil        -- P15: parsed crew-status.json (nil = no live run)
+local flow_st = nil        -- Phase 26: parsed flow-status.json (interactive flow)
 local focus_idx = 0        -- P15: cursor for the focus-next-agent command
 
 local function log_err(msg) ttt.log("error", "forseti: " .. msg) end
@@ -399,6 +400,26 @@ local function crew_node(name)
   return nil
 end
 
+-- Phase 26: the pi flow extension publishes .forseti/flow-status.json while a
+-- session has an active flow (no crew run required). The crew badge wins when
+-- both exist; this is the interactive-session fallback.
+local function flow_render(st)
+  local ph = ""
+  if st.phase and st.phase ~= "" then ph = "[" .. st.phase .. "] " end
+  local glyph = "●"
+  if st.status == "blocked" then glyph = "!"
+  elseif st.status == "done" then glyph = "✓"
+  elseif st.status == "error" then glyph = "?"
+  elseif st.status == "aborted" then glyph = "×" end
+  local count = ""
+  if (st.total or 0) > 0 then count = string.format("%d/%d ", st.done or 0, st.total) end
+  return string.format("flow %s %s%s%s", st.flow or "?", ph, count, glyph)
+end
+
+local function flow_jump()
+  if flow_st and flow_st.agent and flow_st.agent ~= "" then focus_agent(flow_st.agent) end
+end
+
 -- badge click → crew tab; if the tab id is missing (older runner) focus the
 -- node that most needs the human: blocked first, then running, then done.
 local function crew_jump()
@@ -539,11 +560,25 @@ ttt.set_interval(2000, function()
     if ok and type(st) == "table" then
       crew_st = st -- P15: sidebar rows + badge click read this
       ttt.set_status_item("right", "crew", crew_render(st), { on_click = crew_jump })
+      flow_st = nil
+      ttt.remove_status_item("flow")
       return
     end
   end
   crew_st = nil
   ttt.remove_status_item("crew") -- no live run (file removed at teardown)
+
+  local ok_f, fcontent = pcall(fs.read, CREW_REPO .. "/.forseti/flow-status.json")
+  if ok_f and type(fcontent) == "string" then
+    local ok, st = pcall(json.decode, fcontent)
+    if ok and type(st) == "table" then
+      flow_st = st
+      ttt.set_status_item("right", "flow", flow_render(st), { on_click = flow_jump })
+      return
+    end
+  end
+  flow_st = nil
+  ttt.remove_status_item("flow")
 end)
 
 

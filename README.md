@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.7.1** (see
+License: [MIT](LICENSE) · Current release: **v0.8.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -259,15 +259,45 @@ Phase 19 additions — roles & SOP patterns:
   a `role` field; a save writes the SOURCE form, so a pattern crew re-expands
   instead of duplicating its synthesized nodes.
 
+## Flow — per-project workflows
+
+A committed `.forseti/flow.yaml` declares how a repo works, in two modes over
+one evidence model:
+
+- **repo** — deterministic gates at `pre_edit`, `pre_tool`, `post_turn`,
+  `pre_commit`, `commit_msg`, `pre_push`, `pre_pr` over `shell`, `diff`,
+  `artifact` and `human` evidence. No model calls.
+- **agentic / hybrid** — an ordered phase graph (agent, reviewer, shell,
+  human) with verdict edges, bounded loops and phase gates; it runs in-session
+  or compiles to a crew. The reviewer is a **fresh `pi -p` process**, never the
+  working session.
+- **enforcement** — pi blocks tool calls and continues turns until the gate is
+  satisfied; git hooks and CI are the host-agnostic floor; every block has a
+  reasoned, expiring waiver ledger.
+- **builder** — `forseti flow init` (repo / review-loop / docs-required /
+  release presets), `edit` (structured forms + raw YAML), `simulate --diff`,
+  `validate --explain`, and `ci` (GitHub Actions snippet).
+
+```sh
+forseti flow init --preset review-loop
+forseti flow install-hooks
+forseti flow check --stage pre_commit
+forseti flow run --flow <id>          # compile to a crew and run it
+```
+
+Examples: `crew/examples/flow-{repo,agentic,hybrid}.yaml`. Gate:
+`scripts/flow-smoke.sh`; live runtime notes in `docs/spikes.md` S58.
+
 ## Install (all three, from this public repo)
 
 ```sh
 # herdr plugin
 herdr plugin install alytaphoenix/forseti/herdr-plugin
 
-# pi extension (user-level, every pi session)
+# pi extensions (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.7.1
+cp pi-extension/flow.ts ~/.pi/agent/extensions/forseti-flow.ts
+# or: pi install git:github.com/alytaphoenix/forseti@v0.8.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .

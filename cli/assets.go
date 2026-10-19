@@ -21,6 +21,7 @@ func assets(repo string) []asset {
 		{"ttt plugin", filepath.Join(repo, "ttt-plugin", "init.lua"), filepath.Join(tttPluginDir(), "init.lua")},
 		{"ttt manifest", filepath.Join(repo, "ttt-plugin", "plugin.ttt.json"), filepath.Join(tttPluginDir(), "plugin.ttt.json")},
 		{"pi extension", filepath.Join(repo, "pi-extension", "index.ts"), piExtensionPath()},
+		{"pi flow extension", filepath.Join(repo, "pi-extension", "flow.ts"), piFlowExtensionPath()},
 	}
 }
 

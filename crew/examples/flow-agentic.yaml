@@ -1,0 +1,63 @@
+# Agentic mode: an ordered phase graph with a bounded review loop.
+#
+# The graph compiles to a crew later (Phase F4); until then it is the contract
+# the in-session runtime (F3) executes. Declaration order is execution order:
+# `from` may only reference earlier phases, and a verdict is the only back edge.
+#
+#   forseti-flow validate -f crew/examples/flow-agentic.yaml --explain
+#
+version: 1
+name: flow-agentic
+mode: agentic
+
+defaults:
+  severity: block
+  max_cycles: 2
+  timeout: 10m
+
+evidence:
+  plan_artifact:
+    kind: artifact
+    file: PLAN.md
+
+  tests:
+    kind: shell
+    run: "go test ./..."
+    timeout: 5m
+
+  review_lgtm:
+    kind: review
+    role: reviewer
+    criteria: "Correctness, tests, and scope. LGTM only if no blocking defect remains."
+    inputs: [diff]
+    verdict: {file: ".forseti/out/review.md", labels: [lgtm, lbtm]}
+    model: opencode-go/beam-free
+    timeout: 5m
+
+phases:
+  - id: plan
+    actor: agent
+    role: planner
+    prompt: "Read the request and write PLAN.md: scope, non-goals, and a test plan."
+    produce: [plan]
+    gate: {require: [plan_artifact]}
+
+  - id: implement
+    actor: agent
+    from: [plan]
+    prompt: "Implement the plan. Keep the diff minimal and run the tests."
+    gate: {require: [tests]}
+
+  - id: review
+    actor: reviewer
+    from: [implement]
+    role: reviewer
+    criteria: "Correctness, tests, and scope. LGTM only if no blocking defect remains."
+    verdict: {lgtm: commit, lbtm: implement}
+    max_visits: 2
+
+  - id: commit
+    actor: shell
+    from: [review]
+    run: "git commit -am implement"
+    gate: {require: [tests, review_lgtm]}
