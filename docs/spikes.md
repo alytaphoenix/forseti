@@ -2161,3 +2161,83 @@ Gates: 133 Rust unit tests + 1 oracle (+1 ignored), the Go suite, oracle
   status/session, removed on shutdown) and the ttt plugin polls it as a badge
   fallback (`flow <id> [phase]`); the ttt badge itself was not observed live
   (needs a plugin reload/restart). `luac -p ttt-plugin/init.lua` is clean.
+
+## S59 — SoL-Pi in the distribution: the package, its config, and what forseti owns (2026-10-20) ✅ resolved (live)
+
+- **What it is**: `sol-pi` (npm) / `NVlabs/SoL-Pi` (git) is a standalone pi
+  extension package — four opt-in mechanisms (action fusion, observation pack,
+  evidence-preserving reducer, online context compact), all **disabled by
+  default**, distributed through pi's package manager (`pi install <source>`),
+  which records the source in `settings.json` → `packages` (`pi list` reads it).
+  Installed trees: `~/.pi/agent/{npm,git}/…`.
+- **Config file, not env**: one effective file, `.pi/sol-pi.json` (project,
+  trusted) **replacing** `~/.pi/agent/sol-pi.json` — never merged. Schema is
+  `{version:1, actionFusion, observationPack, evidencePreservingReducer,
+  evidencePreservingReducerProvider/Model, onlineContextCompact,
+  cacheWriteReadRatio}`; unknown keys, a version ≠ 1, malformed JSON or a
+  non-boolean flag **stop extension loading**. There are no env dials.
+- **Verified live on pi 1.0.3** (untested upstream; they test 0.84.2/1.0.4/1.3.0,
+  min 0.84.2, node ≥ 22.19): both install sources load — `npm:sol-pi` 0.1.0 and
+  `git:github.com/NVlabs/SoL-Pi` (0.1.1). A plain `pi -p` turn returned `OK`
+  with the forseti extension + sol-pi loaded together, and the conservative
+  config exposed `obs_recall` in the tool list (observationPack active).
+  Flipping `sol_pi.observation_pack` to false and re-syncing removed
+  `obs_recall` — the config-driven bootstrap works end to end.
+- **Action fusion keeps the tool names**: it re-registers `edit`/`write` with
+  the base definitions plus an optional `then_run` and returns the base tool's
+  result — so forseti's `tool_execution_start`/`details.firstChangedLine` follow
+  logic is unaffected.
+- **What forseti owns**: `pi-extension/sol-pi.json` (shipped default: the two
+  local mechanisms on, reducer + compaction off) is the base; `sol_pi.*` config
+  keys override it (pointers, so `config get` prints the effective value and
+  `config set` records only the delta); `forseti config sync`/`up` render the
+  file byte-compared and atomic (0644) and `up` runs `pi install <package>` only
+  when no sol-pi package is declared (identity-matched, so `npm:sol-pi` or a
+  pinned `@ref` counts). `sol_pi.enabled=false` leaves the file untouched
+  (everything off is sol-pi's own default). `doctor` checks the file state, the
+  package, the pi/node floors, a project `.pi/sol-pi.json` override and a
+  half-set reducer route.
+
+## S60 — what herdr restores, and why forseti tabs went stale (2026-10-20) ✅ resolved (live)
+
+- **Layout restores, processes do not.** After a server restart herdr rebuilds
+  every workspace/tab/pane from `~/.config/herdr/session.json` with the **same
+  tab and pane ids** (`w1:t8`, `w1:pD` … survived a restart), but a pane's
+  foreground program is gone: ttt and lazygit came back as bare `zsh`. pi comes
+  back because the herdr pi integration (v9) reports a session ref through
+  `pane.report_agent_session` (`agent_session: {agent:"pi", kind:"path",
+  value:"…jsonl"}`) and `[session] resume_agents_on_restore` defaults to true.
+  There is **no config knob to disable layout restore**, and no server-start
+  hook — `[[keys.command]]` (type `shell|pane|popup`) is the only user-side
+  entry point.
+- **Unrestorable panes are marked, not removed**: a tab whose cwd no longer
+  exists keeps its pane with `restore_error: "Saved directory is unavailable.
+  Restore the directory and restart this session."` in `pane list`. That field
+  is the cheap "this tab is debris" signal (`--prune-dead`).
+- **Field shapes used by the CLI** (`herdr api schema --json`):
+  `tab create` → `{type:tab_created, tab:TabInfo, root_pane:PaneInfo}`;
+  `pane split` → `{type:pane_info, pane:PaneInfo}`; `tab list` → `{tabs:[TabInfo]}`;
+  `pane list` → `{panes:[PaneInfo]}` (nullable `cwd`/`label`, optional
+  `restore_error`); `agent list` → `{agents:[AgentInfo]}`.
+  **`pane run` prints nothing on success** (exit status only — parsing it as
+  JSON fails), unlike `tab create/focus/close`, `pane split` and `agent start`.
+- **Agent names are server-global**, so a duplicate `agent start coder` in
+  another tab fails; with tab identity recorded, the reconciler reports `taken`
+  instead of trying.
+- **The live session when this was found** (workspace `w1`): 7 tabs — the one
+  live forseti tab (ttt + `coder`, cwd `$HOME`) and six debris tabs from
+  spikes/dev runs (`forseti-s3-control`, a dead 3-pane `forseti` from an older
+  `up`, `form-drive` with a vanished temp cwd, `s16-lazygit`, `tool-form2`, an
+  unnamed `1`). Root causes: (a) the old `open.sh` idempotency grepped
+  `agent list` for the agent name only, so a restored tab whose agent was not
+  live produced a *second* labelled tab; (b) nothing ever pruned the session;
+  (c) `dir="${TTT_TARGET_DIR:-${dir:-.}}"` handed ttt a literal `.` (hence
+  `ttt --listen . /Users/h…`); (d) `scripts/crew-tui-drive-roles.py` used the
+  default socket for `layout.apply`/`tab.close` while its other calls used the
+  sandbox one, so a failed run leaked tabs into the live session.
+- **Lesson recorded in code**: a tab is forseti's only if it is *recorded*
+  (`~/.config/forseti/state.json`), and "dead" must be probed per pane
+  (`pane process-info` → all foreground processes are shells). A Go trap hit
+  here: the repo's `fileExists` is a **regular-file** probe, so using it for
+  `cwd` marked every tab unrestorable and closed a user tab; directory checks
+  use `dirExists`.

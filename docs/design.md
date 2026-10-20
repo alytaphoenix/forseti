@@ -1211,6 +1211,61 @@ reasoning on OpenRouter DeepSeek, execution on the LAN valhalla. Per-role
 is reserved for one seat that needs tiers or fallback, and a standalone pi
 default is a settings value (`defaultModel`), not a route.
 
+### The owned IDE tab and `forseti start` (2026-10-20)
+
+herdr restores the session *layout* across server restarts but cannot restore a
+TUI **process**: pi resumes (its integration reports a session ref through
+`pane.report_agent_session`, and `[session] resume_agents_on_restore` defaults
+on), ttt does not. A restored forseti tab therefore comes back as bare shells,
+and the old bring-up — which only knew "is an agent named coder live?" — either
+reused nothing or created a second labelled tab on every restart. Nothing pruned
+the session either, so spike tabs (temporary cwds, `restore_error: Saved
+directory is unavailable`) accumulated forever (S60).
+
+`forseti start` (alias `forseti up`) makes the IDE tab a **singleton**:
+
+- **Ownership by identity.** `~/.config/forseti/state.json` (0600) records
+  `{tab, editor_pane, agent_pane, dir, label}`. Lookup order: the recorded tab
+  id → the tab hosting the live named agent → a tab with our label (preferring
+  the target directory) → create. Tab/pane ids survive a herdr restore, so an
+  adopted tab keeps its number and layout.
+- **Revive in place, never duplicate.** `pane process-info` classifies each
+  pane: at a shell prompt → restart the pane's role (`pane run <ttt.bin>
+  --listen <abs dir> [vault]` for the editor, `agent start <name> --kind pi`
+  for the agent); anything else belongs to the human and is left alone
+  (`busy`). A restore that collapsed the tab to one pane gets its split back.
+- **Prune only what forseti can prove is dead.** Tabs carrying our label whose
+  panes are all idle shells are closed (same workspace; `--clean` widens that to
+  every workspace). A tab with a live agent or a non-shell foreground process is
+  never touched. `--prune-dead` is the opt-in for foreign tabs whose saved
+  directory is gone (`restore_error` / missing cwd). A dry run only reports;
+  non-interactive callers never see a prompt.
+- **The environment comes up with it.** Missing services start, assets sync, and
+  a missing herdr server is spawned headless (`herdr server`, detached, log in
+  `~/.config/forseti/herdr-boot.log`) unless `--no-attach` (old fail) or
+  `--attach` (exec the TUI). The CLI still never starts a TUI in a non-TTY.
+- **One code path for the plugin.** `herdr-plugin/scripts/open.sh` resolves the
+  plugin context directory and `exec`s `forseti start --no-sync --no-services
+  --json`; the previous sh implementation is `open-legacy.sh`, used only when
+  the binary is absent. `forseti status`/`doctor` report the owned tab
+  (`ide up · tab 52 · ttt · agent idle`).
+- **Tests stay out of the live session.** The TUI drivers talk to the sandbox
+  socket only and close their tab in a `cleanup()` that also runs on failure.
+
+Default crews (v0.7.0): `crew.default` makes `forseti run` a one-command crew,
+
+Distribution of a third-party extension (v0.9.0): SoL-Pi is a pi *package*, not
+a forseti-owned file, so `up`/`config sync` treat it as two managed artifacts —
+the generated config (`~/.pi/agent/sol-pi.json`, rendered from the shipped
+`pi-extension/sol-pi.json` plus the `sol_pi.*` overrides, byte-compared and
+atomic) and the install (`pi install <source>`, skipped when pi already declares
+any sol-pi package). The config is the source of truth for the mechanism flags
+because SoL-Pi reads exactly one JSON file and rejects unknown keys; the shipped
+file keeps the distribution's opinion (the two local, model-free mechanisms),
+and the config keys only record what the user changed. A project
+`.pi/sol-pi.json` wins over the managed file by SoL-Pi's own rule, so `doctor`
+warns instead of pretending the managed file is in effect.
+
 ## Direction: pi inside ttt (2026-10-18, user decision)
 
 The shell question is settled: **ttt is the environment, pi is a program inside

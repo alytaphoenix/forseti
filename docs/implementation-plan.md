@@ -1452,8 +1452,8 @@ binary (`defaultRepo`), so it resolves the checkout from anywhere.
 
 | command | behavior |
 |---|---|
-| `forseti` | status (herdr, ttt listener, pi, asset drift, services, live crew, run lock) |
-| `forseti up [dir]` | sync assets → start configured services → verify herdr (+ link the plugin) → run the bring-up script (opens ttt + pi; reuses a live agent) |
+| `forseti` | status (herdr, IDE tab, ttt listener, pi, asset drift, services, live crew, run lock) |
+| `forseti start [dir]` (`up`) | sync assets → start configured services → ensure/start the herdr server → link the plugin → reconcile ONE owned IDE tab (ttt + pi), reviving a tab herdr restored as shells and pruning dead duplicates |
 | `forseti down` | stop the configured services |
 | `forseti doctor` | checks with fixes; exit 1 on a FAIL (warn ≠ fail) |
 | `forseti open <path[:line[:col]]>` | write `jump.json` + `exec "Forseti: Jump"` |
@@ -1613,3 +1613,89 @@ normalizes `git -C`/`sudo`. The extension publishes
 when no crew run is live (crew wins). The human-confirm UI path and the badge
 were not exercised live (the CLI `--assume` path and the status file are
 tested).
+
+## Phase 27 — SoL-Pi in the distribution (v0.9.0) — ✅ implemented + verified LIVE
+
+**Surface**: `pi-extension/sol-pi.json` is the shipped default config for the
+third-party SoL-Pi efficiency extension (the two local mechanisms on; the
+evidence-preserving reducer and online context compact off). `forseti config
+sync`/`up` render `~/.pi/agent/sol-pi.json` from the `sol_pi.*` keys (atomic,
+content-compared, exact sol-pi schema — unknown keys are rejected by the
+extension, so the CLI writes an allowlist); `up` installs the package
+(`sol_pi.package`, default `git:github.com/NVlabs/SoL-Pi`) when pi declares no
+sol-pi package; `doctor` checks the managed file, the package, the pi (≥ 0.84.2)
+and node (≥ 22.19) floors, a project `.pi/sol-pi.json` override and a half-set
+reducer route; `status` shows one `sol-pi` line. `sol_pi.enabled=false` leaves
+the installed file alone.
+
+**Config keys**: `sol_pi.{enabled,install,package,action_fusion,
+observation_pack,evidence_preserving_reducer,reducer_provider,reducer_model,
+online_context_compact,cache_write_read_ratio}` — overrides on the shipped file,
+so `config get` reports the effective value.
+
+**Verification**: `cli/solpi_test.go` (schema/render/override/drift/install
+detection/version floors, shipped file ≡ built-in default); live on pi 1.0.3 —
+`forseti up` installed `git:github.com/NVlabs/SoL-Pi` and wrote the rendered
+config, a `pi -p` turn loaded forseti + sol-pi together (`obs_recall` present),
+and `forseti config set sol_pi.observation_pack false` + `config sync` removed
+it. Spike S59.
+
+## Phase 28 — `forseti start`: one IDE tab that survives herdr restarts (v0.10.0) — ✅ implemented + verified LIVE (2026-10-20)
+
+The environment had drifted into "three tools plus a pile of tabs": herdr
+restores every tab of the last session, a restored forseti tab comes back as
+bare shells (pi resumes, ttt cannot), and the old bring-up created another
+labelled tab whenever the agent was not live, so duplicates accumulated next to
+dead spike tabs (S60).
+
+**Command**: `forseti start [dir]` — `forseti up` is an alias (same flags).
+Environment part unchanged (asset sync, sol-pi, memory/laya); new: a missing
+herdr server is spawned headless (`herdr server`, detached, log
+`~/.config/forseti/herdr-boot.log`; `--attach` execs the TUI, `--no-attach`
+keeps the old failure).
+
+**Owned IDE tab** (`cli/cmd_start.go`, `cli/herdr.go`, state
+`~/.config/forseti/state.json`, 0600):
+
+- identity-first lookup: recorded tab id → tab hosting the live named agent →
+  our label (preferring the target dir) → create (`tab create` + `pane split`);
+- revive in place: `pane process-info` per pane — a shell prompt gets its role
+  back (`pane run <ttt.bin> --listen <abs dir> [vault]`, `agent start <name>
+  --kind pi`); a non-shell foreground is left alone (`busy`);
+- prune: dead tabs carrying our label are closed (same workspace; `--clean`
+  widens to all); a live agent or a non-shell process protects a tab; opt-in
+  `--prune-dead` closes foreign tabs whose saved cwd is gone (`restore_error` /
+  missing directory); `--dry-run` reports only, non-TTY callers never prompt;
+- the target dir is absolute (a literal `.` used to open the wrong root) and
+  `ttt.bin` (not bare `ttt`) is launched.
+
+**One code path**: `herdr-plugin/scripts/open.sh` resolves the plugin context
+dir and `exec`s `forseti start --dir DIR --no-sync --no-services --json`; the
+old implementation is `open-legacy.sh` (fallback only). `notes.sh` still routes
+through `open.sh`. `status`/`doctor` gained an `ide` line/check.
+
+**Test hygiene**: `scripts/crew-tui-drive-roles.py` was applying layout and
+closing tabs on the **default** socket (a crashed run left tabs in the live
+session); all three TUI drivers now use the sandbox socket exclusively and close
+their tab in `cleanup()` (also on failure).
+
+**Gates**
+- `cd cli && go vet ./... && go test ./...` — `start_test.go` drives the
+  reconciler against a fake herdr (`testdata/herdrstub`, a stateful Go CLI stub):
+  create → revive after a simulated restore (same tab id/panes, no new tab),
+  busy panes untouched, dead labelled duplicate closed while a user tab and a
+  foreign tab with a live cwd survive, `--prune-dead` closes only the
+  vanished-cwd tab, agent-name-taken, dry-run mutates nothing, state 0600,
+  health line, arg splitting, pane/shell probes.
+- **Live (sandbox session, `HERDR_SOCKET_PATH` + a private state file)**: the
+  first run created `w1:t1K` and started ttt + `coder`; killing both processes
+  (the post-restore state) and re-running reported `revived … editor started ·
+  agent started` in the *same* tab/panes with one agent. Bug found live:
+  `pane run` prints no JSON → `herdrExec` (exit status only).
+- **Live (default session)**: `forseti start --prune-dead --yes` adopted the one
+  live tab, recorded it, and closed the seven stale tabs of the session (tab 8
+  dead duplicate, six spike tabs whose saved dirs were gone — including the
+  unnamed tab 1; the cwd check initially used the file probe `fileExists`, which
+  rejected directories and closed too much — fixed to `dirExists`, regression
+  test added). A second run reported `revived … editor running · agent running`
+  and created nothing.

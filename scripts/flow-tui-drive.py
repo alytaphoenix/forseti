@@ -41,7 +41,6 @@ def call(method, params, timeout=15):
 def send_text(pane, text):
     call("pane.send_text", {"pane_id": pane, "text": text}, 10)
 
-
 def key(pane, k):
     call("pane.send_keys", {"pane_id": pane, "keys": [k]}, 10)
 
@@ -51,6 +50,19 @@ def wait_for(pane, text, timeout=20):
         "match": {"type": "substring", "value": text}, "timeout_ms": timeout * 1000}, timeout + 10)
     if "error" in r:
         raise RuntimeError(f"wait_for({text!r}): {r['error']}")
+
+
+# The builder tab lives in the sandbox session; close it on failure too.
+CLEANUP = {"tab": None}
+
+
+def cleanup():
+    if CLEANUP.get("tab"):
+        try:
+            call("tab.close", {"tab_id": CLEANUP["tab"]}, 10)
+        except Exception:
+            pass
+        CLEANUP["tab"] = None
 
 
 def main():
@@ -75,6 +87,7 @@ on:
         return node["pane_id"] if node.get("type") == "pane" else walk(node.get("first") or node.get("second"))
 
     pane, tab = walk(r["layout"]["root"]), r["layout"]["tab_id"]
+    CLEANUP["tab"] = tab
     send_text(pane, f"{BIN} edit -f {flow_path}")
     key(pane, "enter")
     wait_for(pane, "1 overview", 30)
@@ -94,7 +107,7 @@ on:
 
     key(pane, "esc")
     time.sleep(1)
-    call("tab.close", {"tab_id": tab}, 10)
+    cleanup()
 
     v = subprocess.run([BIN, "validate", "-f", flow_path], capture_output=True, text=True)
     if v.returncode != 0:
@@ -108,4 +121,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("FAIL:", e)
+        cleanup()
         sys.exit(1)

@@ -55,6 +55,18 @@ the extension publishes the agent's lifecycle state to
 - `blocked` is not observable: pi's approval/question UI is not an event, so a
   stuck `working` is the signal.
 
+## SoL-Pi — `sol-pi.json`
+
+`sol-pi.json` here is not an extension: it is the shipped default configuration
+for the third-party [SoL-Pi](https://github.com/NVlabs/SoL-Pi) pi package (a
+*package* — installed with `pi install`, not copied like the files above).
+`forseti config sync` / `forseti up` render it into `~/.pi/agent/sol-pi.json`
+after applying the `sol_pi.*` config keys, and `forseti up` installs the package
+when pi declares none. Toggle mechanisms with
+`forseti config set sol_pi.observation_pack false` and re-sync — SoL-Pi stops
+loading on unknown keys, so the CLI writes exactly its schema. Details:
+[`cli/README.md`](../cli/README.md), spike S59.
+
 ## Install
 
 **User-level (recommended)** — every pi session gets it:
@@ -68,7 +80,7 @@ cp pi-extension/switchyard.ts ~/.pi/agent/extensions/forseti-switchyard.ts
 
 ```sh
 pi install /path/to/forseti/pi-extension   # local source package
-pi install git:github.com/alytaphoenix/forseti@v0.7.1   # pinned git ref
+pi install git:github.com/alytaphoenix/forseti@v0.10.0   # pinned git ref
 ```
 
 The directory qualifies as a pi package (`package.json` with `pi.extensions`;

@@ -48,6 +48,24 @@ def ok(r, what):
     return r.get("result", {})
 
 
+# Everything the drive creates lives in the SANDBOX session and a temp dir;
+# cleanup() runs on failure too, so a crashed run can never leave a tab behind
+# (and never, ever touch the live default session).
+CLEANUP = {"tab": None, "work": None}
+
+
+def cleanup():
+    if CLEANUP.get("tab"):
+        try:
+            call("tab.close", {"tab_id": CLEANUP["tab"]}, 10, SOCK)
+        except Exception:
+            pass
+        CLEANUP["tab"] = None
+    if CLEANUP.get("work"):
+        shutil.rmtree(CLEANUP["work"], ignore_errors=True)
+        CLEANUP["work"] = None
+
+
 def send_text(pane, text):
     ok(call("pane.send_text", {"pane_id": pane, "text": text}, 10), "send_text")
 
@@ -93,6 +111,7 @@ def bootstrap_sandbox():
 def main():
     bootstrap_sandbox()
     WORK = tempfile.mkdtemp(prefix="p19-drive-")
+    CLEANUP["work"] = WORK
     crew_yaml = f"""name: p19-tui-roles
 models:
   efficient: opencode-go/beam-free
@@ -103,18 +122,19 @@ agents:
     with open(f"{WORK}/crew.yaml", "w") as f:
         f.write(crew_yaml)
 
-    snap = ok(call("session.snapshot", {}, 15), "snapshot")
+    snap = ok(call("session.snapshot", {}, 15, SOCK), "snapshot")
     ws = snap["snapshot"]["focused_workspace_id"]
     label = "p19-tui-roles-" + str(int(time.time()))
     r = ok(call("layout.apply", {"workspace_id": ws, "tab_label": label,
         "focus": False, "root": {"type": "pane", "label": "tui", "cwd": WORK}},
-        45), "layout")
+        45, SOCK), "layout")
 
     def walk(node):
         if node.get("type") == "pane":
             return node["pane_id"]
         return walk(node["first"]) if "first" in node else walk(node["second"])
     pane, tab = walk(r["layout"]["root"]), r["layout"]["tab_id"]
+    CLEANUP["tab"] = tab
     print(f"pane {pane} tab {tab}")
 
     send_text(pane, f"{BIN} run -f {WORK}/crew.yaml")
@@ -189,8 +209,7 @@ agents:
     send_text(pane, "q")
     send_text(pane, "q")
     time.sleep(1)
-    call("tab.close", {"tab_id": tab}, 10)
-    shutil.rmtree(WORK, ignore_errors=True)
+    cleanup()
     print("saved file:")
     print(saved)
     print("PASS")
@@ -201,4 +220,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print("FAIL:", e)
+        cleanup()
         sys.exit(1)

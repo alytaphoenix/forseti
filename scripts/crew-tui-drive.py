@@ -38,6 +38,18 @@ def ok(r, what):
         raise RuntimeError(f"{what}: {r['error']}")
     return r.get("result", {})
 
+# The drive only touches the sandbox session; on failure the scratch TAB is
+# closed anyway (the WORK dir is kept for debugging).
+CLEANUP = {"tab": None}
+
+def cleanup():
+    if CLEANUP.get("tab"):
+        try:
+            call("tab.close", {"tab_id": CLEANUP["tab"]}, 10)
+        except Exception:
+            pass
+        CLEANUP["tab"] = None
+
 def send_text(pane, text):
     ok(call("pane.send_text", {"pane_id": pane, "text": text}, 10), "send_text")
 
@@ -75,6 +87,7 @@ edges:
             return node["pane_id"]
         return walk(node["first"]) if "first" in node else walk(node["second"])
     pane, tab = walk(r["layout"]["root"]), r["layout"]["tab_id"]
+    CLEANUP["tab"] = tab
     print(f"pane {pane} tab {tab}")
 
     send_text(pane, f"{BIN} run -f {WORK}/crew.yaml")
@@ -152,7 +165,7 @@ edges:
     send_text(pane, "q")
     send_text(pane, "q")
     time.sleep(1)
-    call("tab.close", {"tab_id": tab}, 10)
+    cleanup()
     shutil.rmtree(WORK, ignore_errors=True)  # P13-B20: no scratch debris
     print("PASS")
 
@@ -163,4 +176,5 @@ if __name__ == "__main__":
         # keep WORK on failure for debugging — print it so the operator can
         # inspect, and only a success removes it
         print("FAIL:", e)
+        cleanup()
         sys.exit(1)

@@ -100,6 +100,17 @@ func cmdConfig(args []string) {
 			fmt.Printf("%s (directory)\n", p)
 			return
 		}
+		if rest[0] == "sol-pi" {
+			// Never open an empty file: sol-pi stops loading on malformed JSON.
+			st, err := syncSolPi(cfg, false)
+			if err != nil {
+				die("sol-pi: %v", err)
+			}
+			if !st.Exists {
+				die("sol-pi is disabled in config — enable it with `forseti config set sol_pi.enabled true`")
+			}
+			fmt.Printf("note: forseti regenerates %s from the sol_pi.* config keys\n", p)
+		}
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			die("mkdir: %v", err)
 		}
@@ -141,6 +152,20 @@ func cmdConfig(args []string) {
 			default:
 				fmt.Printf("in sync     %-14s %s\n", r.Asset.Label, r.Asset.Dst)
 			}
+		}
+		st, err := syncSolPi(cfg, *dry)
+		if err != nil {
+			die("sol-pi: %v", err)
+		}
+		reportSolPi(st, *dry)
+		if st.Enabled && !st.Installed {
+			fix := cfg.Pi.Bin + " install " + st.Package
+			if st.Install {
+				fix = "forseti up installs it (or: " + fix + ")"
+			} else {
+				fix = "sol_pi.install=false — install it yourself: " + fix
+			}
+			fmt.Printf("%-11s %-14s %s\n", "missing", "sol-pi package", fix)
 		}
 	case "init":
 		path := configPath()

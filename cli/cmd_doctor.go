@@ -52,6 +52,19 @@ func cmdDoctor(args []string) {
 		add("herdr", "ok", "server running; plugin linked", "")
 	}
 
+	// the one IDE tab forseti owns
+	if running, _ := herdrServer(cfg); running {
+		h, _ := inspectIDE(cfg)
+		switch {
+		case h.Tab == "":
+			add("ide tab", "warn", "no IDE tab recorded", "forseti start")
+		case !h.OK:
+			add("ide tab", "warn", ideDetail(h), "forseti start  (revives ttt/pi in the owned tab)")
+		default:
+			add("ide tab", "ok", ideDetail(h), "")
+		}
+	}
+
 	// ttt
 	if _, err := lookPath(cfg.TTT.Bin); err != nil {
 		add("ttt", "fail", "binary not found: "+cfg.TTT.Bin, "build the forseti fork (docs/ttt-terminal-api.md)")
@@ -103,6 +116,12 @@ func cmdDoctor(args []string) {
 		} else {
 			add("ttt grants", "warn", "missing: "+strings.Join(missing, ", "), "approve/reload the forseti plugin in ttt")
 		}
+	}
+
+	// sol-pi (the efficiency extension forseti ships): managed config, package,
+	// runtime floors, project overrides.
+	for _, c := range solPiChecks(cfg) {
+		add(c.Name, c.State, c.Detail, c.Fix)
 	}
 
 	// crew binaries

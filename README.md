@@ -10,7 +10,7 @@ Forseti ties three local terminal tools into one workflow:
 - **[pi](https://pi.dev)** (`@earendil-works/pi-coding-agent`) — coding agent CLI
 - **[ttt](https://tttedit.dev)** — terminal IDE
 
-License: [MIT](LICENSE) · Current release: **v0.8.0** (see
+License: [MIT](LICENSE) · Current release: **v0.10.0** (see
 [Releases](https://github.com/alytaphoenix/forseti/releases))
 
 ## The loop
@@ -38,19 +38,26 @@ three tools feel like one environment:
 scripts/install-cli.sh            # build + install ~/.local/bin/forseti
 
 forseti                           # status: herdr, ttt, pi, services, assets, live crew
-forseti up                        # sync plugin/extension, start memory, open the tab
-forseti up --attach               # if herdr is not running, start it first
+forseti start                     # sync assets, start services, ensure herdr, open/revive the IDE tab
+forseti start --attach            # if herdr is not running, exec it (attached) first
+forseti start --prune-dead        # also close tabs whose saved directory is gone
 forseti open README.md:13         # jump the running ttt to a file/line
 forseti run                       # crew run (uses crew.default; -f overrides)
 forseti doctor                    # preflight checks, each with a fix
 forseti config list               # keys + every editable config file
 forseti config set ttt.port 4242
+forseti config set sol_pi.observation_pack false   # toggle a sol-pi mechanism
 forseti config edit pi-models     # $EDITOR on models.json (or pi-settings, ttt-settings, …)
-forseti config sync               # reinstall the ttt plugin + pi extension assets
+forseti config sync               # reinstall the ttt plugin + pi extension assets + sol-pi config
 ```
 
-`up` is idempotent (a live `coder` agent is reused), and accepts `--no-sync`,
-`--no-services`, `--no-open`, `--dry-run`, `--json`. Config lives at
+`start` (`up` is an alias) is idempotent: it owns exactly ONE IDE tab, recorded
+in `~/.config/forseti/state.json`. herdr restores a tab's layout but not its
+processes, so a tab that comes back as bare shells is revived in place (ttt +
+pi, same tab number) instead of duplicated, and dead duplicates are pruned. It
+accepts `--dir`, `--label`, `--no-sync`, `--no-services`, `--no-open`,
+`--attach`/`--no-attach`, `--replace`, `--clean`, `--prune-dead`, `--yes`,
+`--dry-run`, `--json`. Config lives at
 `~/.config/forseti/config.json` (`forseti config init`); provider keys and
 tool settings stay in their native files, which `config edit` opens directly.
 Set a default crew with `forseti config set crew.default default` (a bare name
@@ -61,6 +68,16 @@ split. The executor also carries `fallback_model`: a provider error
 respawns that node once on DeepSeek instead of failing the run (ttt host; herdr
 reports it as unsupported). The CLI never edits plugin permission grants.
 
+The distribution also ships **SoL-Pi**, a third-party pi efficiency extension
+([NVlabs/SoL-Pi](https://github.com/NVlabs/SoL-Pi): action fusion, observation
+pack, evidence-preserving reducer, online context compact).
+`pi-extension/sol-pi.json` is the shipped default (the two local mechanisms on,
+the reducer and compaction off); the `sol_pi.*` config keys override it and
+`forseti config sync`/`up` render `~/.pi/agent/sol-pi.json` from them, while
+`up` installs the package when pi has none declared. `forseti config set
+sol_pi.enabled false` opts out entirely, and `forseti doctor` checks the file,
+the package and the pi/node version floors.
+
 ## Components (one per host — no always-on daemon of ours)
 
 | Component | Surface | Implements |
@@ -68,6 +85,7 @@ reports it as unsupported). The CLI never edits plugin permission grants.
 | [`herdr-plugin/`](herdr-plugin/README.md) | herdr plugin (TOML + sh) | idempotent bring-up: dedicated tab with ttt (`--listen`) + pi via native `agent start --kind pi`; `forseti.git` opens/focuses a lazygit pane on the current checkout |
 | [`ttt-plugin/`](ttt-plugin/README.md) | ttt Lua plugin | ask (input row + `ctrl+k a`), status sidebar/badges, `Forseti: Jump` / `Forseti: Review`, vault commands (Daily Note / Backlinks / wikilink / Obsidian) |
 | [`pi-extension/`](pi-extension/README.md) | pi TS extension | `/ttt jump·open·follow·review·context·diff`, `/herd agents`, model tools (`ttt_open`, `ttt_diff`, `ttt_read_context`, `vault_*`), prompt context injection |
+| [`pi-extension/sol-pi.json`](pi-extension/sol-pi.json) | pi package config (third-party [SoL-Pi](https://github.com/NVlabs/SoL-Pi)) | the shipped efficiency-extension config: `forseti config sync`/`up` render it from the `sol_pi.*` keys into `~/.pi/agent/sol-pi.json`, and `up` installs the package when pi has none — doctor checks both |
 | [`hashtext-plugin/`](hashtext-plugin/README.md) | pi TS extension | `/hash list·find·put·expand·evict·read·grep·stats·gc·archive·auto`, model tools (`hashtext_put`, `hashtext_list`, `hashtext_find`, `hashtext_expand`, `hashtext_evict`, `hashtext_read`, `hashtext_grep`): fingerprinted cold context cache — tiered index, native zstd reads, progressive disclosure (outline/focus/range), request-time archival of large tool output, optional Laya block pick |
 | [`crew/`](crew/) | standalone Go binary (`forseti-crew`) | deterministic agent-graph runner on herdr: `crew.yaml` (agents + `when`-gated edges, `checks`, `watch`, `routes`), Bubble Tea builder + live monitor (meta tab), bus-file handoff, JSONL run log, sandbox sessions + disposable worktrees, switchyard model routing; `--engine rust` delegates to `host/` |
 | [`host/`](host/) | Rust crate (`forseti-host`) | in-process switchyard router; the staged crew engine (`crew validate/run`, oracle-pinned against the Go engine) and the **ttt host** (`--host ttt`): one pi tab per node inside ttt, driven through the ttt plugin's `Forseti: Agent Bridge` + the pi status channel |
@@ -297,11 +315,15 @@ herdr plugin install alytaphoenix/forseti/herdr-plugin
 # pi extensions (user-level, every pi session)
 cp pi-extension/index.ts ~/.pi/agent/extensions/forseti.ts
 cp pi-extension/flow.ts ~/.pi/agent/extensions/forseti-flow.ts
-# or: pi install git:github.com/alytaphoenix/forseti@v0.8.0
+# or: pi install git:github.com/alytaphoenix/forseti@v0.10.0
 
 # hashtext pi extension (fingerprinted context cache)
 #   store CLI first (sibling repo): cd ~/repos/hashtext && uv tool install .
 cp hashtext-plugin/index.ts ~/.pi/agent/extensions/hashtext.ts
+
+# sol-pi (third-party efficiency extension; forseti renders its config from
+# the sol_pi.* keys and installs the package — `forseti up` does both)
+pi install git:github.com/NVlabs/SoL-Pi
 
 # ttt plugin (Lua, once permissions are approved)
 cp -R ttt-plugin ~/.config/ttt/plugins/forseti

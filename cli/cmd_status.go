@@ -56,6 +56,18 @@ func cmdStatus(args []string) {
 		rep.Lines = append(rep.Lines, statusLine{"herdr", "down", detail})
 	}
 
+	// the IDE tab forseti owns (one ttt + one pi, revived by `forseti start`)
+	if h, ok := inspectIDE(cfg); ok {
+		switch {
+		case h.Tab == "":
+			rep.Lines = append(rep.Lines, statusLine{"ide", "none", "no IDE tab (forseti start)"})
+		case h.OK:
+			rep.Lines = append(rep.Lines, statusLine{"ide", "up", ideDetail(h)})
+		default:
+			rep.Lines = append(rep.Lines, statusLine{"ide", "warn", ideDetail(h) + " (forseti start)"})
+		}
+	}
+
 	// ttt listener
 	if tttListening(cfg.TTT.Port) {
 		rep.Lines = append(rep.Lines, statusLine{"ttt", "up", fmt.Sprintf("127.0.0.1:%d", cfg.TTT.Port)})
@@ -82,6 +94,24 @@ func cmdStatus(args []string) {
 			rep.Lines = append(rep.Lines, statusLine{"assets", "up", "in sync"})
 		} else {
 			rep.Lines = append(rep.Lines, statusLine{"assets", "warn", fmt.Sprintf("%d stale (forseti config sync)", drift)})
+		}
+	}
+
+	// sol-pi (managed pi extension: generated config + pi package)
+	if st, err := solPiStatus(cfg); err != nil {
+		rep.Lines = append(rep.Lines, statusLine{"sol-pi", "warn", err.Error()})
+	} else {
+		switch {
+		case !st.Enabled:
+			rep.Lines = append(rep.Lines, statusLine{"sol-pi", "none", "disabled in config"})
+		case !st.InSync && !st.Installed:
+			rep.Lines = append(rep.Lines, statusLine{"sol-pi", "warn", "config not synced, package not installed (forseti up)"})
+		case !st.InSync:
+			rep.Lines = append(rep.Lines, statusLine{"sol-pi", "warn", "config not synced (forseti config sync)"})
+		case !st.Installed:
+			rep.Lines = append(rep.Lines, statusLine{"sol-pi", "warn", "package not installed (forseti up)"})
+		default:
+			rep.Lines = append(rep.Lines, statusLine{"sol-pi", "up", "config in sync · " + st.InstalledSource})
 		}
 	}
 

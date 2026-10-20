@@ -14,7 +14,7 @@ import (
 )
 
 // Version is the CLI version (kept in step with the repo release).
-const Version = "0.8.0"
+const Version = "0.10.0"
 
 // defaultRepo is stamped at build time:
 //
@@ -27,8 +27,8 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
-	case "up":
-		cmdUp(os.Args[2:])
+	case "start", "up":
+		cmdStart(os.Args[2:])
 	case "down":
 		cmdDown(os.Args[2:])
 	case "status", "st":
@@ -68,7 +68,7 @@ func usage() {
 
 usage:
   forseti                         status (the default)
-  forseti up [dir] [flags]        bring the workspace up (sync assets, services, tab)
+  forseti start [dir] [flags]     bring the whole IDE up (services, herdr, one tab)
   forseti down                    stop the forseti-managed services
   forseti status [--json]         one-screen environment status
   forseti doctor [--json]         preflight checks with fixes (exit 1 on failure)
@@ -80,12 +80,20 @@ usage:
   forseti config <sub>            list|get|set|path|edit|sync|init
   forseti version                 version, repo, config path
 
-up flags:
+forseti up is an alias of forseti start.
+
+start flags:
   --dir DIR        target directory (default: the current directory)
-  --no-sync        skip the ttt-plugin / pi-extension sync
+  --label TEXT     tab label (default: herdr.editor_label)
+  --no-sync        skip the ttt-plugin / pi-extension / sol-pi sync
   --no-services    do not start memory/laya
-  --no-open        do not open the Forseti tab
+  --no-open        do not open (or revive) the IDE tab
   --attach         if herdr is not running, exec herdr (attached) first
+  --no-attach      if herdr is not running, fail instead of starting it headless
+  --replace        create a fresh IDE tab instead of reviving the owned one
+  --clean          also prune dead forseti tabs in other workspaces
+  --prune-dead     also close tabs whose saved directory is gone
+  --yes            do not ask before closing stale tabs
   --dry-run        print what would happen
   --json           machine-readable summary
 
@@ -93,10 +101,14 @@ config keys:
   repo  herdr.bin  herdr.agent  herdr.editor_label  ttt.bin  ttt.port
   pi.bin  services.memory  services.laya
   crew.engine  crew.host  crew.model  crew.default
+  sol_pi.enabled  sol_pi.install  sol_pi.package
+  sol_pi.action_fusion  sol_pi.observation_pack  sol_pi.online_context_compact
+  sol_pi.evidence_preserving_reducer  sol_pi.reducer_provider
+  sol_pi.reducer_model  sol_pi.cache_write_read_ratio
 
 config edit targets:
   forseti  pi-models  pi-settings  pi-mcp  ttt-settings  ttt-plugins
-  ttt-registry  crew  tools
+  ttt-registry  crew  tools  sol-pi
 `)
 }
 
